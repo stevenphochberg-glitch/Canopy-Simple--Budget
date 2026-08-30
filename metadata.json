@@ -1,0 +1,6 @@
+{
+  "name": "Canopy",
+  "description": "A mindful, mobile-first household budgeting PWA designed to foster healthy financial habits, income normalization, and shared accountability.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

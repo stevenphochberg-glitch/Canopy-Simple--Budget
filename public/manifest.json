@@ -1,0 +1,17 @@
+{
+  "short_name": "Canopy",
+  "name": "Canopy Budgeting App",
+  "description": "A mobile-first household budgeting PWA for shared accountability, income normalization, and overspending prevention.",
+  "icons": [
+    {
+      "src": "/logo.jpeg",
+      "type": "image/jpeg",
+      "sizes": "192x192 512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#FAF8F5",
+  "theme_color": "#264B34",
+  "display": "standalone",
+  "orientation": "portrait"
+}

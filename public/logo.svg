@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="100%" height="100%" fill="none">
+  <defs>
+    <linearGradient id="wovenGrad1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#264B34"/>
+      <stop offset="100%" stop-color="#4D724D"/>
+    </linearGradient>
+    <linearGradient id="wovenGrad2" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#648F64"/>
+      <stop offset="100%" stop-color="#86AB86"/>
+    </linearGradient>
+    <linearGradient id="wovenTrunk" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#755B49"/>
+      <stop offset="100%" stop-color="#5E473A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Outer Woven Arch Ring / Canopy Dome -->
+  <path d="M20 95 C20 40, 100 40, 100 95" stroke="url(#wovenGrad1)" stroke-width="9" stroke-linecap="round" fill="none" opacity="0.95"/>
+
+  <!-- Interlacing Inner Arch Strand -->
+  <path d="M34 95 C34 52, 86 52, 86 95" stroke="url(#wovenGrad2)" stroke-width="7" stroke-linecap="round" fill="none"/>
+
+  <!-- Central Arch Core / Vault -->
+  <path d="M47 95 C47 64, 73 64, 73 95" stroke="url(#wovenTrunk)" stroke-width="5" stroke-linecap="round" fill="none"/>
+
+  <!-- Subtle Woven Cross Ties (Natural Architecture) -->
+  <path d="M30 65 L48 78" stroke="#F4EFE6" stroke-width="3" stroke-linecap="round"/>
+  <path d="M90 65 L72 78" stroke="#F4EFE6" stroke-width="3" stroke-linecap="round"/>
+  <path d="M50 48 L70 48" stroke="#F4EFE6" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Canopy Keystone / Sprout Leaf Point -->
+  <circle cx="60" cy="30" r="5.5" fill="#264B34"/>
+  <path d="M60 22 C64 26, 64 30, 60 34 C56 30, 56 26, 60 22 Z" fill="#86AB86"/>
+</svg>

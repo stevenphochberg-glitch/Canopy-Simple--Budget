@@ -1,0 +1,142 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with distinct identity and active household link across multi-device sessions.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "email": { "type": "string", "format": "email", "maxLength": 200 },
+        "activeHouseholdId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["userId", "name", "email"]
+    },
+    "Household": {
+      "title": "Household",
+      "description": "Core Household document linking shared finances with a 6-character sync code.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "syncCode": { "type": "string", "minLength": 6, "maxLength": 10, "pattern": "^[A-Z0-9\\-]+$" },
+        "accountType": { "type": "string", "enum": ["single", "couple", "family", "roommate"] },
+        "roommateCount": { "type": "number" },
+        "weeklyIncomePool": { "type": "number" },
+        "calendarMode": { "type": "string", "enum": ["weekly", "monthly"] },
+        "firstDayOfWeek": { "type": "string" },
+        "lastDayOfWeek": { "type": "string" },
+        "createdById": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["syncCode", "accountType", "weeklyIncomePool", "calendarMode", "createdById"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "Roster of household members with income schedules and normalization.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 100 },
+        "avatarUrl": { "type": "string", "maxLength": 500 },
+        "rawIncome": { "type": "number" },
+        "incomeSchedule": { "type": "string", "enum": ["weekly", "bi-weekly", "monthly", "none"] },
+        "normalizedWeeklyIncome": { "type": "number" },
+        "hasProvidedIncome": { "type": "boolean" }
+      },
+      "required": ["userId", "name", "hasProvidedIncome"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Budget category definition with baseline and current weekly budgets.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 60 },
+        "group": { "type": "string", "enum": ["Essentials", "Fun Money", "Bills", "Savings"], "maxLength": 50 },
+        "baselineBudget": { "type": "number" },
+        "currentWeeklyBudget": { "type": "number" },
+        "totalLogged": { "type": "number" },
+        "transactionCount": { "type": "number" },
+        "icon": { "type": "string", "maxLength": 50 },
+        "color": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["name", "baselineBudget", "currentWeeklyBudget"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "Ledger entry for logged expenses with receipt image references.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "amount": { "type": "number" },
+        "description": { "type": "string", "maxLength": 255 },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "number" },
+        "date": { "type": "string" },
+        "loggedByUserId": { "type": "string", "maxLength": 128 },
+        "receiptImgUrl": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["amount", "description", "categoryId", "date", "loggedByUserId"]
+    },
+    "CheckIn": {
+      "title": "CheckIn",
+      "description": "Weekly accountability check-in records.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "weekStartDate": { "type": "string" },
+        "weekEndDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["completed", "past-due", "pending"] },
+        "completedByUserId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["weekStartDate", "weekEndDate", "status"]
+    },
+    "FeedItem": {
+      "title": "FeedItem",
+      "description": "Activity stream items for transaction logs, comments, reactions, or fresh starts.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "type": { "type": "string", "enum": ["transaction", "comment", "reaction", "freshStart"] },
+        "content": { "type": "string", "maxLength": 500 },
+        "authorId": { "type": "string", "maxLength": 128 },
+        "timestamp": { "type": "number" },
+        "linkedExpenseId": { "type": "string", "maxLength": 128 }
+      },
+      "required": ["type", "content", "authorId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile with multi-device session link"
+    },
+    "/households/{householdId}": {
+      "schema": { "$ref": "#/entities/Household" },
+      "description": "Shared household budgeting document"
+    },
+    "/households/{householdId}/members/{userId}": {
+      "schema": { "$ref": "#/entities/Member" },
+      "description": "Household roster and individual income inputs"
+    },
+    "/households/{householdId}/categories/{catId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Budget categories"
+    },
+    "/households/{householdId}/expenses/{expId}": {
+      "schema": { "$ref": "#/entities/Expense" },
+      "description": "Logged household expenses"
+    },
+    "/households/{householdId}/checkIns/{checkInId}": {
+      "schema": { "$ref": "#/entities/CheckIn" },
+      "description": "Weekly/Monthly accountability check-ins"
+    },
+    "/households/{householdId}/feed/{feedId}": {
+      "schema": { "$ref": "#/entities/FeedItem" },
+      "description": "Real-time activity stream"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Canopy</title>
+    <meta name="description" content="A mindful, mobile-first household budgeting PWA designed to foster healthy financial habits, income normalization, and shared accountability." />
+    <meta property="og:title" content="Canopy" />
+    <meta property="og:description" content="A mindful, mobile-first household budgeting PWA designed to foster healthy financial habits, income normalization, and shared accountability." />
+    <meta property="og:type" content="website" />
+    <meta name="theme-color" content="#264B34" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="icon" type="image/jpeg" href="/logo.jpeg" />
+    <link rel="apple-touch-icon" href="/logo.jpeg" />
+    <link rel="manifest" href="/manifest.json" />
+  </head>
+  <body class="bg-beige-50 text-dark-grey-900 antialiased selection:bg-sage-200">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      if ('serviceWorker' in navigator && window.location.protocol === 'https:') {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register('/sw.js').catch(() => {});
+        });
+      }
+    </script>
+  </body>
+</html>
+

@@ -1,0 +1,124 @@
+@import "tailwindcss";
+
+@theme {
+  --color-sage-50: #F4F7F4;
+  --color-sage-100: #E4ECE5;
+  --color-sage-200: #C9D9CC;
+  --color-sage-300: #ABC3AF;
+  --color-sage-400: #8DAA91;
+  --color-sage-500: #6F9374;
+  --color-sage-600: #55775A;
+  --color-sage-700: #3E5B42;
+  --color-sage-800: #2D4739;
+  --color-sage-900: #22372C;
+
+  --color-beige-50: #F7F4EF;
+  --color-beige-100: #EFE9DE;
+  --color-beige-200: #E2D9C8;
+  --color-beige-300: #D3C5AE;
+  --color-beige-400: #C2B095;
+  --color-beige-500: #AD997C;
+  --color-beige-600: #937E63;
+  --color-beige-700: #77634C;
+  --color-beige-800: #5D4037;
+  --color-beige-900: #463028;
+
+  --color-dark-green-50: #F0F5F1;
+  --color-dark-green-100: #DBE9DF;
+  --color-dark-green-200: #B9D4C1;
+  --color-dark-green-300: #8FB79C;
+  --color-dark-green-400: #5F8E6F;
+  --color-dark-green-500: #427252;
+  --color-dark-green-600: #345B41;
+  --color-dark-green-700: #2D4739;
+  --color-dark-green-800: #233A2E;
+  --color-dark-green-900: #1B2C23;
+
+  --color-brown-50: #F8F6F4;
+  --color-brown-100: #EFEBE7;
+  --color-brown-200: #DED6CF;
+  --color-brown-300: #C7BBB2;
+  --color-brown-400: #A9978C;
+  --color-brown-500: #8C7669;
+  --color-brown-600: #715B4F;
+  --color-brown-700: #5D4037;
+  --color-brown-800: #49332C;
+  --color-brown-900: #382721;
+
+  --color-sky-blue-50: #F0F8F9;
+  --color-sky-blue-100: #DCF0F2;
+  --color-sky-blue-200: #BEDFE3;
+  --color-sky-blue-300: #A8DADC;
+  --color-sky-blue-400: #70B8BD;
+  --color-sky-blue-500: #42949B;
+  --color-sky-blue-600: #2C747B;
+  --color-sky-blue-700: #21595E;
+  --color-sky-blue-800: #1B4549;
+  --color-sky-blue-900: #16373A;
+
+  --color-dark-blue-50: #F0F4F8;
+  --color-dark-blue-100: #D9E3EF;
+  --color-dark-blue-200: #B6CCDF;
+  --color-dark-blue-300: #85ABCA;
+  --color-dark-blue-400: #5586B2;
+  --color-dark-blue-500: #376897;
+  --color-dark-blue-600: #2A527A;
+  --color-dark-blue-700: #234263;
+  --color-dark-blue-800: #1F3752;
+  --color-dark-blue-900: #1C2F44;
+
+  --color-light-grey-50: #FAFAFA;
+  --color-light-grey-100: #F5F5F5;
+  --color-light-grey-200: #EAEAEA;
+  --color-light-grey-300: #DEDFDF;
+  --color-light-grey-400: #CACACA;
+  --color-light-grey-500: #B3B4B4;
+
+  --color-dark-grey-600: #52555A;
+  --color-dark-grey-700: #3E4146;
+  --color-dark-grey-800: #2D3035;
+  --color-dark-grey-900: #1E2024;
+  --color-dark-grey-950: #141518;
+
+  --color-alert-red-50: #FEF2F2;
+  --color-alert-red-100: #FEE2E2;
+  --color-alert-red-200: #FECACA;
+  --color-alert-red-300: #FCA5A5;
+  --color-alert-red-400: #F87171;
+  --color-alert-red-500: #EF4444;
+  --color-alert-red-600: #DC2626;
+  --color-alert-red-700: #B91C1C;
+  --color-alert-red-800: #991B1B;
+  --color-alert-red-900: #7F1D1D;
+}
+
+@layer base {
+  body {
+    background-color: var(--color-beige-50, #FAF8F5);
+    color: var(--color-dark-grey-900, #1E2024);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+    touch-action: manipulation;
+  }
+
+  input, textarea, select {
+    user-select: text;
+  }
+}
+
+/* Custom scrollbar styling for clean desktop layouts */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(142, 115, 93, 0.25);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(142, 115, 93, 0.45);
+}
