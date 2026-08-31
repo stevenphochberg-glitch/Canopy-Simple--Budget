@@ -23,9 +23,36 @@ import {
   Image as ImageIcon,
 } from 'lucide-react';
 
-const CATEGORY_GROUPS: CategoryGroup[] = ['Essentials', 'Fun Money', 'Bills', 'Savings'];
 const LAST_TAB_STORAGE_KEY = 'canopy_last_log_tab';
 type LogTab = 'manual' | 'quicknote' | 'scan';
+
+const getCategoryIconSymbol = (iconName?: string) => {
+  switch (iconName) {
+    case 'shopping-bag':
+    case 'shopping-cart':
+      return '🛍️';
+    case 'sparkles':
+      return '✨';
+    case 'file-text':
+      return '📄';
+    case 'piggy-bank':
+      return '🐷';
+    case 'utensils':
+      return '🍽️';
+    case 'coffee':
+      return '☕';
+    case 'car':
+      return '🚗';
+    case 'home':
+      return '🏠';
+    case 'plane':
+      return '✈️';
+    case 'heart':
+      return '❤️';
+    default:
+      return '🏷️';
+  }
+};
 
 interface LogExpenseModalProps {
   isOpen: boolean;
@@ -65,7 +92,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   const [manualAmount, setManualAmount] = useState<string>('');
   const [manualDescription, setManualDescription] = useState<string>('');
   const [manualCategoryId, setManualCategoryId] = useState<string>(
-    initialCategory?.id || categories[0]?.id || 'cat_groceries'
+    initialCategory?.id || categories[0]?.id || ''
   );
   const [manualDate, setManualDate] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -78,10 +105,15 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   const [manualBatch, setManualBatch] = useState<StagedExpense[]>([]);
 
   useEffect(() => {
-    if (initialCategory) {
+    if (initialCategory?.id) {
       setManualCategoryId(initialCategory.id);
+    } else if (categories.length > 0) {
+      // If current category is empty or not in categories, default to the first category's document ID
+      if (!manualCategoryId || !categories.some((c) => c.id === manualCategoryId)) {
+        setManualCategoryId(categories[0].id);
+      }
     }
-  }, [initialCategory]);
+  }, [initialCategory, categories, manualCategoryId]);
 
   useEffect(() => {
     if (user?.userId) {
@@ -96,12 +128,17 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       return;
     }
 
+    const resolvedCategoryId =
+      manualCategoryId && categories.some((c) => c.id === manualCategoryId)
+        ? manualCategoryId
+        : categories[0]?.id || '';
+
     const newItem: StagedExpense = {
       amount: numAmount,
       description: manualDescription.trim() || 'Manual Expense',
-      categoryId: manualCategoryId || categories[0]?.id || 'cat_groceries',
-      date: manualDate,
-      loggedByUserId: manualLoggedBy,
+      categoryId: resolvedCategoryId,
+      date: manualDate || new Date().toISOString().split('T')[0],
+      loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
     };
 
     setManualBatch((prev) => [...prev, newItem]);
@@ -115,14 +152,19 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     const currentNum = parseFloat(manualAmount);
     const itemsToStage: StagedExpense[] = [...manualBatch];
 
+    const resolvedCategoryId =
+      manualCategoryId && categories.some((c) => c.id === manualCategoryId)
+        ? manualCategoryId
+        : categories[0]?.id || '';
+
     // If the user filled the current fields, add it too
     if (currentNum && currentNum > 0) {
       itemsToStage.push({
         amount: currentNum,
         description: manualDescription.trim() || 'Manual Expense',
-        categoryId: manualCategoryId || categories[0]?.id || 'cat_groceries',
-        date: manualDate,
-        loggedByUserId: manualLoggedBy,
+        categoryId: resolvedCategoryId,
+        date: manualDate || new Date().toISOString().split('T')[0],
+        loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
       });
     }
 
@@ -131,12 +173,12 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       return;
     }
 
-    // Reset local batch
+    // Reset local batch and inputs
     setManualBatch([]);
     setManualAmount('');
     setManualDescription('');
 
-    // Open Staging review with these items
+    // Close Log Expense modal and open Review & Confirm staging view
     onClose();
     openStagingModal(itemsToStage);
   };
@@ -486,19 +528,11 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     onChange={(e) => setManualCategoryId(e.target.value)}
                     className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
                   >
-                    {CATEGORY_GROUPS.map((group) => {
-                      const groupCats = categories.filter((c) => c.group === group);
-                      if (groupCats.length === 0) return null;
-                      return (
-                        <optgroup key={group} label={`── ${group} ──`}>
-                          {groupCats.map((cat) => (
-                            <option key={cat.id} value={cat.id}>
-                              {cat.icon || '🏷️'} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
-                            </option>
-                          ))}
-                        </optgroup>
-                      );
-                    })}
+                    {categories.map((cat) => (
+                      <option key={cat.id} value={cat.id}>
+                        {getCategoryIconSymbol(cat.icon)} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
+                      </option>
+                    ))}
                   </select>
                 </div>
 

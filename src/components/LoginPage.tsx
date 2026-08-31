@@ -30,22 +30,14 @@ export const LoginPage: React.FC = () => {
           <div className="absolute -bottom-24 -right-24 w-96 h-96 rounded-full bg-dark-green-800 opacity-20 blur-3xl pointer-events-none" />
           <div className="absolute top-1/2 left-0 w-64 h-64 rounded-full bg-white opacity-15 blur-3xl pointer-events-none" />
 
-          {/* Top Brand Header (Logo without redundant text) */}
-          <div className="z-10">
-            <div className="flex items-center mb-6 sm:mb-8">
-              <img
-                src="/logo.jpeg"
-                alt="Canopy Logo"
-                className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl object-cover border border-white/40 shadow-md"
-              />
-            </div>
-
-            {/* Prominent Hero Illustration */}
-            <div className="mb-6 sm:mb-8 rounded-3xl overflow-hidden border border-white/40 shadow-lg bg-dark-green-900/10 max-w-lg transition-transform hover:scale-[1.01] duration-300">
+          {/* Top Brand Header */}
+          <div className="z-10 flex flex-col items-start">
+            {/* Prominent Hero Illustration with object-contain for full uncropped visibility */}
+            <div className="w-full mb-6 sm:mb-8 rounded-3xl overflow-hidden border border-white/50 shadow-md bg-sage-300/40 p-4 sm:p-6 flex items-center justify-center transition-transform hover:scale-[1.01] duration-300">
               <img
                 src="/marketing-hero.jpeg"
-                alt="Canopy Household Budgeting Hero Illustration"
-                className="w-full h-48 sm:h-64 lg:h-72 object-cover object-center"
+                alt="Canopy Forest Nymph Hero Illustration"
+                className="max-h-52 sm:max-h-72 w-auto max-w-full object-contain drop-shadow-sm rounded-2xl"
                 onError={(e) => {
                   const target = e.currentTarget as HTMLImageElement;
                   if (!target.dataset.triedFallback) {
@@ -56,12 +48,12 @@ export const LoginPage: React.FC = () => {
               />
             </div>
 
-            <h1 className="text-dark-green-800 text-4xl sm:text-5xl lg:text-6xl font-bold leading-[0.95] tracking-tighter mb-4">
+            <h1 className="text-dark-green-800 text-3xl sm:text-5xl lg:text-6xl font-bold leading-[0.95] tracking-tighter mb-4">
               Shelter your <br />
               savings.
             </h1>
 
-            <p className="text-dark-green-900 text-base sm:text-lg max-w-md leading-relaxed font-medium opacity-90">
+            <p className="text-dark-green-900 text-sm sm:text-base lg:text-lg max-w-md leading-relaxed font-medium opacity-90">
               A manual, high-intent budgeting tool for households that value financial mindfulness over effortless automation.
             </p>
           </div>
@@ -90,11 +82,18 @@ export const LoginPage: React.FC = () => {
         {/* Right Side: Authentication & Access Portal */}
         <div className="lg:w-1/2 flex items-center justify-center p-6 sm:p-10 lg:p-14 bg-beige-50">
           <div className="w-full max-w-md">
-            {/* Header */}
-            <div className="text-center mb-8">
-              <h2 className="text-3xl font-extrabold text-dark-green-900 mb-2">Welcome Home</h2>
-              <p className="text-brown-700 text-sm font-medium">
-                Sign in with Google to sync your household budget.
+            {/* Clean Logo Integration above Marketing Copy */}
+            <div className="flex flex-col items-center text-center mb-8">
+              <div className="mb-4">
+                <img
+                  src="/logo.jpeg"
+                  alt="Canopy Logo"
+                  className="w-16 h-16 sm:w-18 sm:h-18 rounded-3xl object-cover border-2 border-beige-200 shadow-md transition-transform hover:scale-105 duration-200"
+                />
+              </div>
+              <h2 className="text-2xl sm:text-3xl font-extrabold text-dark-green-900 mb-2">Welcome Home</h2>
+              <p className="text-brown-700 text-xs sm:text-sm font-medium max-w-xs">
+                Mindful household budgeting, shared in real time. Sign in to access your ledger.
               </p>
             </div>
 

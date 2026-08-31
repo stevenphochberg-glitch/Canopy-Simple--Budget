@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AccountType } from '../../types';
-import { User, Users2, Home, UserCheck, Plus, Minus, ArrowRight } from 'lucide-react';
+import { User, Users2, Home, UserCheck, Plus, Minus, ArrowRight, KeyRound, Loader2, AlertCircle } from 'lucide-react';
+import { useHousehold } from '../../context/HouseholdContext';
 
 interface AccountTypeStepProps {
   accountType: AccountType;
@@ -45,6 +46,13 @@ const ACCOUNT_TYPES: Array<{
     icon: UserCheck,
     defaultMembers: 3,
   },
+  {
+    type: 'join',
+    title: 'Join Existing Household',
+    description: 'Connect with your partner or roommates using their 6-character Sync Code.',
+    icon: KeyRound,
+    defaultMembers: 1,
+  },
 ];
 
 export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
@@ -54,12 +62,38 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
   setRoommateCount,
   onNext,
 }) => {
+  const { joinHouseholdWithSyncCode } = useHousehold();
+  const [syncCodeInput, setSyncCodeInput] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+
+  const handleJoinHousehold = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!syncCodeInput.trim()) {
+      setJoinError('Please enter your 6-character Household Sync Code.');
+      return;
+    }
+
+    setIsJoining(true);
+    setJoinError(null);
+    try {
+      const res = await joinHouseholdWithSyncCode(syncCodeInput.trim());
+      if (!res.success) {
+        setJoinError(res.message || 'Household not found. Please verify the sync code.');
+      }
+    } catch (err: any) {
+      setJoinError(err.message || 'Error joining household.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="text-center sm:text-left space-y-1">
         <h2 className="text-2xl font-bold text-dark-green-900">How is your household organized?</h2>
         <p className="text-sm text-brown-700">
-          Choose the setup that best describes your living and budgeting arrangement.
+          Choose to create a new budget structure or join an existing household via sync code.
         </p>
       </div>
 
@@ -74,6 +108,7 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
               id={`account-type-${item.type}`}
               onClick={() => {
                 setAccountType(item.type);
+                setJoinError(null);
                 if (item.type === 'roommate' && roommateCount < 2) {
                   setRoommateCount(3);
                 }
@@ -108,6 +143,68 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
           );
         })}
       </div>
+
+      {/* Dynamic Join Household Form */}
+      {accountType === 'join' && (
+        <form
+          onSubmit={handleJoinHousehold}
+          className="p-5 bg-white border border-sage-300 rounded-2xl shadow-xs space-y-4 animate-in fade-in"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900 flex-shrink-0">
+              <KeyRound className="w-5 h-5" />
+            </div>
+            <div>
+              <h4 className="text-sm font-extrabold text-dark-green-900">
+                Enter 6-Character Sync Code
+              </h4>
+              <p className="text-xs text-brown-700">
+                Ask your household member for the Sync Code in their Canopy account dropdown.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <div className="relative flex-1">
+              <input
+                id="join-sync-code-input"
+                type="text"
+                maxLength={10}
+                required
+                placeholder="e.g. CNP-8X2"
+                value={syncCodeInput}
+                onChange={(e) => setSyncCodeInput(e.target.value.toUpperCase())}
+                className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-xl font-mono text-base font-black tracking-widest text-dark-green-950 placeholder:tracking-normal placeholder:font-sans placeholder:font-normal placeholder:text-dark-grey-600 focus:outline-none focus:border-dark-green-800 focus:bg-white uppercase"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={isJoining || !syncCodeInput.trim()}
+              className="px-6 py-3 bg-dark-green-800 hover:bg-dark-green-900 disabled:opacity-50 text-white font-bold text-sm rounded-xl transition flex items-center justify-center gap-2 shadow-xs cursor-pointer"
+            >
+              {isJoining ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Connecting...</span>
+                </>
+              ) : (
+                <>
+                  <span>Join Household</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
+              )}
+            </button>
+          </div>
+
+          {joinError && (
+            <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span>{joinError}</span>
+            </div>
+          )}
+        </form>
+      )}
 
       {/* Dynamic Roommate Input */}
       {accountType === 'roommate' && (
@@ -162,17 +259,19 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
         </div>
       )}
 
-      <div className="pt-4 flex justify-end">
-        <button
-          type="button"
-          id="account-step-next-btn"
-          onClick={onNext}
-          className="flex items-center gap-2 px-6 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white font-semibold text-sm rounded-xl transition shadow-sm cursor-pointer"
-        >
-          <span>Continue to Income Setup</span>
-          <ArrowRight className="w-4 h-4" />
-        </button>
-      </div>
+      {accountType !== 'join' && (
+        <div className="pt-4 flex justify-end">
+          <button
+            type="button"
+            id="account-step-next-btn"
+            onClick={onNext}
+            className="flex items-center gap-2 px-6 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white font-semibold text-sm rounded-xl transition shadow-sm cursor-pointer"
+          >
+            <span>Continue to Income Setup</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

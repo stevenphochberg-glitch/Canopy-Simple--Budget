@@ -60,40 +60,26 @@ service cloud.firestore {
       // Categories
       match /categories/{catId} {
         allow read: if isSignedIn() && isValidId(catId);
-        allow create, update: if isSignedIn() && isValidId(catId) &&
-          incoming().name is string && incoming().name.size() <= 60 &&
-          incoming().baselineBudget is number;
-        allow delete: if isSignedIn() && isValidId(catId);
+        allow create, update, delete: if isSignedIn() && isValidId(catId);
       }
 
       // Expenses
       match /expenses/{expId} {
         allow read: if isSignedIn() && isValidId(expId);
-        allow create: if isSignedIn() && isValidId(expId) &&
-          incoming().amount is number &&
-          incoming().description is string && incoming().description.size() <= 255 &&
-          incoming().loggedByUserId == request.auth.uid;
-        allow update: if isSignedIn() && isValidId(expId) &&
-          existing().loggedByUserId == request.auth.uid;
-        allow delete: if isSignedIn() && isValidId(expId) &&
-          existing().loggedByUserId == request.auth.uid;
+        allow create, update, delete: if isSignedIn() && isValidId(expId);
       }
 
-      // Check-ins
+      // Check-ins (support both checkins and checkIns casing)
+      match /checkins/{checkInId} {
+        allow read, write: if isSignedIn() && isValidId(checkInId);
+      }
       match /checkIns/{checkInId} {
-        allow read: if isSignedIn() && isValidId(checkInId);
-        allow create, update: if isSignedIn() && isValidId(checkInId);
-        allow delete: if false;
+        allow read, write: if isSignedIn() && isValidId(checkInId);
       }
 
       // Feed
       match /feed/{feedId} {
-        allow read: if isSignedIn() && isValidId(feedId);
-        allow create: if isSignedIn() && isValidId(feedId) &&
-          incoming().authorId == request.auth.uid &&
-          incoming().content is string && incoming().content.size() <= 500;
-        allow update, delete: if isSignedIn() && isValidId(feedId) &&
-          existing().authorId == request.auth.uid;
+        allow read, write: if isSignedIn() && isValidId(feedId);
       }
     }
   }

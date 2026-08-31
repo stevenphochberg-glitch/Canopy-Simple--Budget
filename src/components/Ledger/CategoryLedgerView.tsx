@@ -195,7 +195,7 @@ export const CategoryLedgerView: React.FC = () => {
             className="flex items-center gap-2 px-4 sm:px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>{activeCategory ? `Log to ${activeCategory.name}` : '+ Log Expense'}</span>
+            <span>{activeCategory ? `Log to ${activeCategory.name}` : 'Log Expense'}</span>
           </button>
         </div>
       </div>

@@ -1,29 +1,37 @@
+/**
+ * Canopy Budgeting App - Universal Household State & Persistence Engine
+ * Phase 5 Master Context: Live Firestore Subscriptions, Dynamic Allocations, Real-time Feeds & Social Interactions
+ */
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import {
-  UserProfile,
+  AccountType,
+  CalendarMode,
+  Category,
+  CheckIn,
+  DayOfWeek,
+  Expense,
   Household,
   HouseholdMember,
   OnboardingData,
+  UserProfile,
   ActiveTab,
-  Category,
-  Expense,
   StagedExpense,
+  CategoryRolloverDecision,
   TimeframeMode,
   DateRange,
-  CheckIn,
-  CategoryRolloverDecision,
   FeedItem,
   TransactionComment,
   TransactionReaction,
 } from '../types';
 import {
-  generateSyncCode,
-  getCheckInDay,
   calculateWeeklyPool,
-  normalizeToWeekly,
   getDefaultCategories,
+  getCheckInDay,
+  generateSyncCode,
+  normalizeToWeekly,
   getWeekRange,
   getMonthRange,
+  parseExpenseTimestamp,
 } from '../lib/calculations';
 import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
@@ -34,15 +42,57 @@ import {
 import {
   collection,
   doc,
+  getDoc,
   setDoc,
-  addDoc,
   deleteDoc,
   updateDoc,
   onSnapshot,
   query,
-  orderBy,
+  where,
+  getDocs,
   writeBatch,
+  increment,
+  serverTimestamp,
+  Timestamp,
 } from 'firebase/firestore';
+
+/**
+ * Recursively sanitizes any payload before writing to Firestore.
+ * Replaces undefined values with null or strips keys with undefined values,
+ * preventing Firestore runtime crashes when fields are undefined.
+ * Preserves Date, Timestamp, and Firestore FieldValue instances (increment, serverTimestamp).
+ */
+export function sanitizeFirestorePayload<T>(data: T): T {
+  if (data === undefined) {
+    return null as unknown as T;
+  }
+  if (data === null || typeof data !== 'object') {
+    return data;
+  }
+  // Preserve Date, Timestamp, FieldValue instances
+  if (
+    data instanceof Date ||
+    (data.constructor &&
+      data.constructor.name !== 'Object' &&
+      data.constructor.name !== 'Array')
+  ) {
+    return data;
+  }
+  if (Array.isArray(data)) {
+    return data.map((item) => sanitizeFirestorePayload(item)) as unknown as T;
+  }
+  const clean: Record<string, any> = {};
+  for (const [key, value] of Object.entries(data as Record<string, any>)) {
+    if (value === undefined) {
+      clean[key] = null;
+    } else if (value !== null && typeof value === 'object') {
+      clean[key] = sanitizeFirestorePayload(value);
+    } else {
+      clean[key] = value;
+    }
+  }
+  return clean as T;
+}
 
 interface HouseholdContextType {
   user: UserProfile | null;
@@ -85,21 +135,19 @@ interface HouseholdContextType {
   removeStagedItem: (index: number) => void;
   confirmAllStagedExpenses: () => Promise<void>;
 
-  // Multi-Path Log Expense Modal State (Manual, AI Quick Note, Scan)
+  // Log Expense Modal
   isLogExpenseModalOpen: boolean;
-  logExpenseInitialCategory: Category | null;
-  openLogExpenseModal: (initialCategory?: Category | null) => void;
+  logExpenseInitialCategory: string | null;
+  openLogExpenseModal: (categoryId?: string) => void;
   closeLogExpenseModal: () => void;
 
-  // Check-In Modals & Actions (Phase 4)
+  // CheckIn & Retrospective modals
   isWeeklyCheckInModalOpen: boolean;
   openWeeklyCheckInModal: () => void;
   closeWeeklyCheckInModal: () => void;
   isMonthlyRetroModalOpen: boolean;
   openMonthlyRetroModal: () => void;
   closeMonthlyRetroModal: () => void;
-
-  // Category Allocation / Budget Management Modal
   isAllocationModalOpen: boolean;
   openAllocationModal: () => void;
   closeAllocationModal: () => void;
@@ -127,13 +175,16 @@ interface HouseholdContextType {
 
   // Toast notifications
   toastMessage: string | null;
-  showToast: (msg: string) => void;
+  toastType: 'info' | 'error' | 'success';
+  showToast: (msg: string, type?: 'info' | 'error' | 'success') => void;
 
   // Auth & Household Core
   signInWithGoogle: () => Promise<void>;
   switchActiveMember: (memberId: string) => void;
   signOut: () => Promise<void>;
   completeOnboarding: (data: OnboardingData) => Promise<void>;
+  joinHouseholdWithSyncCode: (syncCode: string) => Promise<{ success: boolean; message?: string }>;
+  leaveHousehold: () => Promise<void>;
   updateHousehold: (updated: Partial<Household>) => Promise<void>;
   updateMemberIncome: (memberId: string, rawIncome: number, schedule: HouseholdMember['incomeSchedule'], hasProvided: boolean) => Promise<void>;
   resetHouseholdToOnboarding: () => void;
@@ -155,144 +206,233 @@ function getInitialFeedItems(
   expenses: Expense[],
   categories: Category[]
 ): FeedItem[] {
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-  const m1 = members[0] || {
-    userId: 'usr_1',
-    name: 'Alex Miller',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  };
-  const m2 = members[1] || {
-    userId: 'usr_2',
-    name: 'Jordan Taylor',
-    avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-  };
+  const catMap = new Map(categories.map((c) => [c.id, c]));
+  const memberMap = new Map(members.map((m) => [m.userId, m.name]));
 
-  const firstExp = expenses[0] || {
-    id: 'exp_init_1',
-    description: 'Whole Foods Market (Weekly Groceries)',
-    amount: 142.5,
-    categoryId: categories[0]?.id || 'cat_groceries',
-    date: new Date(now - 1 * dayMs).toISOString().split('T')[0],
-    loggedByUserId: m1.userId,
-  };
+  const items: FeedItem[] = [];
 
-  const firstCat = categories.find((c) => c.id === firstExp.categoryId) || categories[0] || {
-    name: 'Essentials',
-    icon: 'shopping-bag',
-  };
+  // Seed expense feed items
+  expenses.slice(0, 8).forEach((exp) => {
+    const cat = catMap.get(exp.categoryId);
+    const payerName = memberMap.get(exp.loggedByUserId) || 'Household Member';
+    const member = members.find((m) => m.userId === exp.loggedByUserId);
 
-  return [
-    {
-      id: 'feed_init_1',
-      type: 'comment',
-      content: 'Stocked up on groceries and pantry essentials for the week.',
-      authorId: m1.userId,
-      authorName: m1.name,
-      authorAvatar: m1.avatarUrl,
-      timestamp: now - 3 * 3600 * 1000,
-      date: new Date(now - 3 * 3600 * 1000).toISOString().split('T')[0],
-      linkedExpenseId: firstExp.id,
+    items.push({
+      id: `feed_exp_${exp.id}`,
+      type: 'transaction',
+      content: `Logged $${exp.amount.toFixed(2)} for ${exp.description}`,
+      authorId: exp.loggedByUserId,
+      authorName: payerName,
+      authorAvatar: member?.avatarUrl,
+      timestamp: exp.timestamp || Date.now(),
+      date: exp.date,
+      linkedExpenseId: exp.id,
       linkedExpense: {
-        id: firstExp.id,
-        description: firstExp.description,
-        categoryName: firstCat.name,
-        categoryIcon: firstCat.icon || 'shopping-bag',
-        amount: firstExp.amount,
-        date: firstExp.date,
-        payerName: m1.name,
+        id: exp.id,
+        description: exp.description,
+        categoryName: cat?.name || 'General',
+        categoryIcon: cat?.icon || 'tag',
+        amount: exp.amount,
+        date: exp.date,
+        payerName,
       },
-    },
-    {
-      id: 'feed_init_2',
-      type: 'reaction',
-      emoji: 'confirmed',
-      content: `${m2.name} reviewed and confirmed "${firstExp.description}"`,
-      authorId: m2.userId,
-      authorName: m2.name,
-      authorAvatar: m2.avatarUrl,
-      timestamp: now - 2 * 3600 * 1000,
-      date: new Date(now - 2 * 3600 * 1000).toISOString().split('T')[0],
-      linkedExpenseId: firstExp.id,
-      linkedExpense: {
-        id: firstExp.id,
-        description: firstExp.description,
-        categoryName: firstCat.name,
-        categoryIcon: firstCat.icon || 'shopping-bag',
-        amount: firstExp.amount,
-        date: firstExp.date,
-        payerName: m1.name,
-      },
-    },
-    {
-      id: 'feed_init_3',
-      type: 'checkin',
-      content: 'Completed Weekly Check-In: Banked $68.00 in the shared Emergency Savings Pot and balanced all category budgets.',
-      authorId: m1.userId,
-      authorName: m1.name,
-      authorAvatar: m1.avatarUrl,
-      timestamp: now - 2 * dayMs,
-      date: new Date(now - 2 * dayMs).toISOString().split('T')[0],
-      metadata: {
-        totalSaved: 68,
-        totalSpent: 420,
-        totalBudget: 500,
-      },
-    },
-  ];
+    });
+  });
+
+  // Seed household welcome note if available
+  if (household) {
+    items.push({
+      id: 'feed_welcome_1',
+      type: 'message',
+      content: `🌿 Welcome to Canopy! Sync Code: ${household.syncCode}. Real-time balance and category ledgers are live.`,
+      authorId: 'system',
+      authorName: 'Canopy System',
+      authorAvatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80',
+      timestamp: Date.now() - 86400000 * 2,
+      date: new Date(Date.now() - 86400000 * 2).toISOString().split('T')[0],
+    });
+  }
+
+  return items.sort((a, b) => b.timestamp - a.timestamp);
 }
+
+// Phase 2 Default Categories Template (Weekly Normalized)
+const DEFAULT_CATEGORIES_PRESETS = [
+  { name: 'Groceries & Household', baselineBudget: 220, icon: 'shopping-cart', isFixed: false },
+  { name: 'Dining Out & Drinks', baselineBudget: 150, icon: 'coffee', isFixed: false },
+  { name: 'Rent & Utilities', baselineBudget: 650, icon: 'home', isFixed: true },
+  { name: 'Transportation & Gas', baselineBudget: 90, icon: 'car', isFixed: false },
+  { name: 'Subscriptions & Media', baselineBudget: 35, icon: 'film', isFixed: true },
+  { name: 'Entertainment & Fun', baselineBudget: 80, icon: 'smile', isFixed: false },
+  { name: 'Personal Care & Health', baselineBudget: 45, icon: 'heart', isFixed: false },
+];
 
 const HouseholdContext = createContext<HouseholdContextType | undefined>(undefined);
 
 export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Current user state
+  // Primary State
   const [user, setUser] = useState<UserProfile | null>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.USER);
-    return saved ? JSON.parse(saved) : null;
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    // Default guest profile
+    return {
+      userId: 'usr_guest_demo',
+      name: 'Alex Rivera',
+      email: 'alex.rivera@example.com',
+      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+      activeHouseholdId: 'hh_default_demo',
+      createdAt: new Date().toISOString(),
+    };
   });
 
-  // Current household state
   const [household, setHousehold] = useState<Household | null>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.HOUSEHOLD);
-    return saved ? JSON.parse(saved) : null;
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    return {
+      id: 'hh_default_demo',
+      name: "Rivera & Jordan's Canopy",
+      syncCode: 'CNP-8X2',
+      accountType: 'couple',
+      roommateCount: null,
+      weeklyIncomePool: 1850,
+      calendarMode: 'weekly',
+      firstDayOfWeek: 'Monday',
+      lastDayOfWeek: 'Sunday',
+      createdById: 'usr_guest_demo',
+      createdAt: new Date(Date.now() - 30 * 86400000).toISOString(),
+    };
   });
 
-  // Current members state
   const [members, setMembers] = useState<HouseholdMember[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.MEMBERS);
-    return saved ? JSON.parse(saved) : [];
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    return [
+      {
+        userId: 'usr_guest_demo',
+        name: 'Alex Rivera',
+        avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+        rawIncome: 2400,
+        incomeSchedule: 'bi-weekly',
+        normalizedWeeklyIncome: 1107.69,
+        hasProvidedIncome: true,
+        isCurrentUser: true,
+      },
+      {
+        userId: 'usr_jordan_demo',
+        name: 'Jordan Miller',
+        avatarUrl: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
+        rawIncome: 3200,
+        incomeSchedule: 'monthly',
+        normalizedWeeklyIncome: 738.46,
+        hasProvidedIncome: true,
+        isCurrentUser: false,
+      },
+    ];
   });
 
-  // Categories list
   const [categories, setCategories] = useState<Category[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-    return saved ? JSON.parse(saved) : [];
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    return DEFAULT_CATEGORIES_PRESETS.map((p, idx) => ({
+      id: `cat_${idx + 1}`,
+      name: p.name,
+      baselineBudget: p.baselineBudget,
+      currentWeeklyBudget: p.baselineBudget,
+      icon: p.icon,
+      isFixed: p.isFixed,
+      totalLogged: 0,
+      transactionCount: 0,
+    }));
   });
 
-  // Expenses list
   const [expenses, setExpenses] = useState<Expense[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.EXPENSES);
-    return saved ? JSON.parse(saved) : [];
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    const today = new Date();
+    const formatDate = (offsetDays: number) => {
+      const d = new Date(today);
+      d.setDate(d.getDate() - offsetDays);
+      return d.toISOString().split('T')[0];
+    };
+
+    return [
+      {
+        id: 'exp_1',
+        amount: 84.5,
+        description: 'Trader Joe’s Weekly Restock',
+        categoryId: 'cat_1',
+        date: formatDate(1),
+        timestamp: Date.now() - 86400000,
+        loggedByUserId: 'usr_guest_demo',
+      },
+      {
+        id: 'exp_2',
+        amount: 38.0,
+        description: 'Taqueria Dinner & Margaritas',
+        categoryId: 'cat_2',
+        date: formatDate(2),
+        timestamp: Date.now() - 86400000 * 2,
+        loggedByUserId: 'usr_jordan_demo',
+      },
+      {
+        id: 'exp_3',
+        amount: 45.0,
+        description: 'Shell Gasoline Fill-up',
+        categoryId: 'cat_4',
+        date: formatDate(3),
+        timestamp: Date.now() - 86400000 * 3,
+        loggedByUserId: 'usr_guest_demo',
+      },
+      {
+        id: 'exp_4',
+        amount: 15.99,
+        description: 'Spotify Family Subscription',
+        categoryId: 'cat_5',
+        date: formatDate(4),
+        timestamp: Date.now() - 86400000 * 4,
+        loggedByUserId: 'usr_jordan_demo',
+      },
+      {
+        id: 'exp_5',
+        amount: 650.0,
+        description: 'Weekly Rent Contribution',
+        categoryId: 'cat_3',
+        date: formatDate(5),
+        timestamp: Date.now() - 86400000 * 5,
+        loggedByUserId: 'usr_guest_demo',
+      },
+    ];
   });
 
-  // CheckIns list (Phase 4)
   const [checkIns, setCheckIns] = useState<CheckIn[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.CHECKINS);
-    return saved ? JSON.parse(saved) : [];
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
+    }
+    return [];
   });
 
-  // Feed Items list (Phase 5)
   const [feedItems, setFeedItems] = useState<FeedItem[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEYS.FEED);
     if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {
-        // fallback
-      }
+      try { return JSON.parse(saved); } catch (e) { console.error(e); }
     }
-    return getInitialFeedItems(null, [], [], []);
+    return getInitialFeedItems(household, members, expenses, categories);
   });
+
+  // UI Navigation & View Modes
+  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  const [isOnboarding, setIsOnboarding] = useState<boolean>(false);
 
   // Lateral Category Drill-Down Navigation State (Phase 5)
   const [selectedLedgerCategoryId, setSelectedLedgerCategoryId] = useState<string | null>(null);
@@ -302,23 +442,20 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setActiveTab('ledger');
   };
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
-  const [isOnboarding, setIsOnboarding] = useState<boolean>(false);
-
-  // Timeframe state
+  // Timeframe filter state
   const [timeframeMode, setTimeframeMode] = useState<TimeframeMode>('week');
   const [timeframeOffset, setTimeframeOffset] = useState<number>(0);
 
-  // Staging Modal state
+  // Staging Modal & Batch Staged Items State
   const [isStagingModalOpen, setIsStagingModalOpen] = useState<boolean>(false);
   const [stagedExpenses, setStagedExpenses] = useState<StagedExpense[]>([]);
 
-  // Multi-Path Log Expense Modal State (Manual, Quick Note AI, Scan)
+  // Log Expense Modal State
   const [isLogExpenseModalOpen, setIsLogExpenseModalOpen] = useState<boolean>(false);
-  const [logExpenseInitialCategory, setLogExpenseInitialCategory] = useState<Category | null>(null);
+  const [logExpenseInitialCategory, setLogExpenseInitialCategory] = useState<string | null>(null);
 
-  const openLogExpenseModal = (initialCategory?: Category | null) => {
-    setLogExpenseInitialCategory(initialCategory || null);
+  const openLogExpenseModal = (categoryId?: string) => {
+    setLogExpenseInitialCategory(categoryId || null);
     setIsLogExpenseModalOpen(true);
   };
 
@@ -327,7 +464,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setLogExpenseInitialCategory(null);
   };
 
-  // Phase 4 Check-In Modals State
+  // CheckIn & Retrospective Modals State
   const [isWeeklyCheckInModalOpen, setIsWeeklyCheckInModalOpen] = useState<boolean>(false);
   const [isMonthlyRetroModalOpen, setIsMonthlyRetroModalOpen] = useState<boolean>(false);
   const [isAllocationModalOpen, setIsAllocationModalOpen] = useState<boolean>(false);
@@ -340,14 +477,17 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const closeAllocationModal = () => setIsAllocationModalOpen(false);
 
   // Toast state
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [toastInfo, setToastInfo] = useState<{ message: string; type: 'info' | 'error' | 'success' } | null>(null);
 
-  const showToast = useCallback((msg: string) => {
-    setToastMessage(msg);
+  const showToast = useCallback((msg: string, type: 'info' | 'error' | 'success' = 'info') => {
+    setToastInfo({ message: msg, type });
     setTimeout(() => {
-      setToastMessage((curr) => (curr === msg ? null : curr));
-    }, 3500);
+      setToastInfo((curr) => (curr?.message === msg ? null : curr));
+    }, 4000);
   }, []);
+
+  const toastMessage = toastInfo?.message || null;
+  const toastType = toastInfo?.type || 'info';
 
   // Compute active date range based on mode, offset, and household firstDayOfWeek
   const activeDateRange = useMemo<DateRange>(() => {
@@ -421,28 +561,115 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [feedItems]);
 
-  // Live Firebase Auth Listener
+  // Live Firebase Auth Listener & Session Binding
   useEffect(() => {
-    if (isFirebaseConfigured && auth) {
-      const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+    if (isFirebaseConfigured && auth && db) {
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
         if (firebaseUser) {
-          const profile: UserProfile = {
-            userId: firebaseUser.uid,
-            name: firebaseUser.displayName || 'Canopy Member',
-            email: firebaseUser.email || '',
-            avatarUrl: firebaseUser.photoURL || `https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80`,
-            activeHouseholdId: household?.id || null,
-            createdAt: new Date().toISOString(),
-          };
-          setUser(profile);
-          if (!household) {
+          try {
+            // 1. Fetch user doc from Firestore
+            const userDocRef = doc(db, 'users', firebaseUser.uid);
+            const userSnap = await getDoc(userDocRef);
+
+            let activeHouseholdId: string | null = null;
+            let userProfileName = firebaseUser.displayName || 'Canopy Member';
+            let userProfileAvatar =
+              firebaseUser.photoURL ||
+              'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+
+            if (userSnap.exists()) {
+              const userData = userSnap.data();
+              activeHouseholdId = userData.activeHouseholdId || null;
+              if (userData.name) userProfileName = userData.name;
+              if (userData.avatarUrl) userProfileAvatar = userData.avatarUrl;
+            }
+
+            // If activeHouseholdId exists, load that specific households/{householdId} doc
+            if (activeHouseholdId) {
+              const householdDocRef = doc(db, 'households', activeHouseholdId);
+              const hhSnap = await getDoc(householdDocRef);
+              if (hhSnap.exists()) {
+                const loadedHousehold = { ...(hhSnap.data() as Household), id: hhSnap.id };
+                setHousehold(loadedHousehold);
+                const profile: UserProfile = {
+                  userId: firebaseUser.uid,
+                  name: userProfileName,
+                  email: firebaseUser.email || '',
+                  avatarUrl: userProfileAvatar,
+                  activeHouseholdId,
+                  createdAt: new Date().toISOString(),
+                };
+                setUser(profile);
+                setIsOnboarding(false);
+                return;
+              }
+            }
+
+            // Fallback: check if user created any household
+            const hhQuery = query(collection(db, 'households'), where('createdById', '==', firebaseUser.uid));
+            const hhSnapshot = await getDocs(hhQuery);
+            if (!hhSnapshot.empty) {
+              const foundHhDoc = hhSnapshot.docs[0];
+              activeHouseholdId = foundHhDoc.id;
+              const loadedHousehold = { ...(foundHhDoc.data() as Household), id: foundHhDoc.id };
+              setHousehold(loadedHousehold);
+
+              // Update user doc with linked activeHouseholdId
+              await setDoc(
+                userDocRef,
+                sanitizeFirestorePayload({
+                  userId: firebaseUser.uid,
+                  name: userProfileName,
+                  email: firebaseUser.email || '',
+                  avatarUrl: userProfileAvatar,
+                  activeHouseholdId,
+                  updatedAt: new Date().toISOString(),
+                }),
+                { merge: true }
+              );
+
+              const profile: UserProfile = {
+                userId: firebaseUser.uid,
+                name: userProfileName,
+                email: firebaseUser.email || '',
+                avatarUrl: userProfileAvatar,
+                activeHouseholdId,
+                createdAt: new Date().toISOString(),
+              };
+              setUser(profile);
+              setIsOnboarding(false);
+              return;
+            }
+
+            // If no household document exists for this user, open onboarding
+            const profile: UserProfile = {
+              userId: firebaseUser.uid,
+              name: userProfileName,
+              email: firebaseUser.email || '',
+              avatarUrl: userProfileAvatar,
+              activeHouseholdId: null,
+              createdAt: new Date().toISOString(),
+            };
+            setUser(profile);
+            setIsOnboarding(true);
+          } catch (err) {
+            console.error('Firestore Error loading user session:', err);
+            showToast(`Session load error: ${err instanceof Error ? err.message : String(err)}`, 'error');
             setIsOnboarding(true);
           }
+        } else {
+          // Logged out
+          setUser(null);
+          setHousehold(null);
+          setMembers([]);
+          setCategories([]);
+          setExpenses([]);
+          setCheckIns([]);
         }
       });
       return () => unsubscribe();
     }
-  }, [household]);
+  }, []);
 
   // Live Firestore Subscriptions for Household, Categories, Members, Expenses, CheckIns, and Feed
   useEffect(() => {
@@ -450,90 +677,112 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const householdId = household.id;
 
-    // 1. Subscribe to Household Document
-    const householdRef = doc(db, 'households', householdId);
+    // Household document listener
     const unsubHousehold = onSnapshot(
-      householdRef,
-      (docSnap) => {
-        if (docSnap.exists()) {
-          const data = docSnap.data() as Household;
-          setHousehold({ ...data, id: docSnap.id });
+      doc(db, 'households', householdId),
+      (snapshot) => {
+        if (snapshot.exists()) {
+          const data = snapshot.data() as Household;
+          setHousehold({ ...data, id: snapshot.id });
         }
       },
-      (err) => handleFirestoreError(err, OperationType.GET, `households/${householdId}`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}`);
+      }
     );
 
-    // 2. Subscribe to Categories Subcollection
-    const categoriesRef = collection(db, 'households', householdId, 'categories');
+    // Categories listener
     const unsubCategories = onSnapshot(
-      categoriesRef,
+      collection(db, 'households', householdId, 'categories'),
       (snapshot) => {
         if (!snapshot.empty) {
-          const fetchedCats: Category[] = snapshot.docs.map((d) => ({
+          const loadedCats = snapshot.docs.map((d) => ({
             ...(d.data() as Category),
             id: d.id,
           }));
-          setCategories(fetchedCats);
+          setCategories(loadedCats);
         }
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `households/${householdId}/categories`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}/categories`);
+      }
     );
 
-    // 3. Subscribe to Members Subcollection
-    const membersRef = collection(db, 'households', householdId, 'members');
+    // Members listener
     const unsubMembers = onSnapshot(
-      membersRef,
+      collection(db, 'households', householdId, 'members'),
       (snapshot) => {
         if (!snapshot.empty) {
-          const fetchedMembers: HouseholdMember[] = snapshot.docs.map((d) => d.data() as HouseholdMember);
-          setMembers(fetchedMembers);
+          const loadedMembers = snapshot.docs.map((d) => ({
+            ...(d.data() as HouseholdMember),
+            userId: d.id,
+            isCurrentUser: d.id === user?.userId,
+          }));
+          setMembers(loadedMembers);
         }
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `households/${householdId}/members`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}/members`);
+      }
     );
 
-    // 4. Subscribe to Expenses Subcollection
-    const expensesRef = collection(db, 'households', householdId, 'expenses');
+    // Expenses listener
     const unsubExpenses = onSnapshot(
-      query(expensesRef, orderBy('timestamp', 'desc')),
+      collection(db, 'households', householdId, 'expenses'),
       (snapshot) => {
-        const fetchedExp: Expense[] = snapshot.docs.map((d) => ({
-          ...(d.data() as Expense),
-          id: d.id,
-        }));
-        setExpenses(fetchedExp);
+        const loadedExpenses = snapshot.docs.map((d) => {
+          const data = d.data();
+          const normalizedTs = parseExpenseTimestamp({
+            timestamp: data.timestamp,
+            createdAt: data.createdAt,
+            date: data.date,
+          });
+          return {
+            ...(data as Expense),
+            id: d.id,
+            timestamp: normalizedTs,
+          };
+        });
+        loadedExpenses.sort((a, b) => b.timestamp - a.timestamp);
+        setExpenses(loadedExpenses);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `households/${householdId}/expenses`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}/expenses`);
+      }
     );
 
-    // 5. Subscribe to CheckIns Subcollection
-    const checkinsRef = collection(db, 'households', householdId, 'checkins');
-    const unsubCheckins = onSnapshot(
-      query(checkinsRef, orderBy('timestamp', 'desc')),
+    // CheckIns listener
+    const unsubCheckIns = onSnapshot(
+      collection(db, 'households', householdId, 'checkins'),
       (snapshot) => {
-        const fetchedCheckins: CheckIn[] = snapshot.docs.map((d) => ({
+        const loadedCheckIns = snapshot.docs.map((d) => ({
           ...(d.data() as CheckIn),
           id: d.id,
         }));
-        setCheckIns(fetchedCheckins);
+        loadedCheckIns.sort((a, b) => b.timestamp - a.timestamp);
+        setCheckIns(loadedCheckIns);
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `households/${householdId}/checkins`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}/checkins`);
+      }
     );
 
-    // 6. Subscribe to Feed Subcollection
-    const feedRef = collection(db, 'households', householdId, 'feed');
+    // Activity Feed listener
     const unsubFeed = onSnapshot(
-      query(feedRef, orderBy('timestamp', 'desc')),
+      collection(db, 'households', householdId, 'feed'),
       (snapshot) => {
         if (!snapshot.empty) {
-          const fetchedFeed: FeedItem[] = snapshot.docs.map((d) => ({
+          const loadedFeed = snapshot.docs.map((d) => ({
             ...(d.data() as FeedItem),
             id: d.id,
           }));
-          setFeedItems(fetchedFeed);
+          loadedFeed.sort((a, b) => b.timestamp - a.timestamp);
+          setFeedItems(loadedFeed);
         }
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `households/${householdId}/feed`)
+      (err) => {
+        handleFirestoreError(err, OperationType.READ, `households/${householdId}/feed`);
+      }
     );
 
     return () => {
@@ -541,32 +790,87 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubCategories();
       unsubMembers();
       unsubExpenses();
-      unsubCheckins();
+      unsubCheckIns();
       unsubFeed();
     };
-  }, [household?.id]);
+  }, [household?.id, user?.userId]);
 
   // Google Sign-In with real Firebase GoogleAuthProvider
   const signInWithGoogle = async () => {
-    if (isFirebaseConfigured && auth && googleProvider) {
+    if (isFirebaseConfigured && auth && googleProvider && db) {
       try {
         const result = await signInWithPopup(auth, googleProvider);
         const fbUser = result.user;
+
+        const userDocRef = doc(db, 'users', fbUser.uid);
+        const userSnap = await getDoc(userDocRef);
+
+        let activeHouseholdId: string | null = null;
+        let userName = fbUser.displayName || 'Canopy Member';
+        let avatarUrl =
+          fbUser.photoURL ||
+          'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80';
+
+        if (userSnap.exists()) {
+          const uData = userSnap.data();
+          activeHouseholdId = uData.activeHouseholdId || null;
+          if (uData.name) userName = uData.name;
+          if (uData.avatarUrl) avatarUrl = uData.avatarUrl;
+        } else {
+          await setDoc(
+            userDocRef,
+            sanitizeFirestorePayload({
+              userId: fbUser.uid,
+              name: userName,
+              email: fbUser.email || '',
+              avatarUrl,
+              activeHouseholdId: null,
+              createdAt: new Date().toISOString(),
+            })
+          );
+        }
+
+        if (activeHouseholdId) {
+          const hhRef = doc(db, 'households', activeHouseholdId);
+          const hhSnap = await getDoc(hhRef);
+          if (hhSnap.exists()) {
+            const loadedHh = { ...(hhSnap.data() as Household), id: hhSnap.id };
+            setHousehold(loadedHh);
+            setIsOnboarding(false);
+            setActiveTab('dashboard');
+          } else {
+            setIsOnboarding(true);
+          }
+        } else {
+          // Check if user previously created a household
+          const hhQuery = query(collection(db, 'households'), where('createdById', '==', fbUser.uid));
+          const hhSnapshot = await getDocs(hhQuery);
+          if (!hhSnapshot.empty) {
+            const foundHhDoc = hhSnapshot.docs[0];
+            activeHouseholdId = foundHhDoc.id;
+            const loadedHousehold = { ...(foundHhDoc.data() as Household), id: foundHhDoc.id };
+            setHousehold(loadedHousehold);
+            await setDoc(userDocRef, sanitizeFirestorePayload({ activeHouseholdId }), { merge: true });
+            setIsOnboarding(false);
+            setActiveTab('dashboard');
+          } else {
+            setIsOnboarding(true);
+          }
+        }
+
         const profile: UserProfile = {
           userId: fbUser.uid,
-          name: fbUser.displayName || 'Canopy Member',
+          name: userName,
           email: fbUser.email || '',
-          avatarUrl: fbUser.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-          activeHouseholdId: household?.id || null,
+          avatarUrl,
+          activeHouseholdId,
           createdAt: new Date().toISOString(),
         };
         setUser(profile);
-        if (!household) {
-          setIsOnboarding(true);
-        }
-        showToast(`Welcome to Canopy, ${profile.name.split(' ')[0]}!`);
+        showToast(`Welcome to Canopy, ${userName.split(' ')[0]}!`);
       } catch (err: any) {
-        console.error('Google Sign In Error:', err);
+        console.error('Firestore Write Failed:', err);
+        showToast(`Sign in error: ${err.message || String(err)}`, 'error');
         throw err;
       }
     } else {
@@ -622,17 +926,18 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const completeOnboarding = async (data: OnboardingData) => {
     if (!user) return;
 
-    const syncCode = generateSyncCode();
-    const householdId = `hh_${Date.now()}`;
+    const syncCode = data.syncCode || household?.syncCode || generateSyncCode();
+    const householdId = household?.id || `hh_${Date.now()}`;
     const totalWeeklyPool = calculateWeeklyPool(data.members);
     const lastDay = getCheckInDay(data.firstDayOfWeek);
 
+    const isRoommate = data.accountType?.toLowerCase() === 'roommate';
     const newHousehold: Household = {
       id: householdId,
       name: `${user.name.split(' ')[0]}'s Household`,
       syncCode,
       accountType: data.accountType,
-      roommateCount: data.accountType === 'roommate' ? data.roommateCount : undefined,
+      roommateCount: isRoommate ? Number(data.roommateCount) || 3 : null,
       weeklyIncomePool: totalWeeklyPool,
       calendarMode: data.calendarMode,
       firstDayOfWeek: data.firstDayOfWeek,
@@ -663,31 +968,155 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         // Write Household doc
         const householdRef = doc(db, 'households', householdId);
-        batch.set(householdRef, newHousehold);
+        batch.set(householdRef, sanitizeFirestorePayload(newHousehold));
 
         // Write User doc
         const userRef = doc(db, 'users', user.userId);
-        batch.set(userRef, updatedUser, { merge: true });
+        batch.set(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
 
         // Write Members
         data.members.forEach((m) => {
           const memberRef = doc(db, 'households', householdId, 'members', m.userId);
-          batch.set(memberRef, m);
+          batch.set(memberRef, sanitizeFirestorePayload(m));
         });
 
         // Write Categories
         initialCategories.forEach((cat) => {
           const catRef = doc(db, 'households', householdId, 'categories', cat.id);
-          batch.set(catRef, cat);
+          batch.set(catRef, sanitizeFirestorePayload(cat));
         });
 
         await batch.commit();
-      } catch (err) {
-        handleFirestoreError(err, OperationType.WRITE, `households/${householdId}`);
+      } catch (error) {
+        console.error('Firestore Write Failed:', error);
+        handleFirestoreError(error, OperationType.WRITE, `households/${householdId}`);
+        showToast(`Firestore Write Failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
       }
     }
 
     showToast('Household setup complete. Categories and budget initialized.');
+  };
+
+  // Join Existing Household by 6-character Sync Code
+  const joinHouseholdWithSyncCode = async (syncCode: string): Promise<{ success: boolean; message?: string }> => {
+    const rawClean = syncCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!rawClean || rawClean.length < 4) {
+      return { success: false, message: 'Please enter a valid 6-character sync code.' };
+    }
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const householdsRef = collection(db, 'households');
+        const q = query(householdsRef);
+        const snapshot = await getDocs(q);
+
+        const targetDoc = snapshot.docs.find((d) => {
+          const sc = d.data().syncCode;
+          return sc && sc.toString().toUpperCase().replace(/[^A-Z0-9]/g, '') === rawClean;
+        });
+
+        if (!targetDoc) {
+          return { success: false, message: `No household found with sync code "${syncCode.trim()}". Check the code and try again.` };
+        }
+
+        const targetHouseholdData = { ...targetDoc.data(), id: targetDoc.id } as Household;
+        const targetHouseholdId = targetDoc.id;
+
+        const activeUser = user || {
+          userId: `usr_${Date.now()}`,
+          name: 'Household Member',
+          email: 'member@canopy.local',
+          avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
+          activeHouseholdId: targetHouseholdId,
+        };
+
+        const updatedUser: UserProfile = {
+          ...activeUser,
+          activeHouseholdId: targetHouseholdId,
+        };
+
+        const newMember: HouseholdMember = {
+          userId: updatedUser.userId,
+          name: updatedUser.name,
+          avatarUrl: updatedUser.avatarUrl,
+          rawIncome: 1800,
+          incomeSchedule: 'bi-weekly',
+          normalizedWeeklyIncome: normalizeToWeekly(1800, 'bi-weekly'),
+          hasProvidedIncome: true,
+          isCurrentUser: true,
+        };
+
+        const batch = writeBatch(db);
+        const userRef = doc(db, 'users', updatedUser.userId);
+        batch.set(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
+
+        const memberRef = doc(db, 'households', targetHouseholdId, 'members', updatedUser.userId);
+        batch.set(memberRef, sanitizeFirestorePayload(newMember), { merge: true });
+
+        await batch.commit();
+
+        setUser(updatedUser);
+        setHousehold(targetHouseholdData);
+        setIsOnboarding(false);
+        setActiveTab('dashboard');
+        showToast(`Successfully connected to ${targetHouseholdData.name || 'household'}!`);
+        return { success: true };
+      } catch (err: any) {
+        console.error('Firestore Write Failed:', err);
+        showToast(`Failed to join household: ${err.message || String(err)}`, 'error');
+        return { success: false, message: err.message || 'Failed to join household.' };
+      }
+    } else {
+      // Local demo fallback
+      const mockHh: Household = {
+        id: `hh_joined_${Date.now()}`,
+        name: `Shared Household (${syncCode.trim().toUpperCase()})`,
+        syncCode: syncCode.trim().toUpperCase(),
+        accountType: 'couple',
+        weeklyIncomePool: 2400,
+        calendarMode: 'weekly',
+        firstDayOfWeek: 'Monday',
+        lastDayOfWeek: 'Sunday',
+        createdById: 'partner_usr',
+        createdAt: new Date().toISOString(),
+      };
+      setHousehold(mockHh);
+      if (user) {
+        setUser({ ...user, activeHouseholdId: mockHh.id });
+      }
+      setCategories(getDefaultCategories(2400));
+      setIsOnboarding(false);
+      setActiveTab('dashboard');
+      showToast(`Joined shared household (${syncCode.trim().toUpperCase()})!`);
+      return { success: true };
+    }
+  };
+
+  // Leave Current Household (preserves user profile & account history)
+  const leaveHousehold = async () => {
+    if (user) {
+      const updatedUser: UserProfile = {
+        ...user,
+        activeHouseholdId: null,
+      };
+      setUser(updatedUser);
+      if (isFirebaseConfigured && db) {
+        try {
+          const userRef = doc(db, 'users', user.userId);
+          await setDoc(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
+        } catch (err) {
+          console.error('Firestore Write Failed:', err);
+          showToast(`Error updating user record: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        }
+      }
+    }
+    setHousehold(null);
+    setMembers([]);
+    setCategories([]);
+    setExpenses([]);
+    setCheckIns([]);
+    setIsOnboarding(true);
+    showToast('Left current household. You can now join an existing household or create a new one.');
   };
 
   const updateHousehold = async (updated: Partial<Household>) => {
@@ -701,9 +1130,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isFirebaseConfigured && db) {
       try {
         const householdRef = doc(db, 'households', household.id);
-        await updateDoc(householdRef, updated);
+        await updateDoc(householdRef, sanitizeFirestorePayload(updated));
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}`);
+        showToast(`Error updating household: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast('Household settings updated.');
@@ -732,25 +1163,63 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setMembers(updatedMembers);
     const newPool = calculateWeeklyPool(updatedMembers);
 
+    // Proportionally recalculate Category Budget Limits if categories exist
+    let updatedCategories: Category[] = [];
+    if (categories.length > 0) {
+      const oldTotalBudget = categories.reduce((sum, c) => sum + (c.baselineBudget || 0), 0);
+      if (oldTotalBudget > 0 && newPool > 0) {
+        let remaining = newPool;
+        updatedCategories = categories.map((cat, idx) => {
+          const ratio = (cat.baselineBudget || 1) / oldTotalBudget;
+          const isLast = idx === categories.length - 1;
+          const newAlloc = isLast ? remaining : Math.round(newPool * ratio);
+          remaining -= newAlloc;
+          const finalVal = Math.max(0, newAlloc);
+          return {
+            ...cat,
+            baselineBudget: finalVal,
+            currentWeeklyBudget: finalVal,
+          };
+        });
+      } else if (newPool > 0) {
+        updatedCategories = getDefaultCategories(newPool);
+      }
+      if (updatedCategories.length > 0) {
+        setCategories(updatedCategories);
+      }
+    }
+
     if (household) {
       const updatedHousehold = { ...household, weeklyIncomePool: newPool };
       setHousehold(updatedHousehold);
 
       if (isFirebaseConfigured && db) {
         try {
+          const batch = writeBatch(db);
           const memberRef = doc(db, 'households', household.id, 'members', memberId);
           const targetMember = updatedMembers.find((m) => m.userId === memberId);
           if (targetMember) {
-            await setDoc(memberRef, targetMember, { merge: true });
+            batch.set(memberRef, sanitizeFirestorePayload(targetMember), { merge: true });
           }
           const householdRef = doc(db, 'households', household.id);
-          await updateDoc(householdRef, { weeklyIncomePool: newPool });
+          batch.update(householdRef, sanitizeFirestorePayload({ weeklyIncomePool: newPool }));
+
+          if (updatedCategories.length > 0) {
+            updatedCategories.forEach((cat) => {
+              const catRef = doc(db, 'households', household.id, 'categories', cat.id);
+              batch.set(catRef, sanitizeFirestorePayload(cat), { merge: true });
+            });
+          }
+
+          await batch.commit();
         } catch (err) {
+          console.error('Firestore Write Failed:', err);
           handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/members/${memberId}`);
+          showToast(`Error saving member income: ${err instanceof Error ? err.message : String(err)}`, 'error');
         }
       }
     }
-    showToast('Income & weekly pool updated.');
+    showToast('Income updated & category budgets recalculated.');
   };
 
   // Category Mutations
@@ -768,9 +1237,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isFirebaseConfigured && db && household?.id) {
       try {
         const catRef = doc(db, 'households', household.id, 'categories', newId);
-        await setDoc(catRef, newCategory);
+        await setDoc(catRef, sanitizeFirestorePayload(newCategory));
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.CREATE, `households/${household.id}/categories/${newId}`);
+        showToast(`Error creating category: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast(`Added "${newCategory.name}" category.`);
@@ -784,9 +1255,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isFirebaseConfigured && db && household?.id) {
       try {
         const catRef = doc(db, 'households', household.id, 'categories', id);
-        await updateDoc(catRef, updates);
+        await updateDoc(catRef, sanitizeFirestorePayload(updates));
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/categories/${id}`);
+        showToast(`Error updating category: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
   };
@@ -800,7 +1273,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const catRef = doc(db, 'households', household.id, 'categories', id);
         await deleteDoc(catRef);
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/categories/${id}`);
+        showToast(`Error deleting category: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast(`Deleted category ${target?.name || ''}.`);
@@ -814,11 +1289,13 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const batch = writeBatch(db);
         updatedCategories.forEach((cat) => {
           const catRef = doc(db, 'households', household.id, 'categories', cat.id);
-          batch.set(catRef, cat, { merge: true });
+          batch.set(catRef, sanitizeFirestorePayload(cat), { merge: true });
         });
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/categories`);
+        showToast(`Error saving allocations: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast('Category allocations updated successfully.');
@@ -885,50 +1362,127 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!household || stagedExpenses.length === 0) return;
 
     // Filter valid items with positive amount
-    const validItems = stagedExpenses.filter((it) => it.amount > 0);
+    const validItems = stagedExpenses.filter((it) => Number(it.amount) > 0);
     if (validItems.length === 0) {
       showToast('Please enter an amount for at least one item before confirming.');
       return;
     }
 
     const now = Date.now();
-    const createdExpenses: Expense[] = validItems.map((item, idx) => ({
-      id: `exp_${now}_${idx}`,
-      amount: Number(item.amount),
-      description: item.description.trim() || 'Logged Expense',
-      categoryId: item.categoryId || categories[0]?.id || 'cat_groceries',
-      date: item.date || new Date().toISOString().split('T')[0],
-      timestamp: item.date ? new Date(item.date).getTime() : now,
-      loggedByUserId: item.loggedByUserId || user?.userId || 'usr_self',
-      receiptImgUrl: item.receiptImgUrl,
-    }));
+    const createdExpenses: Expense[] = validItems.map((item, idx) => {
+      // Resolve categoryId to a guaranteed existing household category ID
+      const resolvedCategoryId =
+        item.categoryId && categories.some((c) => c.id === item.categoryId)
+          ? item.categoryId
+          : categories[0]?.id || '';
 
-    // Update local state immediately
+      const dateStr = item.date || new Date().toISOString().split('T')[0];
+
+      // Parse timestamp safely using local midday to eliminate timezone shift bugs
+      let ts = now;
+      if (dateStr) {
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          ts = new Date(
+            parseInt(parts[0], 10),
+            parseInt(parts[1], 10) - 1,
+            parseInt(parts[2], 10),
+            12,
+            0,
+            0
+          ).getTime();
+        } else {
+          ts = new Date(dateStr).getTime() || now;
+        }
+      }
+
+      return {
+        id: `exp_${now}_${idx}`,
+        amount: Number(item.amount),
+        description: item.description.trim() || 'Logged Expense',
+        categoryId: resolvedCategoryId,
+        date: dateStr,
+        timestamp: ts,
+        loggedByUserId: item.loggedByUserId || user?.userId || 'usr_self',
+        receiptImgUrl: item.receiptImgUrl || undefined,
+      };
+    });
+
+    // 1. Optimistic local state update for expenses
     setExpenses((prev) => [...createdExpenses, ...prev]);
 
-    // Live Firestore Writes
-    if (isFirebaseConfigured && db) {
+    // 2. Optimistic local state update for categories (totalLogged & transactionCount)
+    setCategories((prevCats) =>
+      prevCats.map((cat) => {
+        const matching = createdExpenses.filter((e) => e.categoryId === cat.id);
+        if (matching.length === 0) return cat;
+        const sumAmount = matching.reduce((s, e) => s + e.amount, 0);
+        return {
+          ...cat,
+          totalLogged: (Number(cat.totalLogged) || 0) + sumAmount,
+          transactionCount: (Number(cat.transactionCount) || 0) + matching.length,
+        };
+      })
+    );
+
+    // 3. Live Firestore Batch Writes
+    if (isFirebaseConfigured && db && household?.id) {
       try {
         const batch = writeBatch(db);
+        const categoryIncrements: Record<string, { amount: number; count: number }> = {};
+
         createdExpenses.forEach((exp) => {
           const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
-          batch.set(expRef, exp);
+          const expPayload = {
+            id: exp.id,
+            amount: exp.amount,
+            description: exp.description,
+            categoryId: exp.categoryId,
+            date: exp.date,
+            timestamp: exp.timestamp,
+            createdAt: serverTimestamp(),
+            loggedByUserId: exp.loggedByUserId,
+            receiptImgUrl: exp.receiptImgUrl || null,
+          };
+          batch.set(expRef, sanitizeFirestorePayload(expPayload));
+
+          if (exp.categoryId) {
+            if (!categoryIncrements[exp.categoryId]) {
+              categoryIncrements[exp.categoryId] = { amount: 0, count: 0 };
+            }
+            categoryIncrements[exp.categoryId].amount += exp.amount;
+            categoryIncrements[exp.categoryId].count += 1;
+          }
+        });
+
+        // Update each parent category document using Firestore increment()
+        Object.entries(categoryIncrements).forEach(([catId, { amount, count }]) => {
+          const catRef = doc(db, 'households', household.id, 'categories', catId);
+          batch.update(catRef, {
+            totalLogged: increment(amount),
+            transactionCount: increment(count),
+          });
         });
 
         // Also add an activity feed item
         const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
         const totalAmount = createdExpenses.reduce((sum, e) => sum + e.amount, 0);
-        batch.set(feedRef, {
-          id: `feed_${now}`,
-          type: 'transaction',
-          content: `Logged ${createdExpenses.length} expense${createdExpenses.length > 1 ? 's' : ''} totaling $${totalAmount}`,
-          authorId: user?.userId || 'usr_self',
-          timestamp: now,
-        });
+        batch.set(
+          feedRef,
+          sanitizeFirestorePayload({
+            id: `feed_${now}`,
+            type: 'transaction',
+            content: `Logged ${createdExpenses.length} expense${createdExpenses.length > 1 ? 's' : ''} totaling $${totalAmount.toFixed(2)}`,
+            authorId: user?.userId || 'usr_self',
+            timestamp: now,
+          })
+        );
 
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/expenses`);
+        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -937,14 +1491,41 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const deleteExpense = async (id: string) => {
+    const targetExpense = expenses.find((e) => e.id === id);
     setExpenses((prev) => prev.filter((e) => e.id !== id));
+
+    if (targetExpense && targetExpense.categoryId) {
+      setCategories((prevCats) =>
+        prevCats.map((cat) => {
+          if (cat.id !== targetExpense.categoryId) return cat;
+          return {
+            ...cat,
+            totalLogged: Math.max(0, (Number(cat.totalLogged) || 0) - targetExpense.amount),
+            transactionCount: Math.max(0, (Number(cat.transactionCount) || 0) - 1),
+          };
+        })
+      );
+    }
 
     if (isFirebaseConfigured && db && household?.id) {
       try {
+        const batch = writeBatch(db);
         const expRef = doc(db, 'households', household.id, 'expenses', id);
-        await deleteDoc(expRef);
+        batch.delete(expRef);
+
+        if (targetExpense?.categoryId) {
+          const catRef = doc(db, 'households', household.id, 'categories', targetExpense.categoryId);
+          batch.update(catRef, {
+            totalLogged: increment(-targetExpense.amount),
+            transactionCount: increment(-1),
+          });
+        }
+
+        await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/expenses/${id}`);
+        showToast(`Error deleting expense: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast('Expense removed.');
@@ -958,9 +1539,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isFirebaseConfigured && db && household?.id) {
       try {
         const expRef = doc(db, 'households', household.id, 'expenses', id);
-        await updateDoc(expRef, updates);
+        await updateDoc(expRef, sanitizeFirestorePayload(updates));
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/expenses/${id}`);
+        showToast(`Error updating expense: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
     showToast('Expense updated.');
@@ -1036,14 +1619,16 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         const batch = writeBatch(db);
         const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-        batch.update(expRef, { comments: updatedComments });
+        batch.update(expRef, sanitizeFirestorePayload({ comments: updatedComments }));
 
         const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
-        batch.set(feedRef, feedItem);
+        batch.set(feedRef, sanitizeFirestorePayload(feedItem));
 
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
+        showToast(`Error posting comment: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -1130,23 +1715,27 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         try {
           const batch = writeBatch(db);
           const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          batch.update(expRef, { reactions: updatedReactions });
+          batch.update(expRef, sanitizeFirestorePayload({ reactions: updatedReactions }));
 
           const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
-          batch.set(feedRef, feedItem);
+          batch.set(feedRef, sanitizeFirestorePayload(feedItem));
 
           await batch.commit();
         } catch (err) {
+          console.error('Firestore Write Failed:', err);
           handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
+          showToast(`Error adding reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
         }
       }
     } else {
       if (isFirebaseConfigured && db && household?.id) {
         try {
           const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          await updateDoc(expRef, { reactions: updatedReactions });
+          await updateDoc(expRef, sanitizeFirestorePayload({ reactions: updatedReactions }));
         } catch (err) {
+          console.error('Firestore Write Failed:', err);
           handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/expenses/${expenseId}`);
+          showToast(`Error updating reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
         }
       }
     }
@@ -1180,9 +1769,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (isFirebaseConfigured && db && household?.id) {
       try {
         const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
-        await setDoc(feedRef, feedItem);
+        await setDoc(feedRef, sanitizeFirestorePayload(feedItem));
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
+        showToast(`Error posting message: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -1211,7 +1802,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       completedByName: user?.name || 'Household Member',
       timestamp: now,
       status: 'completed',
-      notes: data.notes,
+      notes: data.notes || '',
       totalSaved: data.totalSaved,
       totalSpent: data.totalSpent,
       totalBudget: data.totalBudget,
@@ -1253,36 +1844,47 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // Update category currentWeeklyBudget values
         data.decisions.forEach((dec) => {
           const catRef = doc(db, 'households', household.id, 'categories', dec.categoryId);
-          batch.update(catRef, {
-            currentWeeklyBudget: dec.newWeeklyBudget,
-          });
+          batch.update(
+            catRef,
+            sanitizeFirestorePayload({
+              currentWeeklyBudget: dec.newWeeklyBudget,
+            })
+          );
         });
 
         // Add checkin doc
         const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
-        batch.set(checkinRef, newCheckIn);
+        batch.set(checkinRef, sanitizeFirestorePayload(newCheckIn));
 
         // Update household doc
         const householdRef = doc(db, 'households', household.id);
-        batch.update(householdRef, {
-          checkInPending: false,
-          checkInStatus: 'completed',
-          lastCheckInAt: now,
-        });
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            checkInPending: false,
+            checkInStatus: 'completed',
+            lastCheckInAt: now,
+          })
+        );
 
         // Add activity feed item
         const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
-        batch.set(feedRef, {
-          id: `feed_${now}`,
-          type: 'checkin',
-          content: `Completed Weekly Check-In: Banked $${data.totalSaved} in savings pot and balanced category budgets.`,
-          authorId: user?.userId || 'usr_self',
-          timestamp: now,
-        });
+        batch.set(
+          feedRef,
+          sanitizeFirestorePayload({
+            id: `feed_${now}`,
+            type: 'checkin',
+            content: `Completed Weekly Check-In: Banked $${data.totalSaved} in savings pot and balanced category budgets.`,
+            authorId: user?.userId || 'usr_self',
+            timestamp: now,
+          })
+        );
 
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/checkins`);
+        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -1351,32 +1953,40 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         // Reset category budgets
         resetCats.forEach((c) => {
           const catRef = doc(db, 'households', household.id, 'categories', c.id);
-          batch.update(catRef, {
-            currentWeeklyBudget: c.baselineBudget,
-          });
+          batch.update(
+            catRef,
+            sanitizeFirestorePayload({
+              currentWeeklyBudget: c.baselineBudget,
+            })
+          );
         });
 
         // Add $0 placeholder expenses
         placeholderExpenses.forEach((exp) => {
           const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
-          batch.set(expRef, exp);
+          batch.set(expRef, sanitizeFirestorePayload(exp));
         });
 
         // Add checkin doc
         const checkinRef = doc(db, 'households', household.id, 'checkins', freshCheckIn.id);
-        batch.set(checkinRef, freshCheckIn);
+        batch.set(checkinRef, sanitizeFirestorePayload(freshCheckIn));
 
         // Update household
         const householdRef = doc(db, 'households', household.id);
-        batch.update(householdRef, {
-          checkInPending: false,
-          checkInStatus: 'completed',
-          lastFreshStartAt: now,
-        });
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            checkInPending: false,
+            checkInStatus: 'completed',
+            lastFreshStartAt: now,
+          })
+        );
 
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/fresh_start`);
+        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -1401,19 +2011,27 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const batch = writeBatch(db);
         resetCats.forEach((c) => {
           const catRef = doc(db, 'households', household.id, 'categories', c.id);
-          batch.update(catRef, {
-            currentWeeklyBudget: c.baselineBudget,
-          });
+          batch.update(
+            catRef,
+            sanitizeFirestorePayload({
+              currentWeeklyBudget: c.baselineBudget,
+            })
+          );
         });
 
         const householdRef = doc(db, 'households', household.id);
-        batch.update(householdRef, {
-          lastMonthEndReset: now,
-        });
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            lastMonthEndReset: now,
+          })
+        );
 
         await batch.commit();
       } catch (err) {
+        console.error('Firestore Write Failed:', err);
         handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/month_end_reset`);
+        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
       }
     }
 
@@ -1495,12 +2113,15 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateExpense,
 
         toastMessage,
+        toastType,
         showToast,
 
         signInWithGoogle,
         switchActiveMember,
         signOut,
         completeOnboarding,
+        joinHouseholdWithSyncCode,
+        leaveHousehold,
         updateHousehold,
         updateMemberIncome,
         resetHouseholdToOnboarding,

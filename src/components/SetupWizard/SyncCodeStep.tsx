@@ -15,7 +15,7 @@ export const SyncCodeStep: React.FC<SyncCodeStepProps> = ({
   onBack,
 }) => {
   const [copied, setCopied] = useState(false);
-  const [syncCode] = useState(() => generateSyncCode());
+  const syncCode = data.syncCode || generateSyncCode();
 
   const totalPool = calculateWeeklyPool(data.members);
   const checkInDay = getCheckInDay(data.firstDayOfWeek);

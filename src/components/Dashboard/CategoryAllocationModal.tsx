@@ -8,7 +8,6 @@ import {
   Trash2,
   AlertTriangle,
   CheckCircle,
-  Folder,
 } from 'lucide-react';
 import { CategoryIcon } from '../Common/CategoryIcon';
 
@@ -17,25 +16,18 @@ interface CategoryAllocationModalProps {
   onClose: () => void;
 }
 
-const CATEGORY_GROUPS: CategoryGroup[] = ['Essentials', 'Fun Money', 'Bills', 'Savings'];
-
+// Exactly 4 default category icons + 6 visually distinct minimalist icons = 10 clean icons
 const DEFAULT_LUCIDE_ICONS = [
-  'shopping-bag',
-  'shopping-cart',
-  'utensils',
-  'coffee',
-  'sparkles',
-  'file-text',
-  'home',
-  'car',
-  'smartphone',
-  'piggy-bank',
-  'trending-up',
-  'heart',
-  'baby',
-  'plane',
-  'tag',
-  'folder',
+  'shopping-bag', // Essentials
+  'sparkles',     // Fun Money
+  'file-text',    // Bills
+  'piggy-bank',   // Savings
+  'utensils',     // Dining & Groceries
+  'coffee',       // Coffee & Drinks
+  'car',          // Transit & Auto
+  'home',         // Housing & Maintenance
+  'plane',        // Travel & Holidays
+  'heart',        // Health & Wellness
 ];
 
 export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = ({
@@ -57,7 +49,6 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   // New Bucket / Category Form State
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newName, setNewName] = useState('');
-  const [newGroup, setNewGroup] = useState<CategoryGroup>('Essentials');
   const [newIcon, setNewIcon] = useState('shopping-bag');
   const [newSubcategories, setNewSubcategories] = useState('');
   const [newAllocation, setNewAllocation] = useState<number>(50);
@@ -113,9 +104,9 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
 
     await createCategory({
       name: newName.trim(),
-      group: newGroup,
+      group: newName.trim(),
       icon: newIcon,
-      color: newGroup === 'Fun Money' ? 'sky-blue' : newGroup === 'Bills' ? 'brown' : newGroup === 'Savings' ? 'dark-green' : 'sage',
+      color: 'sage',
       baselineBudget: newAllocation,
       currentWeeklyBudget: newAllocation,
       subcategories: subcategoryArray.length > 0 ? subcategoryArray : [newName.trim()],
@@ -138,49 +129,49 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div
-        className="bg-white rounded-3xl border border-beige-200 shadow-2xl max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-200"
+        className="bg-white rounded-t-3xl sm:rounded-3xl border border-beige-200 shadow-2xl max-w-2xl w-full max-h-[85vh] sm:max-h-[88vh] flex flex-col overflow-hidden animate-in slide-in-from-bottom-3 sm:zoom-in-95 duration-200"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="px-6 py-5 border-b border-beige-200 flex items-center justify-between bg-beige-50/60">
+        <div className="px-4 py-3 sm:px-6 sm:py-4 border-b border-beige-200 flex items-center justify-between bg-beige-50/70 shrink-0">
           <div>
-            <span className="text-xs font-semibold text-dark-grey-600 uppercase tracking-wider block">
+            <span className="text-[10px] sm:text-xs font-semibold text-dark-grey-600 uppercase tracking-wider block">
               Budget Allocation
             </span>
-            <h2 className="text-xl font-extrabold text-dark-green-900 mt-0.5">
+            <h2 className="text-lg sm:text-xl font-extrabold text-dark-green-900 mt-0.5">
               Manage Budget Buckets
             </h2>
-            <p className="text-xs text-brown-700">
+            <p className="text-[11px] sm:text-xs text-brown-700">
               Allocate your normalized weekly pool ({formatCurrency(weeklyIncomePool)}/wk) across top-level buckets.
             </p>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-full hover:bg-beige-200 text-brown-700 transition cursor-pointer"
+            className="p-1.5 sm:p-2 rounded-full hover:bg-beige-200 text-brown-700 transition cursor-pointer"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Live Allocation Summary Header */}
-        <div className="p-4 sm:px-6 bg-beige-100/70 border-b border-beige-200 grid grid-cols-3 gap-3 text-center">
-          <div className="bg-white p-2.5 rounded-xl border border-beige-200 shadow-xs">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-              Weekly Income Pool
+        <div className="p-2.5 sm:p-3 sm:px-6 bg-beige-100/70 border-b border-beige-200 grid grid-cols-3 gap-2 sm:gap-3 text-center shrink-0">
+          <div className="bg-white p-2 sm:p-2.5 rounded-xl border border-beige-200 shadow-xs">
+            <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block truncate">
+              Weekly Pool
             </span>
-            <span className="text-base sm:text-lg font-black text-dark-green-900">
+            <span className="text-sm sm:text-lg font-black text-dark-green-900">
               {formatCurrency(weeklyIncomePool)}
             </span>
           </div>
 
-          <div className="bg-white p-2.5 rounded-xl border border-beige-200 shadow-xs">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
+          <div className="bg-white p-2 sm:p-2.5 rounded-xl border border-beige-200 shadow-xs">
+            <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block truncate">
               Total Allocated
             </span>
             <span
-              className={`text-base sm:text-lg font-black ${
+              className={`text-sm sm:text-lg font-black ${
                 isOverAllocated ? 'text-red-600' : 'text-dark-green-900'
               }`}
             >
@@ -189,16 +180,16 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
           </div>
 
           <div
-            className={`p-2.5 rounded-xl border shadow-xs ${
+            className={`p-2 sm:p-2.5 rounded-xl border shadow-xs ${
               isOverAllocated
                 ? 'bg-red-50 border-red-200 text-red-900'
                 : 'bg-sage-50 border-sage-200 text-sage-900'
             }`}
           >
-            <span className="text-[10px] font-bold uppercase tracking-wider block">
-              {isOverAllocated ? 'Over Allocated' : 'Unallocated Buffer'}
+            <span className="text-[9px] sm:text-[10px] font-bold uppercase tracking-wider block truncate">
+              {isOverAllocated ? 'Over Budget' : 'Buffer'}
             </span>
-            <span className="text-base sm:text-lg font-black">
+            <span className="text-sm sm:text-lg font-black">
               {isOverAllocated
                 ? `-${formatCurrency(Math.abs(unallocated))}`
                 : formatCurrency(unallocated)}
@@ -206,8 +197,8 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
           </div>
         </div>
 
-        {/* Scrollable Categories List */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+        {/* Scrollable Categories List & Forms */}
+        <div className="flex-1 overflow-y-auto max-h-[80vh] p-3 sm:p-6 space-y-4 sm:space-y-6 overscroll-contain pb-6">
           {isOverAllocated && (
             <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl flex items-center gap-3 text-xs text-red-800 font-semibold">
               <AlertTriangle className="w-5 h-5 text-red-600 flex-shrink-0" />
@@ -308,7 +299,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
                     Bucket Name
@@ -321,23 +312,6 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                     onChange={(e) => setNewName(e.target.value)}
                     className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800"
                   />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                    Group Classification
-                  </label>
-                  <select
-                    value={newGroup}
-                    onChange={(e) => setNewGroup(e.target.value as CategoryGroup)}
-                    className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                  >
-                    {CATEGORY_GROUPS.map((g) => (
-                      <option key={g} value={g}>
-                        {g}
-                      </option>
-                    ))}
-                  </select>
                 </div>
 
                 <div className="space-y-1">

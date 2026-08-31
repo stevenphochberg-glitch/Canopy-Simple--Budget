@@ -223,15 +223,57 @@ export function getMonthRange(refDate: Date, monthOffset: number = 0): DateRange
 }
 
 /**
+ * Extracts a normalized numeric epoch millisecond timestamp from an expense object.
+ * Robustly parses Firestore Timestamp objects (with toMillis, toDate, or seconds),
+ * numeric timestamps, ISO date strings, and local YYYY-MM-DD date strings.
+ */
+export function parseExpenseTimestamp(expense: { timestamp?: any; date?: string; createdAt?: any }): number {
+  const ts = expense.timestamp || expense.createdAt;
+  if (ts !== undefined && ts !== null) {
+    if (typeof ts === 'number' && !isNaN(ts)) {
+      return ts;
+    }
+    if (typeof ts === 'object') {
+      if (typeof ts.toMillis === 'function') {
+        return ts.toMillis();
+      }
+      if (typeof ts.toDate === 'function') {
+        return ts.toDate().getTime();
+      }
+      if (typeof ts.seconds === 'number') {
+        return ts.seconds * 1000 + (ts.nanoseconds || 0) / 1000000;
+      }
+    }
+    if (typeof ts === 'string') {
+      const parsed = new Date(ts).getTime();
+      if (!isNaN(parsed)) return parsed;
+    }
+  }
+
+  if (expense.date) {
+    // If expense.date is YYYY-MM-DD, parse as local midday to avoid timezone offset shifts
+    const parts = expense.date.split('-');
+    if (parts.length === 3) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      return new Date(year, month, day, 12, 0, 0).getTime();
+    }
+    const parsed = new Date(expense.date).getTime();
+    if (!isNaN(parsed)) return parsed;
+  }
+
+  return Date.now();
+}
+
+/**
  * Checks if a given expense date/timestamp falls inside a DateRange
  */
 export function isExpenseInDateRange(expense: Expense, start: Date, end: Date): boolean {
-  let expTime = expense.timestamp;
-  if (!expTime && expense.date) {
-    expTime = new Date(expense.date).getTime();
-  }
-  if (!expTime) return false;
-  return expTime >= start.getTime() && expTime <= end.getTime();
+  const expTime = parseExpenseTimestamp(expense);
+  const startTime = start.getTime();
+  const endTime = end.getTime();
+  return expTime >= startTime && expTime <= endTime;
 }
 
 /**

@@ -18,10 +18,14 @@ export function matchCategoryToHousehold(
   predictedName: string,
   categories: Category[]
 ): string {
-  if (!categories || categories.length === 0) return 'cat_groceries';
+  if (!categories || categories.length === 0) return 'cat_essentials';
   const clean = (predictedName || '').toLowerCase().trim();
 
-  // 1. Exact or partial name match
+  // 1. Direct ID match
+  const directId = categories.find((c) => c.id.toLowerCase() === clean);
+  if (directId) return directId.id;
+
+  // 2. Exact or partial name match
   const exact = categories.find((c) => c.name.toLowerCase() === clean);
   if (exact) return exact.id;
 
@@ -30,29 +34,33 @@ export function matchCategoryToHousehold(
   );
   if (partial) return partial.id;
 
-  // 2. Keyword based heuristic matching
-  if (clean.includes('groc') || clean.includes('food') || clean.includes('market') || clean.includes('target') || clean.includes('trader')) {
-    const groc = categories.find((c) => c.id === 'cat_groceries' || c.name.toLowerCase().includes('groc'));
-    if (groc) return groc.id;
+  // 3. Subcategory match
+  const subcatMatch = categories.find((c) =>
+    c.subcategories?.some(
+      (sub) => sub.toLowerCase().includes(clean) || clean.includes(sub.toLowerCase())
+    )
+  );
+  if (subcatMatch) return subcatMatch.id;
+
+  // 4. Keyword based heuristic matching
+  if (clean.includes('groc') || clean.includes('food') || clean.includes('market') || clean.includes('target') || clean.includes('trader') || clean.includes('transit') || clean.includes('pharm') || clean.includes('gas') || clean.includes('fuel')) {
+    const essentials = categories.find((c) => c.group === 'Essentials' || c.id === 'cat_essentials' || c.name.toLowerCase().includes('essential') || c.name.toLowerCase().includes('groc'));
+    if (essentials) return essentials.id;
   }
-  if (clean.includes('gas') || clean.includes('fuel') || clean.includes('chevron') || clean.includes('shell') || clean.includes('auto')) {
-    const gas = categories.find((c) => c.id === 'cat_gas' || c.name.toLowerCase().includes('gas'));
-    if (gas) return gas.id;
-  }
-  if (clean.includes('bar') || clean.includes('beer') || clean.includes('drink') || clean.includes('fun') || clean.includes('movie') || clean.includes('concert')) {
-    const fun = categories.find((c) => c.group === 'Fun Money' || c.name.toLowerCase().includes('fun') || c.name.toLowerCase().includes('night'));
+  if (clean.includes('bar') || clean.includes('beer') || clean.includes('drink') || clean.includes('fun') || clean.includes('movie') || clean.includes('concert') || clean.includes('dining') || clean.includes('restaurant') || clean.includes('coffee')) {
+    const fun = categories.find((c) => c.group === 'Fun Money' || c.id === 'cat_fun_money' || c.name.toLowerCase().includes('fun') || c.name.toLowerCase().includes('night'));
     if (fun) return fun.id;
   }
-  if (clean.includes('phone') || clean.includes('cell') || clean.includes('verizon') || clean.includes('at&t') || clean.includes('bill') || clean.includes('electric') || clean.includes('water') || clean.includes('utility')) {
-    const bill = categories.find((c) => c.group === 'Bills' || c.id === 'cat_phone' || c.id === 'cat_utilities');
+  if (clean.includes('phone') || clean.includes('cell') || clean.includes('verizon') || clean.includes('at&t') || clean.includes('bill') || clean.includes('electric') || clean.includes('water') || clean.includes('utility') || clean.includes('rent') || clean.includes('mortgage') || clean.includes('insurance')) {
+    const bill = categories.find((c) => c.group === 'Bills' || c.id === 'cat_bills' || c.name.toLowerCase().includes('bill') || c.name.toLowerCase().includes('util'));
     if (bill) return bill.id;
   }
-  if (clean.includes('rent') || clean.includes('mortgage') || clean.includes('housing')) {
-    const rent = categories.find((c) => c.id === 'cat_rent' || c.name.toLowerCase().includes('rent'));
-    if (rent) return rent.id;
+  if (clean.includes('save') || clean.includes('invest') || clean.includes('fund') || clean.includes('emergency') || clean.includes('downpayment')) {
+    const savings = categories.find((c) => c.group === 'Savings' || c.id === 'cat_savings' || c.name.toLowerCase().includes('saving'));
+    if (savings) return savings.id;
   }
 
-  // 3. Fallback to first Essentials category or first available category
+  // 5. Fallback to first Essentials category or first available category in household
   const firstEssential = categories.find((c) => c.group === 'Essentials');
   return firstEssential ? firstEssential.id : categories[0].id;
 }

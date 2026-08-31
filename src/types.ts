@@ -2,7 +2,7 @@
  * Canopy Budgeting App - Core Data Types & Interfaces
  */
 
-export type AccountType = 'single' | 'couple' | 'family' | 'roommate';
+export type AccountType = 'single' | 'couple' | 'family' | 'roommate' | 'join';
 export type PaySchedule = 'weekly' | 'bi-weekly' | 'monthly' | 'none';
 export type CalendarMode = 'weekly' | 'monthly';
 export type DayOfWeek =
@@ -38,7 +38,7 @@ export interface Household {
   id: string;
   syncCode: string; // 6-character string e.g. "CNP-8X2"
   accountType: AccountType;
-  roommateCount?: number;
+  roommateCount?: number | null;
   weeklyIncomePool: number;
   calendarMode: CalendarMode;
   firstDayOfWeek: DayOfWeek;
@@ -202,6 +202,7 @@ export interface OnboardingData {
   members: HouseholdMember[];
   calendarMode: CalendarMode;
   firstDayOfWeek: DayOfWeek;
+  syncCode?: string;
 }
 
 export type ActiveTab = 'dashboard' | 'ledger' | 'checkin' | 'feed' | 'settings';

@@ -27,6 +27,8 @@ import {
   Users,
   Shield,
   Plus,
+  AlertCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import { ActiveTab } from './types';
 
@@ -38,6 +40,7 @@ const MainLayout: React.FC = () => {
     activeTab,
     setActiveTab,
     toastMessage,
+    toastType,
     openStagingModal,
     isLogExpenseModalOpen,
     logExpenseInitialCategory,
@@ -87,7 +90,7 @@ const MainLayout: React.FC = () => {
             className="w-full py-3 px-4 bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-2xl font-extrabold text-xs flex items-center justify-center gap-2 shadow-sm transition active:scale-98 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>+ Log Expense</span>
+            <span>Log Expense</span>
           </button>
 
           {/* Navigation Links */}
@@ -183,8 +186,20 @@ const MainLayout: React.FC = () => {
 
       {/* Global Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-16 sm:bottom-6 right-6 z-50 px-4 py-3 bg-dark-green-900 text-white text-xs font-bold rounded-2xl shadow-xl border border-sage-700/60 animate-in fade-in slide-in-from-bottom-4 duration-200">
-          {toastMessage}
+        <div
+          id="global-toast-notification"
+          className={`fixed bottom-16 sm:bottom-6 right-6 z-50 px-4 py-3 text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-4 duration-200 max-w-md ${
+            toastType === 'error'
+              ? 'bg-red-900 text-white border border-red-700/80 shadow-red-950/40'
+              : 'bg-dark-green-900 text-white border border-sage-700/60'
+          }`}
+        >
+          {toastType === 'error' ? (
+            <AlertCircle className="w-4 h-4 text-red-300 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-sage-300 shrink-0" />
+          )}
+          <span className="leading-snug">{toastMessage}</span>
         </div>
       )}
     </div>

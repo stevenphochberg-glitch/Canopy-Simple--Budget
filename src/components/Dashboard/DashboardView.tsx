@@ -301,7 +301,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer border border-beige-300"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>+ Log Expense</span>
+            <span>Log Expense</span>
           </button>
         </div>
 
@@ -315,7 +315,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 No transactions logged in this timeframe
               </h4>
               <p className="text-xs text-brown-700">
-                Click "+ Log Expense" above to record receipts and expenses into the household ledger.
+                Click "Log Expense" above to record receipts and expenses into the household ledger.
               </p>
             </div>
             <button

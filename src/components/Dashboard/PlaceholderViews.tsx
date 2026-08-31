@@ -60,7 +60,7 @@ export const LedgerPlaceholder: React.FC = () => {
           className="flex items-center justify-center gap-2 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
         >
           <Plus className="w-4 h-4" />
-          <span>+ Log Expense (Staging)</span>
+          <span>Log Expense (Staging)</span>
         </button>
       </div>
 
@@ -87,7 +87,7 @@ export const LedgerPlaceholder: React.FC = () => {
             <option value="all">All Categories ({expenses.length})</option>
             {categories.map((c) => (
               <option key={c.id} value={c.id}>
-                {c.icon || '🏷️'} {c.name}
+                {c.name}
               </option>
             ))}
           </select>
@@ -111,7 +111,7 @@ export const LedgerPlaceholder: React.FC = () => {
             <h4 className="text-sm font-bold text-dark-green-900">No expenses found</h4>
             <p className="text-xs text-brown-700">
               {expenses.length === 0
-                ? 'Your household ledger is clean. Click "+ Log Expense" to record an entry.'
+                ? 'Your household ledger is clean. Click "Log Expense" to record an entry.'
                 : 'No transactions match your current search and category filters.'}
             </p>
           </div>

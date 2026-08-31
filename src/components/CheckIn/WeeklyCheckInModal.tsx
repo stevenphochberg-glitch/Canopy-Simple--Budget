@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { Category, Expense } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
+import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   calculateCheckInStatus,
   calculateCategoryDecisions,
@@ -297,7 +298,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       className="px-3.5 py-1.5 bg-white border border-beige-300 hover:bg-sage-100 text-dark-green-900 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>+ Log Missing Item</span>
+                      <span>Log Missing Item</span>
                     </button>
                   </div>
 
@@ -323,7 +324,9 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                             className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-beige-50/50 transition"
                           >
                             <div className="flex items-center gap-3 min-w-0">
-                              <span className="text-base">{cat?.icon || '🏷️'}</span>
+                              <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
+                                <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
+                              </div>
                               <div className="min-w-0">
                                 <div className="flex items-center gap-2">
                                   <span className="text-xs font-bold text-dark-green-900 truncate">
@@ -388,7 +391,9 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                         >
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-beige-200/80 pb-2.5">
                             <div className="flex items-center gap-2.5">
-                              <span className="text-lg">{cat?.icon || '🏷️'}</span>
+                              <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
+                                <CategoryIcon name={cat?.name || dec.categoryName} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
+                              </div>
                               <div>
                                 <span className="text-xs font-bold text-dark-green-900">
                                   {dec.categoryName}

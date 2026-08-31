@@ -73,13 +73,40 @@ export const FeedView: React.FC = () => {
     setMessageInput('');
   };
 
-  // Calendar computations
+  const firstDaySetting = household?.firstDayOfWeek || 'Monday';
+
+  const DAY_INDEX_MAP: Record<string, number> = {
+    Sunday: 0,
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+  };
+
+  const ALL_DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+  // Reorder calendar column headers based on household fiscal first day of week
+  const orderedDayHeaders = useMemo(() => {
+    const startIdx = DAY_INDEX_MAP[firstDaySetting] ?? 1;
+    const headers = [];
+    for (let i = 0; i < 7; i++) {
+      headers.push(ALL_DAYS_SHORT[(startIdx + i) % 7]);
+    }
+    return headers;
+  }, [firstDaySetting]);
+
+  // Calendar computations with Fiscal Calendar offset
   const calendarData = useMemo(() => {
     const year = calendarMonth.getFullYear();
     const month = calendarMonth.getMonth(); // 0-indexed
 
-    const firstDayIndex = new Date(year, month, 1).getDay(); // 0 = Sun
+    const startDayIndex = DAY_INDEX_MAP[firstDaySetting] ?? 1;
+    const firstDayOfMonthIndex = new Date(year, month, 1).getDay(); // 0 = Sun
     const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+    const emptyLeadingDays = (firstDayOfMonthIndex - startDayIndex + 7) % 7;
 
     // Map of date string YYYY-MM-DD -> items summary
     const daysMap: Record<
@@ -121,8 +148,8 @@ export const FeedView: React.FC = () => {
     });
 
     const days = [];
-    // Blank days before first day of month
-    for (let i = 0; i < firstDayIndex; i++) {
+    // Blank days before first day of month (aligned with Fiscal week start)
+    for (let i = 0; i < emptyLeadingDays; i++) {
       days.push(null);
     }
     // Days in current month
@@ -142,7 +169,7 @@ export const FeedView: React.FC = () => {
     }
 
     return { year, month, days };
-  }, [calendarMonth, feedItems]);
+  }, [calendarMonth, feedItems, firstDaySetting]);
 
   const prevMonth = () => {
     setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
@@ -251,6 +278,9 @@ export const FeedView: React.FC = () => {
               <h2 className="text-xl font-black text-dark-green-900">
                 {monthNames[calendarData.month]} {calendarData.year}
               </h2>
+              <span className="text-xs font-bold text-sage-800 bg-sage-50 border border-sage-200 px-2.5 py-1 rounded-xl hidden sm:inline">
+                Fiscal Week: Starts {firstDaySetting}
+              </span>
               {selectedDateFilter && (
                 <button
                   onClick={() => setSelectedDateFilter(null)}
@@ -311,7 +341,7 @@ export const FeedView: React.FC = () => {
 
           {/* Calendar Grid */}
           <div className="grid grid-cols-7 gap-2">
-            {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((dayName) => (
+            {orderedDayHeaders.map((dayName) => (
               <div
                 key={dayName}
                 className="text-center font-extrabold text-[11px] uppercase tracking-wider text-dark-grey-600 py-1"
@@ -325,7 +355,7 @@ export const FeedView: React.FC = () => {
                 return (
                   <div
                     key={`empty-${idx}`}
-                    className="min-h-[85px] sm:min-h-[100px] bg-beige-50/30 rounded-2xl border border-transparent"
+                    className="min-h-[125px] sm:min-h-[145px] bg-beige-50/30 rounded-2xl border border-transparent"
                   />
                 );
               }
@@ -345,7 +375,7 @@ export const FeedView: React.FC = () => {
                       setSelectedDateFilter(cell.dateStr);
                     }
                   }}
-                  className={`min-h-[85px] sm:min-h-[100px] p-2 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
+                  className={`min-h-[125px] sm:min-h-[145px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
                     isSelected
                       ? 'bg-sage-50 border-dark-green-800 ring-2 ring-dark-green-800/20 shadow-xs'
                       : isToday
@@ -355,7 +385,7 @@ export const FeedView: React.FC = () => {
                       : 'bg-white/60 hover:bg-beige-50 border-beige-100'
                   }`}
                 >
-                  {/* Top: Day Number & Indicators */}
+                  {/* Top: Day Number */}
                   <div className="flex items-center justify-between">
                     <span
                       className={`text-xs font-black ${
@@ -366,60 +396,73 @@ export const FeedView: React.FC = () => {
                     >
                       {cell.dayNumber}
                     </span>
-
-                    {/* Exact Iconography: Star, Checkmark, Chat Bubble */}
-                    <div className="flex items-center gap-1">
-                      {cell.meta.hasStar && (
-                        <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-600" />
-                      )}
-                      {cell.meta.hasCheckin && (
-                        <CheckCircle2 className="w-3.5 h-3.5 text-sage-700" />
-                      )}
-                      {cell.meta.commentCount > 0 && (
-                        <span className="flex items-center gap-0.5 px-1 py-0.2 bg-beige-200 rounded-md text-[10px] font-bold text-dark-green-900">
-                          <MessageSquare className="w-2.5 h-2.5" />
-                          <span>{cell.meta.commentCount}</span>
-                        </span>
-                      )}
-                    </div>
                   </div>
 
-                  {/* Bottom: Daily Spent Pill or Activity Count */}
-                  <div className="space-y-0.5 pt-1">
-                    {cell.meta.totalDailySpent > 0 && (
-                      <span className="block text-[10px] sm:text-[11px] font-mono font-black text-dark-green-900 bg-beige-100 px-1.5 py-0.5 rounded-md truncate">
+                  {/* Middle: Vertically Stacked Indicators (No Clipping, up to 3 icons) */}
+                  <div className="flex-1 flex flex-col justify-center gap-1 my-1">
+                    {cell.meta.hasCheckin && (
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-sage-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-200" title="Weekly Check-In Completed">
+                        <CheckCircle2 className="w-3 h-3 text-sage-700 shrink-0" />
+                        <span className="truncate hidden sm:inline">Check-in</span>
+                      </div>
+                    )}
+                    {cell.meta.hasStar && (
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-md border border-amber-200" title="Milestone / High Savings">
+                        <Star className="w-3 h-3 fill-amber-500 text-amber-600 shrink-0" />
+                        <span className="truncate hidden sm:inline">Milestone</span>
+                      </div>
+                    )}
+                    {cell.meta.commentCount > 0 && (
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-beige-200/90 px-1.5 py-0.5 rounded-md border border-beige-300" title={`${cell.meta.commentCount} Notes`}>
+                        <MessageSquare className="w-3 h-3 text-dark-green-800 shrink-0" />
+                        <span className="truncate">{cell.meta.commentCount} <span className="hidden sm:inline">note{cell.meta.commentCount > 1 ? 's' : ''}</span></span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bottom: Daily Spent Pill without line wrapping (fits 3+ digits) */}
+                  <div className="mt-auto pt-1">
+                    {cell.meta.totalDailySpent > 0 ? (
+                      <span className="inline-block w-full text-center text-[10px] sm:text-xs font-mono font-black text-dark-green-900 bg-beige-100/90 px-1 py-0.5 rounded-md border border-beige-200/80 whitespace-nowrap overflow-hidden text-ellipsis">
                         {formatCurrency(cell.meta.totalDailySpent)}
                       </span>
-                    )}
-                    {cell.meta.items.length > 0 && cell.meta.totalDailySpent === 0 && (
-                      <span className="block text-[9px] font-bold text-brown-700 truncate">
+                    ) : cell.meta.items.length > 0 ? (
+                      <span className="block text-center text-[9px] font-bold text-brown-700 truncate">
                         {cell.meta.items.length} {cell.meta.items.length === 1 ? 'event' : 'events'}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          {/* Active Day Detail Banner (Anchor Link to Feed) */}
+          {/* Active Day Detail Banner with Clear Date Filter */}
           {selectedDateFilter && (
-            <div className="bg-sage-50 border border-sage-300 p-4 rounded-2xl flex items-center justify-between">
+            <div className="bg-sage-50 border border-sage-300 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <span className="text-xs font-extrabold text-dark-green-900 block">
-                  Anchor Filter Active: {formatDateDisplay(selectedDateFilter)}
+                  Date Filter Active: {formatDateDisplay(selectedDateFilter)}
                 </span>
                 <span className="text-xs text-brown-700">
-                  Showing {filteredFeedItems.length} activity stream items recorded on this day.
+                  Showing only transactions, notes, and check-ins recorded on this day.
                 </span>
               </div>
-              <button
-                onClick={() => setViewMode('stream')}
-                className="px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
-              >
-                <span>Jump to Chronological Feed</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedDateFilter(null)}
+                  className="px-3.5 py-1.5 bg-beige-100 hover:bg-beige-200 border border-beige-300 text-brown-800 text-xs font-bold rounded-xl transition cursor-pointer"
+                >
+                  Clear Date Filter
+                </button>
+                <button
+                  onClick={() => setViewMode('stream')}
+                  className="px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                >
+                  <span>View in Stream</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -483,6 +526,17 @@ export const FeedView: React.FC = () => {
             const isComment = item.type === 'comment';
             const isTransaction = item.type === 'transaction';
 
+            // Dynamically resolve category from linked expense or category name
+            const matchedCategory = item.linkedExpense?.categoryId
+              ? categories.find((c) => c.id === item.linkedExpense?.categoryId)
+              : item.linkedExpense?.categoryName
+              ? categories.find((c) => c.name.toLowerCase() === item.linkedExpense?.categoryName?.toLowerCase())
+              : undefined;
+
+            const resolvedCatIcon = matchedCategory?.icon || item.linkedExpense?.categoryIcon;
+            const resolvedCatName = matchedCategory?.name || item.linkedExpense?.categoryName;
+            const resolvedCatGroup = matchedCategory?.group;
+
             return (
               <div
                 key={item.id}
@@ -533,12 +587,14 @@ export const FeedView: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Icon Indicator */}
+                  {/* Icon Indicator (Dynamic Category Icon) */}
                   <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
                     {isCheckin ? (
                       <Sprout className="w-4 h-4 text-sage-800" />
                     ) : isReaction ? (
                       <Heart className="w-4 h-4 text-brown-700" />
+                    ) : resolvedCatName || resolvedCatIcon ? (
+                      <CategoryIcon name={resolvedCatName} group={resolvedCatGroup} icon={resolvedCatIcon} className="w-4 h-4" />
                     ) : isTransaction ? (
                       <Receipt className="w-4 h-4 text-dark-green-800" />
                     ) : (
@@ -561,14 +617,14 @@ export const FeedView: React.FC = () => {
                     >
                       <div className="flex items-center gap-3 min-w-0">
                         <div className="w-9 h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0 group-hover:scale-105 transition-transform">
-                          <CategoryIcon name={item.linkedExpense.categoryName} icon={item.linkedExpense.categoryIcon} className="w-4 h-4" />
+                          <CategoryIcon name={resolvedCatName} group={resolvedCatGroup} icon={resolvedCatIcon} className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
                           <h4 className="font-bold text-dark-green-900 text-xs sm:text-sm truncate">
                             {item.linkedExpense.description}
                           </h4>
                           <span className="text-[11px] text-brown-700">
-                            {item.linkedExpense.categoryName} &bull; Paid by {item.linkedExpense.payerName || 'Member'}
+                            {resolvedCatName || item.linkedExpense.categoryName} &bull; Paid by {item.linkedExpense.payerName || 'Member'}
                           </span>
                         </div>
                       </div>

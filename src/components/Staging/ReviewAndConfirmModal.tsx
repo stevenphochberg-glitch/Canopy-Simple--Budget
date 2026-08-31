@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryGroup, StagedExpense } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
+import { getCategoryEmoji } from '../Common/CategoryIcon';
 import {
   X,
   Plus,
@@ -109,7 +110,11 @@ export const ReviewAndConfirmModal: React.FC = () => {
         {/* Scrollable Staged Items List */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4">
           {stagedExpenses.map((item, index) => {
-            const selectedCategory = categories.find((c) => c.id === item.categoryId);
+            const validCategoryId =
+              item.categoryId && categories.some((c) => c.id === item.categoryId)
+                ? item.categoryId
+                : categories[0]?.id || '';
+            const selectedCategory = categories.find((c) => c.id === validCategoryId);
 
             return (
               <div
@@ -199,7 +204,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
                       Category Dropdown
                     </label>
                     <select
-                      value={item.categoryId}
+                      value={validCategoryId}
                       onChange={(e) =>
                         updateStagedItem(index, {
                           categoryId: e.target.value,
@@ -207,19 +212,11 @@ export const ReviewAndConfirmModal: React.FC = () => {
                       }
                       className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
                     >
-                      {CATEGORY_GROUPS.map((group) => {
-                        const groupCats = categories.filter((c) => c.group === group);
-                        if (groupCats.length === 0) return null;
-                        return (
-                          <optgroup key={group} label={`── ${group} ──`}>
-                            {groupCats.map((cat) => (
-                              <option key={cat.id} value={cat.id}>
-                                {cat.icon || '🏷️'} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
-                              </option>
-                            ))}
-                          </optgroup>
-                        );
-                      })}
+                      {categories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {getCategoryEmoji(cat.icon || cat.name, cat.group)} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -299,6 +296,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
 
             <button
               onClick={handleConfirm}
+              id="confirm-all-expenses-btn"
               disabled={isSubmitting || totalStagedAmount <= 0}
               className={`px-6 py-3 rounded-xl text-xs sm:text-sm font-extrabold shadow-sm transition flex items-center gap-2 cursor-pointer ${
                 isSubmitting || totalStagedAmount <= 0
@@ -310,7 +308,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
               <span>
                 {isSubmitting
                   ? 'Writing to Ledger...'
-                  : `Confirm & Save ${stagedExpenses.length > 1 ? `(${stagedExpenses.length} Items)` : ''}`}
+                  : `Confirm All ${stagedExpenses.length > 1 ? `(${stagedExpenses.length} Expenses)` : 'Expense'}`}
               </span>
             </button>
           </div>

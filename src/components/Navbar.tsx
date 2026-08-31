@@ -16,6 +16,12 @@ import {
   SlidersHorizontal,
   Shield,
   Key,
+  KeyRound,
+  ArrowLeftRight,
+  UserMinus,
+  Loader2,
+  X,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -33,15 +39,57 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     signOut,
     openLogExpenseModal,
     openAllocationModal,
+    joinHouseholdWithSyncCode,
+    leaveHousehold,
   } = useHousehold();
   const [copiedSync, setCopiedSync] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+
+  // Switch / Join Modal State
+  const [showJoinModal, setShowJoinModal] = useState(false);
+  const [joinCodeInput, setJoinCodeInput] = useState('');
+  const [isJoining, setIsJoining] = useState(false);
+  const [joinError, setJoinError] = useState<string | null>(null);
+
+  // Leave Household Confirmation Modal State
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
 
   const handleCopySync = () => {
     if (household?.syncCode) {
       navigator.clipboard.writeText(household.syncCode);
       setCopiedSync(true);
       setTimeout(() => setCopiedSync(false), 2000);
+    }
+  };
+
+  const handleJoinSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinCodeInput.trim()) return;
+    setIsJoining(true);
+    setJoinError(null);
+    try {
+      const res = await joinHouseholdWithSyncCode(joinCodeInput.trim());
+      if (res.success) {
+        setShowJoinModal(false);
+        setJoinCodeInput('');
+      } else {
+        setJoinError(res.message || 'Household not found with that code.');
+      }
+    } catch (err: any) {
+      setJoinError(err.message || 'Failed to switch household.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  const handleConfirmLeave = async () => {
+    setIsLeaving(true);
+    try {
+      await leaveHousehold();
+      setShowLeaveModal(false);
+    } finally {
+      setIsLeaving(false);
     }
   };
 
@@ -58,23 +106,18 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
       {/* Top Header Bar (Desktop & Mobile) */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-beige-200 px-4 sm:px-6 py-3">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          {/* Logo & Brand */}
+          {/* Logo (Icon only, no text word) */}
           <div className="flex items-center gap-3">
             <button
               onClick={() => setActiveTab('dashboard')}
               aria-label="Household Dashboard"
-              className="flex items-center gap-2.5 focus:outline-none cursor-pointer group text-left"
+              className="flex items-center focus:outline-none cursor-pointer group text-left"
             >
               <img
                 src="/logo.jpeg"
                 alt="App Logo"
                 className="w-9 h-9 rounded-xl object-cover border border-beige-300 group-hover:scale-105 transition-transform shadow-xs"
               />
-              {household?.name && (
-                <span className="text-xs font-bold text-dark-green-900 hidden sm:block">
-                  {household.name}
-                </span>
-              )}
             </button>
           </div>
 
@@ -87,7 +130,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               className="hidden sm:flex items-center gap-1.5 px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>+ Log Expense</span>
+              <span>Log Expense</span>
             </button>
 
             {/* Account & Administrative Dropdown Menu */}
@@ -259,6 +302,46 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         </p>
                       </div>
                     </button>
+
+                    {/* Switch / Join Household */}
+                    <button
+                      id="dropdown-switch-join-btn"
+                      onClick={() => {
+                        setShowMemberDropdown(false);
+                        setShowJoinModal(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-800 group-hover:bg-sage-200 transition">
+                        <ArrowLeftRight className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="flex-1">
+                        <span>Switch / Join Household</span>
+                        <p className="text-[10px] font-normal text-brown-700">
+                          Connect with a different sync code
+                        </p>
+                      </div>
+                    </button>
+
+                    {/* Leave Current Household */}
+                    <button
+                      id="dropdown-leave-household-btn"
+                      onClick={() => {
+                        setShowMemberDropdown(false);
+                        setShowLeaveModal(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-amber-900 hover:bg-amber-50 rounded-xl transition cursor-pointer text-left group"
+                    >
+                      <div className="w-7 h-7 rounded-lg bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 group-hover:bg-amber-200 transition">
+                        <UserMinus className="w-3.5 h-3.5" />
+                      </div>
+                      <div className="flex-1">
+                        <span>Leave Current Household</span>
+                        <p className="text-[10px] font-normal text-amber-700">
+                          Detach from active budget
+                        </p>
+                      </div>
+                    </button>
                   </div>
 
                   {/* Switch Household Profile (if > 1 member) */}
@@ -408,6 +491,139 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
           <span className="text-[10px] tracking-tight mt-0.5">Activity</span>
         </button>
       </nav>
+
+      {/* Switch / Join Household Modal */}
+      {showJoinModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl border border-beige-200 shadow-2xl max-w-md w-full p-6 space-y-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900">
+                  <KeyRound className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-dark-green-900">
+                    Switch / Join Household
+                  </h3>
+                  <p className="text-xs text-brown-700">
+                    Connect to a shared budget using a sync code.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowJoinModal(false);
+                  setJoinError(null);
+                }}
+                className="p-1.5 rounded-xl hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleJoinSubmit} className="space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-dark-green-900 block">
+                  6-Character Sync Code
+                </label>
+                <input
+                  type="text"
+                  maxLength={10}
+                  required
+                  placeholder="e.g. CNP-8X2"
+                  value={joinCodeInput}
+                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                  className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl font-mono text-lg font-black tracking-widest text-dark-green-950 uppercase focus:outline-none focus:border-dark-green-800 focus:bg-white"
+                />
+                <p className="text-[11px] text-dark-grey-600">
+                  Your individual profile history and attribution will be preserved.
+                </p>
+              </div>
+
+              {joinError && (
+                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                  <span>{joinError}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowJoinModal(false)}
+                  className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs font-bold text-brown-800 hover:bg-beige-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isJoining || !joinCodeInput.trim()}
+                  className="px-5 py-2.5 rounded-xl bg-dark-green-800 hover:bg-dark-green-900 disabled:opacity-50 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
+                >
+                  {isJoining ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Connecting...</span>
+                    </>
+                  ) : (
+                    <span>Switch Household</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Leave Household Confirmation Modal */}
+      {showLeaveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-white rounded-3xl border border-beige-200 shadow-2xl max-w-md w-full p-6 space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 flex-shrink-0">
+                <UserMinus className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-extrabold text-dark-green-900">
+                  Leave Current Household?
+                </h3>
+                <p className="text-xs text-brown-700">
+                  {household?.name || 'Current Household'}
+                </p>
+              </div>
+            </div>
+
+            <p className="text-xs text-dark-grey-700 leading-relaxed bg-amber-50/70 border border-amber-200/80 p-3.5 rounded-2xl">
+              Leaving will detach your active profile from this household budget. Your user account and historical logged transaction data will be preserved, and you can create or join another household immediately.
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowLeaveModal(false)}
+                className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs font-bold text-brown-800 hover:bg-beige-50 cursor-pointer"
+              >
+                Keep Household
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmLeave}
+                disabled={isLeaving}
+                className="px-5 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 disabled:opacity-50 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
+              >
+                {isLeaving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>Leaving...</span>
+                  </>
+                ) : (
+                  <span>Yes, Leave Household</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };

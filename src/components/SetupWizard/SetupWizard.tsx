@@ -5,7 +5,7 @@ import { AccountTypeStep } from './AccountTypeStep';
 import { IncomeStep } from './IncomeStep';
 import { CalendarStep } from './CalendarStep';
 import { SyncCodeStep } from './SyncCodeStep';
-import { normalizeToWeekly } from '../../lib/calculations';
+import { normalizeToWeekly, generateSyncCode } from '../../lib/calculations';
 
 const AVATAR_SEEDS = [
   'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
@@ -15,12 +15,13 @@ const AVATAR_SEEDS = [
 ];
 
 export const SetupWizard: React.FC = () => {
-  const { user, completeOnboarding } = useHousehold();
+  const { user, household, completeOnboarding } = useHousehold();
   const [step, setStep] = useState<number>(1);
   const [accountType, setAccountType] = useState<AccountType>('couple');
   const [roommateCount, setRoommateCount] = useState<number>(3);
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('weekly');
   const [firstDayOfWeek, setFirstDayOfWeek] = useState<DayOfWeek>('Monday');
+  const [syncCode] = useState<string>(() => household?.syncCode || generateSyncCode());
 
   const [members, setMembers] = useState<HouseholdMember[]>([]);
 
@@ -77,6 +78,7 @@ export const SetupWizard: React.FC = () => {
     members,
     calendarMode,
     firstDayOfWeek,
+    syncCode,
   };
 
   const stepsList = [
