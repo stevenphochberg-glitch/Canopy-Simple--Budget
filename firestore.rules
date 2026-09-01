@@ -42,7 +42,8 @@ service cloud.firestore {
 
     // Household sub-collections and documents
     match /households/{householdId} {
-      allow get: if isSignedIn() && isValidId(householdId);
+      allow get, list: if isSignedIn() && isValidId(householdId);
+      allow list: if isSignedIn();
       allow create: if isSignedIn() && isValidId(householdId) &&
         incoming().createdById == request.auth.uid &&
         incoming().syncCode is string && incoming().syncCode.size() <= 10 &&

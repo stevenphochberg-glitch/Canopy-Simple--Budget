@@ -36,6 +36,7 @@ const MainLayout: React.FC = () => {
   const {
     user,
     household,
+    isLoading,
     isOnboarding,
     activeTab,
     setActiveTab,
@@ -54,6 +55,23 @@ const MainLayout: React.FC = () => {
     closeAllocationModal,
   } = useHousehold();
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+
+  // 0. Initial Loading State while Firebase Auth resolves
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-beige-50 flex flex-col items-center justify-center p-6 selection:bg-sage-200">
+        <div className="flex flex-col items-center space-y-4 max-w-sm text-center">
+          <div className="w-14 h-14 rounded-3xl bg-dark-green-800 flex items-center justify-center text-white shadow-md animate-pulse">
+            <span className="text-2xl">🌿</span>
+          </div>
+          <div className="space-y-1">
+            <h2 className="text-sm font-black text-dark-green-950 tracking-wider">CANOPY</h2>
+            <p className="text-xs text-dark-grey-600">Connecting to live household cloud...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // 1. Not Authenticated -> Show Login
   if (!user) {

@@ -270,18 +270,39 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
 
         {/* Flattened Responsive Cards Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {categories.map((cat) => (
-            <CategoryCard
-              key={cat.id}
-              category={cat}
-              expenses={expenses}
-              timeframeMode={timeframeMode}
-              dateRange={activeDateRange}
-              onQuickLog={(category) => openLogExpenseModal(category)}
-            />
-          ))}
-        </div>
+        {categories.length === 0 ? (
+          <div className="py-10 text-center space-y-3 bg-white border border-dashed border-beige-300 rounded-3xl p-6">
+            <div className="w-12 h-12 mx-auto bg-sage-100 rounded-2xl flex items-center justify-center text-dark-green-900">
+              <Plus className="w-6 h-6" />
+            </div>
+            <div className="space-y-1 max-w-sm mx-auto">
+              <h4 className="text-sm font-bold text-dark-green-900">No Budget Buckets Configured</h4>
+              <p className="text-xs text-brown-700">
+                Create your household spending buckets to allocate budgets and track weekly progress.
+              </p>
+            </div>
+            <button
+              onClick={() => openAllocationModal()}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Configure Budget Buckets</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {categories.map((cat) => (
+              <CategoryCard
+                key={cat.id}
+                category={cat}
+                expenses={expenses}
+                timeframeMode={timeframeMode}
+                dateRange={activeDateRange}
+                onQuickLog={(category) => openLogExpenseModal(category)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Timeframe Recent Expenses Ledger Table / List */}
