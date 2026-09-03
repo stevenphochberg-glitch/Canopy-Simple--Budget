@@ -1,13 +1,15 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { CalendarMode, DayOfWeek } from '../../types';
 import { DAYS_OF_WEEK, getCheckInDay } from '../../lib/calculations';
-import { ArrowLeft, ArrowRight, Calendar, Info, Clock, AlertCircle } from 'lucide-react';
+import { getFiscalYearMonths } from '../../lib/fiscal445';
+import { ArrowLeft, ArrowRight, Calendar, Info, Clock, CheckCircle2 } from 'lucide-react';
 
 interface CalendarStepProps {
   calendarMode: CalendarMode;
   setCalendarMode: (mode: CalendarMode) => void;
   firstDayOfWeek: DayOfWeek;
   setFirstDayOfWeek: (day: DayOfWeek) => void;
+  fiscalYearEndMonth?: number;
   onNext: () => void;
   onBack: () => void;
 }
@@ -17,10 +19,16 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
   setCalendarMode,
   firstDayOfWeek,
   setFirstDayOfWeek,
+  fiscalYearEndMonth = 12,
   onNext,
   onBack,
 }) => {
   const checkInDay = getCheckInDay(firstDayOfWeek);
+
+  const fiscalMonths = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    return getFiscalYearMonths(currentYear, fiscalYearEndMonth);
+  }, [fiscalYearEndMonth]);
 
   return (
     <div className="space-y-6">
@@ -55,12 +63,12 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
                 <Clock className="w-5 h-5" />
               </div>
               <span className="text-[11px] font-semibold bg-sage-200 text-dark-green-900 px-2.5 py-0.5 rounded-full">
-                Recommended
+                4-4-5 Fiscal Engine
               </span>
             </div>
-            <h3 className="font-bold text-dark-green-900 text-base">Fiscal Weekly Cycle</h3>
+            <h3 className="font-bold text-dark-green-900 text-base">4-4-5 Fiscal Weekly Cycle</h3>
             <p className="text-xs text-dark-grey-600 mt-1 leading-relaxed">
-              7-day spending periods with weekly habit check-ins to prevent end-of-month surprises.
+              13-week quarters (4-4-5 weeks per month). Perfectly harmonizes with weekly and bi-weekly paychecks.
             </p>
           </div>
         </button>
@@ -87,12 +95,12 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
                 <Calendar className="w-5 h-5" />
               </div>
               <span className="text-[11px] font-semibold bg-beige-200 text-brown-900 px-2 py-0.5 rounded-full">
-                Override
+                Standard
               </span>
             </div>
             <h3 className="font-bold text-dark-green-900 text-base">Standard Calendar Month</h3>
             <p className="text-xs text-dark-grey-600 mt-1 leading-relaxed">
-              Track purely by calendar months (1st to last day). Bypasses weekly tracking.
+              Track purely by calendar months (1st to last day). Bypasses 4-4-5 weekly fiscal periods.
             </p>
           </div>
         </button>
@@ -151,6 +159,32 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
               <p className="text-xs text-dark-grey-600">
                 This closes your weekly ledger, reviews category spending, and rolls over unspent funds.
               </p>
+            </div>
+          </div>
+
+          {/* 4-4-5 Fiscal Schedule Preview */}
+          <div className="p-4 bg-beige-50/70 border border-beige-200 rounded-xl space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-bold text-dark-green-900">4-4-5 Fiscal Calendar Quarters (52/53 Weeks)</span>
+              <span className="text-[10px] text-brown-700">4 Quarters &bull; 13 Weeks each</span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              {[1, 2, 3, 4].map((q) => {
+                const qMonths = fiscalMonths.filter((m) => m.quarter === q);
+                return (
+                  <div key={q} className="p-2.5 bg-white border border-beige-200 rounded-lg space-y-1">
+                    <div className="font-extrabold text-dark-green-900 text-[11px]">Quarter {q}</div>
+                    <div className="text-[10px] text-dark-grey-600 space-y-0.5">
+                      {qMonths.map((m) => (
+                        <div key={m.fiscalMonthNumber} className="flex justify-between">
+                          <span>{m.monthName}</span>
+                          <span className="font-bold text-sage-800">{m.weekCount} wks</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

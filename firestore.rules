@@ -1,6 +1,7 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    
     // Default-deny catch-all safety net
     match /{document=**} {
       allow read, write: if false;
@@ -10,31 +11,24 @@ service cloud.firestore {
     function isSignedIn() {
       return request.auth != null;
     }
-
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
-
     function isValidId(id) {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
-
     function incoming() {
       return request.resource.data;
     }
-
     function existing() {
       return resource.data;
     }
 
     // Users Collection
     match /users/{userId} {
-      allow get: if isSignedIn() && isValidId(userId);
-      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow read: if isSignedIn();
       allow create: if isOwner(userId) && isValidId(userId) &&
-        incoming().userId == request.auth.uid &&
-        incoming().name is string && incoming().name.size() <= 100 &&
-        incoming().email is string && incoming().email.size() <= 200;
+        incoming().userId == request.auth.uid;
       allow update: if isOwner(userId) && isValidId(userId) &&
         incoming().userId == existing().userId;
       allow delete: if false;
@@ -42,8 +36,7 @@ service cloud.firestore {
 
     // Household sub-collections and documents
     match /households/{householdId} {
-      allow get, list: if isSignedIn() && isValidId(householdId);
-      allow list: if isSignedIn();
+      allow read: if isSignedIn();
       allow create: if isSignedIn() && isValidId(householdId) &&
         incoming().createdById == request.auth.uid &&
         incoming().syncCode is string && incoming().syncCode.size() <= 10 &&
@@ -51,36 +44,29 @@ service cloud.firestore {
       allow update: if isSignedIn() && isValidId(householdId);
       allow delete: if isSignedIn() && isValidId(householdId) && existing().createdById == request.auth.uid;
 
-      // Members
       match /members/{memberId} {
-        allow read: if isSignedIn() && isValidId(memberId);
-        allow create, update: if isSignedIn() && isValidId(memberId);
-        allow delete: if isSignedIn() && (request.auth.uid == memberId || get(/databases/$(database)/documents/households/$(householdId)).data.createdById == request.auth.uid);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(memberId);
       }
-
-      // Categories
       match /categories/{catId} {
-        allow read: if isSignedIn() && isValidId(catId);
-        allow create, update, delete: if isSignedIn() && isValidId(catId);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(catId);
       }
-
-      // Expenses
       match /expenses/{expId} {
-        allow read: if isSignedIn() && isValidId(expId);
-        allow create, update, delete: if isSignedIn() && isValidId(expId);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(expId);
       }
-
-      // Check-ins (support both checkins and checkIns casing)
       match /checkins/{checkInId} {
-        allow read, write: if isSignedIn() && isValidId(checkInId);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(checkInId);
       }
       match /checkIns/{checkInId} {
-        allow read, write: if isSignedIn() && isValidId(checkInId);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(checkInId);
       }
-
-      // Feed
       match /feed/{feedId} {
-        allow read, write: if isSignedIn() && isValidId(feedId);
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(feedId);
       }
     }
   }

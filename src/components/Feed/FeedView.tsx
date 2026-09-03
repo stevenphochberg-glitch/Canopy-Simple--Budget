@@ -2,6 +2,12 @@ import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, formatDateDisplay } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
+import { getReactionDef } from '../Common/EarthToneReaction';
+import {
+  getFiscalMonthForDate,
+  getFiscalTrackerInfo,
+  FISCAL_MONTH_NAMES,
+} from '../../lib/fiscal445';
 import {
   MessageSquare,
   Sparkles,
@@ -46,8 +52,17 @@ export const FeedView: React.FC = () => {
   const [messageInput, setMessageInput] = useState('');
   const [selectedDateFilter, setSelectedDateFilter] = useState<string | null>(null);
 
-  // Calendar State (Month & Year)
-  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
+  // Calendar State: Anchor Date for 4-4-5 Fiscal Month
+  const [calendarAnchorDate, setCalendarAnchorDate] = useState<Date>(() => new Date());
+
+  // Calculate Active Fiscal Month & Tracker Info (Strict 4-4-5 Accounting Schedule)
+  const fiscalMonth = useMemo(() => {
+    return getFiscalMonthForDate(calendarAnchorDate, household?.fiscalYearEndMonth || 12);
+  }, [calendarAnchorDate, household?.fiscalYearEndMonth]);
+
+  const fiscalTracker = useMemo(() => {
+    return getFiscalTrackerInfo(fiscalMonth.startDate, household?.fiscalYearEndMonth || 12);
+  }, [fiscalMonth.startDate, household?.fiscalYearEndMonth]);
 
   // Filtered Feed Items
   const filteredFeedItems = useMemo(() => {
@@ -73,41 +88,11 @@ export const FeedView: React.FC = () => {
     setMessageInput('');
   };
 
-  const firstDaySetting = household?.firstDayOfWeek || 'Monday';
+  // 4-4-5 Fiscal Calendar Grid Headers: Standard Monday - Sunday
+  const FISCAL_DAY_HEADERS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
-  const DAY_INDEX_MAP: Record<string, number> = {
-    Sunday: 0,
-    Monday: 1,
-    Tuesday: 2,
-    Wednesday: 3,
-    Thursday: 4,
-    Friday: 5,
-    Saturday: 6,
-  };
-
-  const ALL_DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-  // Reorder calendar column headers based on household fiscal first day of week
-  const orderedDayHeaders = useMemo(() => {
-    const startIdx = DAY_INDEX_MAP[firstDaySetting] ?? 1;
-    const headers = [];
-    for (let i = 0; i < 7; i++) {
-      headers.push(ALL_DAYS_SHORT[(startIdx + i) % 7]);
-    }
-    return headers;
-  }, [firstDaySetting]);
-
-  // Calendar computations with Fiscal Calendar offset
+  // Calendar computations strictly enforcing 4-4-5 Fiscal Month Structure
   const calendarData = useMemo(() => {
-    const year = calendarMonth.getFullYear();
-    const month = calendarMonth.getMonth(); // 0-indexed
-
-    const startDayIndex = DAY_INDEX_MAP[firstDaySetting] ?? 1;
-    const firstDayOfMonthIndex = new Date(year, month, 1).getDay(); // 0 = Sun
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-    const emptyLeadingDays = (firstDayOfMonthIndex - startDayIndex + 7) % 7;
-
     // Map of date string YYYY-MM-DD -> items summary
     const daysMap: Record<
       string,
@@ -148,16 +133,23 @@ export const FeedView: React.FC = () => {
     });
 
     const days = [];
-    // Blank days before first day of month (aligned with Fiscal week start)
-    for (let i = 0; i < emptyLeadingDays; i++) {
-      days.push(null);
-    }
-    // Days in current month
-    for (let d = 1; d <= daysInMonth; d++) {
-      const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    const current = new Date(fiscalMonth.startDate);
+    const end = new Date(fiscalMonth.endDate);
+
+    let weekNumber = 1;
+    let dayInWeekIndex = 0;
+
+    while (current.getTime() <= end.getTime()) {
+      const dateStr = current.toISOString().split('T')[0];
+      const dayNumber = current.getDate();
+      const monthShort = current.toLocaleDateString('en-US', { month: 'short' });
+
       days.push({
-        dayNumber: d,
+        date: new Date(current),
+        dayNumber,
+        monthShort,
         dateStr,
+        fiscalWeekNumber: weekNumber,
         meta: daysMap[dateStr] || {
           items: [],
           commentCount: 0,
@@ -166,17 +158,29 @@ export const FeedView: React.FC = () => {
           totalDailySpent: 0,
         },
       });
+
+      dayInWeekIndex++;
+      if (dayInWeekIndex === 7) {
+        dayInWeekIndex = 0;
+        weekNumber++;
+      }
+
+      current.setDate(current.getDate() + 1);
     }
 
-    return { year, month, days };
-  }, [calendarMonth, feedItems, firstDaySetting]);
+    return { fiscalMonth, fiscalTracker, days };
+  }, [fiscalMonth, fiscalTracker, feedItems]);
 
-  const prevMonth = () => {
-    setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() - 1, 1));
+  const prevFiscalMonth = () => {
+    // Jump 7 days before the start of the current fiscal month into previous fiscal month
+    const prevDate = new Date(fiscalMonth.startDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+    setCalendarAnchorDate(prevDate);
   };
 
-  const nextMonth = () => {
-    setCalendarMonth(new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + 1, 1));
+  const nextFiscalMonth = () => {
+    // Jump 7 days past the end of the current fiscal month into next fiscal month
+    const nextDate = new Date(fiscalMonth.endDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+    setCalendarAnchorDate(nextDate);
   };
 
   const monthNames = [
@@ -269,48 +273,60 @@ export const FeedView: React.FC = () => {
         </form>
       </div>
 
-      {/* CALENDAR VIEW */}
+      {/* CALENDAR VIEW (4-4-5 FISCAL MONTH ENFORCED) */}
       {viewMode === 'calendar' && (
         <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-5">
-          {/* Month Navigation */}
-          <div className="flex items-center justify-between border-b border-beige-100 pb-4">
-            <div className="flex items-center gap-3">
-              <h2 className="text-xl font-black text-dark-green-900">
-                {monthNames[calendarData.month]} {calendarData.year}
-              </h2>
-              <span className="text-xs font-bold text-sage-800 bg-sage-50 border border-sage-200 px-2.5 py-1 rounded-xl hidden sm:inline">
-                Fiscal Week: Starts {firstDaySetting}
-              </span>
-              {selectedDateFilter && (
-                <button
-                  onClick={() => setSelectedDateFilter(null)}
-                  className="text-xs font-bold text-sage-800 bg-sage-50 border border-sage-200 px-2.5 py-1 rounded-xl hover:bg-sage-100 transition flex items-center gap-1 cursor-pointer"
-                >
-                  <span>Filtering: {selectedDateFilter}</span>
-                  <span className="text-brown-700">&times;</span>
-                </button>
-              )}
+          {/* Fiscal Month Header & Navigation */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-beige-100 pb-4">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] font-black uppercase tracking-wider text-dark-green-950 bg-sage-100 border border-sage-300 px-2.5 py-0.5 rounded-full">
+                  Fiscal Month {fiscalMonth.fiscalMonthNumber} (Q{fiscalMonth.quarter} &bull; {fiscalMonth.weekCount} Weeks)
+                </span>
+                <span className="text-xs font-extrabold text-brown-700 bg-beige-100/80 border border-beige-200 px-2.5 py-0.5 rounded-full">
+                  {fiscalMonth.label}
+                </span>
+                {selectedDateFilter && (
+                  <button
+                    onClick={() => setSelectedDateFilter(null)}
+                    className="text-xs font-bold text-sage-900 bg-sage-50 border border-sage-200 px-2.5 py-0.5 rounded-full hover:bg-sage-100 transition flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>Filtering: {selectedDateFilter}</span>
+                    <span className="text-brown-700 font-black">&times;</span>
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl sm:text-2xl font-black text-dark-green-900 tracking-tight">
+                  {fiscalMonth.name}
+                </h2>
+                <span className="text-xs font-extrabold text-sage-800 hidden sm:inline">
+                  &bull; {fiscalTracker.label}
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-1.5">
+            <div className="flex items-center gap-2 self-start md:self-auto">
               <button
-                onClick={prevMonth}
-                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer"
-                title="Previous Month"
+                onClick={prevFiscalMonth}
+                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                title="Previous Fiscal Month"
               >
                 <ChevronLeft className="w-4 h-4" />
+                <span className="hidden sm:inline">Prev Month</span>
               </button>
               <button
-                onClick={() => setCalendarMonth(new Date())}
-                className="px-3 py-1.5 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-xs font-bold text-dark-green-900 transition cursor-pointer"
+                onClick={() => setCalendarAnchorDate(new Date())}
+                className="px-3 py-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-xs font-bold text-dark-green-900 transition cursor-pointer"
               >
-                Today
+                Current Month
               </button>
               <button
-                onClick={nextMonth}
-                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer"
-                title="Next Month"
+                onClick={nextFiscalMonth}
+                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                title="Next Fiscal Month"
               >
+                <span className="hidden sm:inline">Next Month</span>
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
@@ -318,48 +334,39 @@ export const FeedView: React.FC = () => {
 
           {/* Iconography Legend */}
           <div className="flex items-center gap-4 text-xs font-semibold text-brown-700 flex-wrap bg-beige-50/70 p-3 rounded-2xl border border-beige-200">
-            <span className="text-dark-green-900 font-extrabold">Calendar Indicators:</span>
+            <span className="text-dark-green-900 font-extrabold">Fiscal Calendar Indicators:</span>
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded-full bg-sage-100 border border-sage-300 flex items-center justify-center text-sage-800">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
-              <span>Weekly Check-In / Rollover</span>
+              <span>Weekly Check-In</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded-full bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-700">
                 <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-600" />
               </div>
-              <span>Milestone / High Savings</span>
+              <span>Milestone / Savings</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded-full bg-beige-200 border border-beige-300 flex items-center justify-center text-dark-green-900">
                 <MessageSquare className="w-3 h-3" />
               </div>
-              <span>Member Notes & Chat</span>
+              <span>Notes & Stream</span>
             </div>
           </div>
 
-          {/* Calendar Grid */}
+          {/* 4-4-5 Fiscal Calendar Grid (Exactly 4, 5, or 6 full weeks starting Monday) */}
           <div className="grid grid-cols-7 gap-2">
-            {orderedDayHeaders.map((dayName) => (
+            {FISCAL_DAY_HEADERS.map((dayName) => (
               <div
                 key={dayName}
-                className="text-center font-extrabold text-[11px] uppercase tracking-wider text-dark-grey-600 py-1"
+                className="text-center font-black text-[11px] uppercase tracking-wider text-dark-green-900 py-1 bg-beige-50/80 rounded-xl border border-beige-100"
               >
                 {dayName}
               </div>
             ))}
 
-            {calendarData.days.map((cell, idx) => {
-              if (!cell) {
-                return (
-                  <div
-                    key={`empty-${idx}`}
-                    className="min-h-[125px] sm:min-h-[145px] bg-beige-50/30 rounded-2xl border border-transparent"
-                  />
-                );
-              }
-
+            {calendarData.days.map((cell) => {
               const isSelected = selectedDateFilter === cell.dateStr;
               const hasActivity = cell.meta.items.length > 0;
               const isToday =
@@ -375,30 +382,33 @@ export const FeedView: React.FC = () => {
                       setSelectedDateFilter(cell.dateStr);
                     }
                   }}
-                  className={`min-h-[125px] sm:min-h-[145px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
+                  className={`min-h-[125px] sm:min-h-[140px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
                     isSelected
                       ? 'bg-sage-50 border-dark-green-800 ring-2 ring-dark-green-800/20 shadow-xs'
                       : isToday
-                      ? 'bg-white border-sage-300 shadow-2xs'
+                      ? 'bg-white border-sage-400 shadow-2xs ring-1 ring-sage-300'
                       : hasActivity
                       ? 'bg-white hover:bg-beige-50 border-beige-200 hover:border-beige-300'
-                      : 'bg-white/60 hover:bg-beige-50 border-beige-100'
+                      : 'bg-white/70 hover:bg-beige-50 border-beige-100'
                   }`}
                 >
-                  {/* Top: Day Number */}
+                  {/* Top: Month Label & Day Number */}
                   <div className="flex items-center justify-between">
                     <span
                       className={`text-xs font-black ${
                         isToday
-                          ? 'w-5 h-5 rounded-full bg-dark-green-900 text-white flex items-center justify-center'
+                          ? 'px-1.5 py-0.5 rounded-md bg-dark-green-900 text-white flex items-center justify-center'
                           : 'text-dark-green-900'
                       }`}
                     >
-                      {cell.dayNumber}
+                      {cell.monthShort} {cell.dayNumber}
+                    </span>
+                    <span className="text-[9px] font-extrabold text-brown-600 bg-beige-100/70 px-1 rounded-sm">
+                      W{cell.fiscalWeekNumber}
                     </span>
                   </div>
 
-                  {/* Middle: Vertically Stacked Indicators (No Clipping, up to 3 icons) */}
+                  {/* Middle: Vertically Stacked Indicators */}
                   <div className="flex-1 flex flex-col justify-center gap-1 my-1">
                     {cell.meta.hasCheckin && (
                       <div className="flex items-center gap-1 text-[10px] font-bold text-sage-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-200" title="Weekly Check-In Completed">
@@ -420,7 +430,7 @@ export const FeedView: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Bottom: Daily Spent Pill without line wrapping (fits 3+ digits) */}
+                  {/* Bottom: Daily Spent Pill */}
                   <div className="mt-auto pt-1">
                     {cell.meta.totalDailySpent > 0 ? (
                       <span className="inline-block w-full text-center text-[10px] sm:text-xs font-mono font-black text-dark-green-900 bg-beige-100/90 px-1 py-0.5 rounded-md border border-beige-200/80 whitespace-nowrap overflow-hidden text-ellipsis">
@@ -457,7 +467,7 @@ export const FeedView: React.FC = () => {
                 </button>
                 <button
                   onClick={() => setViewMode('stream')}
-                  className="px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer"
+                  className="px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl flex items-center gap-1 cursor-pointer shadow-2xs"
                 >
                   <span>View in Stream</span>
                   <ArrowRight className="w-3.5 h-3.5" />
@@ -504,8 +514,8 @@ export const FeedView: React.FC = () => {
       {/* ACTIVITY FEED STREAM LIST */}
       {filteredFeedItems.length === 0 ? (
         <div className="bg-white border border-beige-200 rounded-3xl p-10 text-center space-y-4 shadow-xs">
-          <div className="w-14 h-14 rounded-2xl bg-beige-100 border border-beige-200 flex items-center justify-center text-3xl mx-auto">
-            💬
+          <div className="w-14 h-14 rounded-2xl bg-beige-100 border border-beige-200 flex items-center justify-center text-dark-green-900 mx-auto">
+            <MessageSquare className="w-7 h-7 text-sage-800" />
           </div>
           <div className="max-w-md mx-auto space-y-1">
             <h3 className="text-base font-extrabold text-dark-green-900">
@@ -569,11 +579,16 @@ export const FeedView: React.FC = () => {
                             <span>Check-In</span>
                           </span>
                         )}
-                        {isReaction && (
-                          <span className="px-2 py-0.5 rounded-full text-xs bg-beige-100 border border-beige-200">
-                            {item.emoji}
-                          </span>
-                        )}
+                        {isReaction && (() => {
+                          const def = getReactionDef(item.emoji);
+                          const IconComp = def.icon;
+                          return (
+                            <span className={`px-2 py-0.5 rounded-full text-xs font-bold border flex items-center gap-1 ${def.bgClass} ${def.borderClass} ${def.textClass}`}>
+                              <IconComp className={`w-3.5 h-3.5 ${def.iconColor}`} />
+                              <span>{def.label}</span>
+                            </span>
+                          );
+                        })()}
                       </div>
                       <span className="text-[11px] text-brown-700 flex items-center gap-1">
                         <Clock className="w-3 h-3" />
@@ -591,9 +606,11 @@ export const FeedView: React.FC = () => {
                   <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
                     {isCheckin ? (
                       <Sprout className="w-4 h-4 text-sage-800" />
-                    ) : isReaction ? (
-                      <Heart className="w-4 h-4 text-brown-700" />
-                    ) : resolvedCatName || resolvedCatIcon ? (
+                    ) : isReaction ? (() => {
+                      const def = getReactionDef(item.emoji);
+                      const IconComp = def.icon;
+                      return <IconComp className={`w-4 h-4 ${def.iconColor}`} />;
+                    })() : resolvedCatName || resolvedCatIcon ? (
                       <CategoryIcon name={resolvedCatName} group={resolvedCatGroup} icon={resolvedCatIcon} className="w-4 h-4" />
                     ) : isTransaction ? (
                       <Receipt className="w-4 h-4 text-dark-green-800" />

@@ -26,34 +26,6 @@ import {
 const LAST_TAB_STORAGE_KEY = 'canopy_last_log_tab';
 type LogTab = 'manual' | 'quicknote' | 'scan';
 
-const getCategoryIconSymbol = (iconName?: string) => {
-  switch (iconName) {
-    case 'shopping-bag':
-    case 'shopping-cart':
-      return '🛍️';
-    case 'sparkles':
-      return '✨';
-    case 'file-text':
-      return '📄';
-    case 'piggy-bank':
-      return '🐷';
-    case 'utensils':
-      return '🍽️';
-    case 'coffee':
-      return '☕';
-    case 'car':
-      return '🚗';
-    case 'home':
-      return '🏠';
-    case 'plane':
-      return '✈️';
-    case 'heart':
-      return '❤️';
-    default:
-      return '🏷️';
-  }
-};
-
 interface LogExpenseModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -530,7 +502,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                   >
                     {categories.map((cat) => (
                       <option key={cat.id} value={cat.id}>
-                        {getCategoryIconSymbol(cat.icon)} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
+                        {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
                       </option>
                     ))}
                   </select>

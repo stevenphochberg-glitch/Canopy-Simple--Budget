@@ -97,6 +97,11 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                             Active Device
                           </span>
                         )}
+                        {member.isPlaceholder && !isCurrentUser && (
+                          <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.2 rounded-full border border-amber-300">
+                            Unclaimed Slot
+                          </span>
+                        )}
                       </div>
                       <span className="text-xs text-dark-grey-600">
                         {member.hasProvidedIncome

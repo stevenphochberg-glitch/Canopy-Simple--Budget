@@ -64,6 +64,9 @@ export const getCategoryLucideIcon = (iconOrName?: string, group?: string) => {
   if (key === 'piggy-bank' || key.includes('saving') || key.includes('vault') || key.includes('emergency')) {
     return PiggyBank;
   }
+  if (key === 'shield' || key.includes('buffer') || key.includes('runway') || key.includes('reserve')) {
+    return Shield;
+  }
   if (key === 'trending-up' || key.includes('invest') || key.includes('stock') || key.includes('growth')) {
     return TrendingUp;
   }

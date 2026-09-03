@@ -22,6 +22,9 @@ export function normalizeToWeekly(amount: number, schedule: PaySchedule): number
     case 'bi-weekly':
       // 26 pay periods per year / 52 weeks
       return Math.round((amount * 26) / 52);
+    case 'semi-monthly':
+      // 24 pay periods per year (twice a month) / 52 weeks
+      return Math.round((amount * 24) / 52);
     case 'monthly':
       // 12 months per year / 52 weeks
       return Math.round((amount * 12) / 52);
@@ -84,10 +87,74 @@ export function formatCurrency(amount: number): string {
  * Returns default Top-Level Budget Buckets (Essentials, Fun Money, Bills, Savings).
  * Subcategories are listed as examples for the transaction ledger.
  */
-export function getDefaultCategories(weeklyIncomePool: number): Category[] {
+export function getDefaultCategories(
+  weeklyIncomePool: number,
+  incomeType?: 'predictable' | 'variable',
+  initialBufferAmount?: number
+): Category[] {
   const pool = weeklyIncomePool > 0 ? weeklyIncomePool : 1500;
 
-  // Proportional baseline distribution across top-level buckets summing to 100% of pool
+  if (incomeType === 'variable') {
+    // Variable income structure: Essentials, Bills, Fun Money, plus dedicated top-level "Income Buffer"
+    const bufferAmount = initialBufferAmount !== undefined ? initialBufferAmount : 6000;
+    const categories: Category[] = [
+      {
+        id: 'cat_income_buffer',
+        name: 'Income Buffer',
+        group: 'Savings',
+        icon: 'shield',
+        color: 'dark-green',
+        baselineBudget: 0, // holding tank, not weekly spend
+        currentWeeklyBudget: bufferAmount,
+        subcategories: ['Irregular Client Invoices', 'Commission Deposits', 'Lump Sum Reserves', 'Operating Buffer'],
+        description: 'Dedicated holding tank for large, irregular deposits. Fuels baseline weekly category drawdowns.',
+        totalLogged: 0,
+        transactionCount: 0,
+      },
+      {
+        id: 'cat_essentials',
+        name: 'Essentials',
+        group: 'Essentials',
+        icon: 'shopping-bag',
+        color: 'sage',
+        baselineBudget: Math.round(pool * 0.50),
+        currentWeeklyBudget: Math.round(pool * 0.50),
+        subcategories: ['Groceries', 'Gas & Transit', 'Personal Goods', 'Home Goods', 'Health & Pharmacy'],
+        description: 'Baseline necessities: groceries, fuel, household essentials.',
+        totalLogged: 0,
+        transactionCount: 0,
+      },
+      {
+        id: 'cat_bills',
+        name: 'Bills',
+        group: 'Bills',
+        icon: 'file-text',
+        color: 'brown',
+        baselineBudget: Math.round(pool * 0.35),
+        currentWeeklyBudget: Math.round(pool * 0.35),
+        subcategories: ['Mortgage / Rent', 'Utilities & Electric', 'Subscriptions & Phone', 'Insurance & Services'],
+        description: 'Fixed housing, recurring utilities, insurance, and critical debt.',
+        totalLogged: 0,
+        transactionCount: 0,
+      },
+      {
+        id: 'cat_fun_money',
+        name: 'Fun Money',
+        group: 'Fun Money',
+        icon: 'sparkles',
+        color: 'sky-blue',
+        baselineBudget: Math.round(pool * 0.15),
+        currentWeeklyBudget: Math.round(pool * 0.15),
+        subcategories: ['Restaurants & Dining', 'Coffee & Drinks', 'Shopping', 'Entertainment & Hobbies'],
+        description: 'Discretionary leisure, personal spending, dining out.',
+        totalLogged: 0,
+        transactionCount: 0,
+      },
+    ];
+    return categories;
+  }
+
+  // Standard predictable income distribution across top-level buckets
   const buckets: Array<{
     id: string;
     name: string;

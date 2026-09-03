@@ -1,31 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { AccountType, CalendarMode, DayOfWeek, HouseholdMember, OnboardingData } from '../../types';
+import { AccountType, CalendarMode, DayOfWeek, HouseholdMember, OnboardingData, Category, IncomeType } from '../../types';
 import { AccountTypeStep } from './AccountTypeStep';
 import { IncomeStep } from './IncomeStep';
 import { CalendarStep } from './CalendarStep';
+import { AllocationStep } from './AllocationStep';
 import { SyncCodeStep } from './SyncCodeStep';
-import { normalizeToWeekly, generateSyncCode } from '../../lib/calculations';
-
-const AVATAR_SEEDS = [
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=150&auto=format&fit=crop&q=80',
-];
+import { normalizeToWeekly, generateSyncCode, calculateWeeklyPool, getDefaultCategories } from '../../lib/calculations';
+import { generateFacelessVectorAvatar } from '../../lib/avatars';
 
 export const SetupWizard: React.FC = () => {
   const { user, household, completeOnboarding } = useHousehold();
   const [step, setStep] = useState<number>(1);
   const [accountType, setAccountType] = useState<AccountType>('couple');
+  const [incomeType, setIncomeType] = useState<IncomeType>('predictable');
+  const [baselineWeeklyBurnRate, setBaselineWeeklyBurnRate] = useState<number>(0);
+  const [initialBufferAmount, setInitialBufferAmount] = useState<number>(0);
   const [roommateCount, setRoommateCount] = useState<number>(3);
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('weekly');
   const [firstDayOfWeek, setFirstDayOfWeek] = useState<DayOfWeek>('Monday');
+  const [fiscalYearEndMonth, setFiscalYearEndMonth] = useState<number>(12);
   const [syncCode] = useState<string>(() => household?.syncCode || generateSyncCode());
 
   const [members, setMembers] = useState<HouseholdMember[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  // Initialize members based on selected account type
+  // Initialize members based on selected account type using faceless vector avatars for placeholders
   useEffect(() => {
     if (!user) return;
 
@@ -40,12 +40,13 @@ export const SetupWizard: React.FC = () => {
         {
           userId: user.userId,
           name: user.name || 'You',
-          avatarUrl: user.avatarUrl || AVATAR_SEEDS[0],
+          avatarUrl: user.avatarUrl || generateFacelessVectorAvatar(0),
           rawIncome: prevMembers[0]?.rawIncome || 2400,
           incomeSchedule: prevMembers[0]?.incomeSchedule || 'bi-weekly',
           normalizedWeeklyIncome: prevMembers[0]?.normalizedWeeklyIncome || normalizeToWeekly(2400, 'bi-weekly'),
           hasProvidedIncome: true,
           isCurrentUser: true,
+          isPlaceholder: false,
         },
       ];
 
@@ -55,9 +56,9 @@ export const SetupWizard: React.FC = () => {
         const existing = prevMembers[i];
 
         list.push({
-          userId: existing?.userId || `member_${Date.now()}_${i}`,
+          userId: existing?.userId || `placeholder_${Date.now()}_${i}`,
           name: existing?.name || name,
-          avatarUrl: existing?.avatarUrl || AVATAR_SEEDS[i % AVATAR_SEEDS.length],
+          avatarUrl: existing?.avatarUrl || generateFacelessVectorAvatar(i),
           rawIncome: existing ? existing.rawIncome : (accountType === 'couple' ? 4500 : 1800),
           incomeSchedule: existing ? existing.incomeSchedule : (accountType === 'couple' ? 'monthly' : 'bi-weekly'),
           normalizedWeeklyIncome: existing
@@ -65,6 +66,7 @@ export const SetupWizard: React.FC = () => {
             : normalizeToWeekly(accountType === 'couple' ? 4500 : 1800, accountType === 'couple' ? 'monthly' : 'bi-weekly'),
           hasProvidedIncome: existing ? existing.hasProvidedIncome : true,
           isCurrentUser: false,
+          isPlaceholder: true,
         });
       }
 
@@ -72,12 +74,31 @@ export const SetupWizard: React.FC = () => {
     });
   }, [accountType, roommateCount, user]);
 
+  const weeklyIncomePool = calculateWeeklyPool(members);
+
+  // Initialize or re-scale categories when weekly pool is established
+  useEffect(() => {
+    if (weeklyIncomePool > 0) {
+      setCategories((prev) => {
+        if (prev.length === 0) {
+          return getDefaultCategories(weeklyIncomePool, incomeType, initialBufferAmount);
+        }
+        return prev;
+      });
+    }
+  }, [weeklyIncomePool, incomeType, initialBufferAmount]);
+
   const onboardingData: OnboardingData = {
     accountType,
+    incomeType,
+    baselineWeeklyBurnRate,
+    initialBufferAmount,
     roommateCount,
     members,
+    categories,
     calendarMode,
     firstDayOfWeek,
+    fiscalYearEndMonth,
     syncCode,
   };
 
@@ -85,7 +106,8 @@ export const SetupWizard: React.FC = () => {
     { num: 1, title: 'Household Type' },
     { num: 2, title: 'Income Normalization' },
     { num: 3, title: 'Calendar & Check-in' },
-    { num: 4, title: 'Sync Code' },
+    { num: 4, title: 'Budget Allocation' },
+    { num: 5, title: 'Sync Code' },
   ];
 
   return (
@@ -97,7 +119,7 @@ export const SetupWizard: React.FC = () => {
           <span className="text-lg font-bold text-dark-green-900 font-sans">Canopy Setup</span>
         </div>
         <div className="text-xs font-semibold text-brown-700 bg-beige-100 px-3 py-1 rounded-full">
-          Step {step} of 4
+          Step {step} of 5
         </div>
       </header>
 
@@ -144,6 +166,14 @@ export const SetupWizard: React.FC = () => {
             <IncomeStep
               members={members}
               setMembers={setMembers}
+              fiscalYearEndMonth={fiscalYearEndMonth}
+              setFiscalYearEndMonth={setFiscalYearEndMonth}
+              incomeType={incomeType}
+              setIncomeType={setIncomeType}
+              baselineWeeklyBurnRate={baselineWeeklyBurnRate}
+              setBaselineWeeklyBurnRate={setBaselineWeeklyBurnRate}
+              initialBufferAmount={initialBufferAmount}
+              setInitialBufferAmount={setInitialBufferAmount}
               onNext={() => setStep(3)}
               onBack={() => setStep(1)}
             />
@@ -155,16 +185,27 @@ export const SetupWizard: React.FC = () => {
               setCalendarMode={setCalendarMode}
               firstDayOfWeek={firstDayOfWeek}
               setFirstDayOfWeek={setFirstDayOfWeek}
+              fiscalYearEndMonth={fiscalYearEndMonth}
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />
           )}
 
           {step === 4 && (
+            <AllocationStep
+              categories={categories.length > 0 ? categories : getDefaultCategories(weeklyIncomePool, incomeType, initialBufferAmount)}
+              setCategories={setCategories}
+              weeklyIncomePool={weeklyIncomePool}
+              onNext={() => setStep(5)}
+              onBack={() => setStep(3)}
+            />
+          )}
+
+          {step === 5 && (
             <SyncCodeStep
               data={onboardingData}
               onComplete={completeOnboarding}
-              onBack={() => setStep(3)}
+              onBack={() => setStep(4)}
             />
           )}
         </div>

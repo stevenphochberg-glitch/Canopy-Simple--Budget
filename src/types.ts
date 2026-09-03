@@ -3,7 +3,7 @@
  */
 
 export type AccountType = 'single' | 'couple' | 'family' | 'roommate' | 'join';
-export type PaySchedule = 'weekly' | 'bi-weekly' | 'monthly' | 'none';
+export type PaySchedule = 'weekly' | 'bi-weekly' | 'semi-monthly' | 'monthly' | 'none';
 export type CalendarMode = 'weekly' | 'monthly';
 export type DayOfWeek =
   | 'Monday'
@@ -20,8 +20,11 @@ export interface UserProfile {
   avatarUrl: string;
   email: string;
   activeHouseholdId: string | null;
+  householdIds?: string[];
   createdAt?: string;
 }
+
+export type IncomeType = 'predictable' | 'variable';
 
 export interface HouseholdMember {
   userId: string;
@@ -29,23 +32,70 @@ export interface HouseholdMember {
   avatarUrl: string;
   rawIncome: number;
   incomeSchedule: PaySchedule;
+  lastPayDate?: string; // YYYY-MM-DD
   normalizedWeeklyIncome: number;
   hasProvidedIncome: boolean;
   isCurrentUser?: boolean;
+  isPlaceholder?: boolean;
 }
 
 export interface Household {
   id: string;
   syncCode: string; // 6-character string e.g. "CNP-8X2"
   accountType: AccountType;
+  incomeType?: IncomeType;
+  baselineWeeklyBurnRate?: number;
+  initialBufferAmount?: number;
   roommateCount?: number | null;
   weeklyIncomePool: number;
   calendarMode: CalendarMode;
   firstDayOfWeek: DayOfWeek;
   lastDayOfWeek: DayOfWeek;
+  fiscalYearEndMonth?: number; // 1-12, default 12 (December)
+  extraPaycheckDecisions?: Record<string, ExtraPaycheckDecision>;
   createdById: string;
   createdAt: string;
   name?: string;
+  lastAutomatedDrawdownWeek?: string;
+}
+
+export interface FiscalMonth {
+  fiscalMonthNumber: number; // 1 to 12 (or 13 in rare cases)
+  quarter: number; // 1, 2, 3, 4
+  weekCount: number; // 4, 4, 5, or 6
+  name: string;
+  monthName: string;
+  startDate: Date;
+  endDate: Date;
+  label: string;
+}
+
+export interface ExtraPaycheckInfo {
+  isExtraPaycheckMonth: boolean;
+  memberBreakdown: Array<{
+    memberId: string;
+    memberName: string;
+    paySchedule: PaySchedule;
+    expectedPaychecks: number;
+    standardPaychecks: number;
+    extraCount: number;
+    extraAmount: number;
+    payDates: string[];
+  }>;
+  totalExtraIncome: number;
+  fiscalMonthName: string;
+  monthKey: string;
+  quarter: number;
+}
+
+export interface ExtraPaycheckDecision {
+  monthKey: string;
+  option: 'savings' | 'prorate' | 'extra_week_buffer' | 'custom';
+  customPercentages?: Record<string, number>;
+  totalExtraIncome: number;
+  extraWeekBufferAmount?: number;
+  savingsPortion?: number;
+  appliedAt: number;
 }
 
 export type CategoryGroup = 'Essentials' | 'Fun Money' | 'Bills' | 'Savings' | string;
@@ -198,10 +248,15 @@ export interface FeedItem {
 
 export interface OnboardingData {
   accountType: AccountType;
+  incomeType?: IncomeType;
+  baselineWeeklyBurnRate?: number;
+  initialBufferAmount?: number;
   roommateCount: number;
   members: HouseholdMember[];
+  categories?: Category[];
   calendarMode: CalendarMode;
   firstDayOfWeek: DayOfWeek;
+  fiscalYearEndMonth?: number; // 1-12, default 12
   syncCode?: string;
 }
 

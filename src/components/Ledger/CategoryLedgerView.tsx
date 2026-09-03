@@ -24,8 +24,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { Category, Expense } from '../../types';
-
-const COMMON_REACTIONS = ['👍', '❤️', '👏', '🛒', '💡', '🔥', '🎉'];
+import { EarthToneReaction } from '../Common/EarthToneReaction';
 
 export const CategoryLedgerView: React.FC = () => {
   const {
@@ -679,41 +678,13 @@ export const CategoryLedgerView: React.FC = () => {
                   </div>
                 )}
 
-                {/* SOCIAL REACTIONS BAR */}
-                <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-beige-100">
-                  {/* Existing emoji badges */}
-                  {Object.keys(reactionCounts).map((emoji) => {
-                    const meta = reactionCounts[emoji];
-                    return (
-                      <button
-                        key={emoji}
-                        onClick={() => addTransactionReaction(exp.id, emoji)}
-                        title={`Reacted by ${meta.users.join(', ')}`}
-                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border transition-all cursor-pointer ${
-                          meta.hasReacted
-                            ? 'bg-sage-100 border-sage-300 text-dark-green-950 shadow-2xs'
-                            : 'bg-beige-50/80 hover:bg-beige-100 border-beige-200 text-dark-green-900'
-                        }`}
-                      >
-                        <span>{emoji}</span>
-                        <span className="font-mono text-[11px]">{meta.count}</span>
-                      </button>
-                    );
-                  })}
-
-                  {/* Quick Reaction Emoji Pickers */}
-                  <div className="flex items-center gap-1 ml-1">
-                    {COMMON_REACTIONS.map((emoji) => (
-                      <button
-                        key={emoji}
-                        onClick={() => addTransactionReaction(exp.id, emoji)}
-                        className="p-1 rounded-full hover:bg-beige-100 text-sm transition hover:scale-110 cursor-pointer"
-                        title={`React with ${emoji}`}
-                      >
-                        {emoji}
-                      </button>
-                    ))}
-                  </div>
+                {/* SOCIAL REACTIONS BAR (CUSTOM EARTH-TONE SVG ICONS) */}
+                <div className="pt-1.5 border-t border-beige-100">
+                  <EarthToneReaction
+                    reactions={exp.reactions || []}
+                    onReact={(reactionId) => addTransactionReaction(exp.id, reactionId)}
+                    currentUserId={user?.userId}
+                  />
                 </div>
 
                 {/* COMMENTS SECTION (EXPANDABLE) */}

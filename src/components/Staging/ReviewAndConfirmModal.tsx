@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryGroup, StagedExpense } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
-import { getCategoryEmoji } from '../Common/CategoryIcon';
 import {
   X,
   Plus,
@@ -214,7 +213,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
                     >
                       {categories.map((cat) => (
                         <option key={cat.id} value={cat.id}>
-                          {getCategoryEmoji(cat.icon || cat.name, cat.group)} {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
+                          {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
                         </option>
                       ))}
                     </select>

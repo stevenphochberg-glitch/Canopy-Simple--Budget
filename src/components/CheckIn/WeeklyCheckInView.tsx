@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange } from '../../lib/calculations';
 import { calculateCheckInStatus } from '../../lib/checkInCalculations';
+import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   Clock,
   CheckCircle2,
@@ -73,7 +74,7 @@ export const WeeklyCheckInView: React.FC = () => {
             </span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-dark-green-900 mt-1">
-            Weekly Check-In & Accountability
+            Check-In and Accountability
           </h1>
           <p className="text-xs sm:text-sm text-brown-700">
             Align with your household every{' '}
@@ -99,7 +100,13 @@ export const WeeklyCheckInView: React.FC = () => {
             }`}
           >
             <Clock className="w-4 h-4" />
-            <span>{isPastDue ? 'Complete Past-Due Check-In' : 'Launch Check-In'}</span>
+            <span>
+              {isPastDue
+                ? 'Complete Past-Due Check-In'
+                : isLastDayOfWeek || status === 'pending'
+                ? 'Weekly Check-in Ready'
+                : 'Preview Check-In'}
+            </span>
           </button>
         </div>
       </div>
@@ -148,7 +155,7 @@ export const WeeklyCheckInView: React.FC = () => {
             </div>
           </div>
         </div>
-      ) : status === 'pending' ? (
+      ) : status === 'pending' || isLastDayOfWeek ? (
         /* ACTIVE CHECK-IN DAY BANNER */
         <div className="bg-gradient-to-br from-sage-50 to-beige-50 border-2 border-sage-300 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -159,7 +166,7 @@ export const WeeklyCheckInView: React.FC = () => {
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-black uppercase tracking-wider bg-sage-200 text-dark-green-900 px-2 py-0.5 rounded-full">
-                    Check-In Day Ready
+                    Weekly Check-in Ready
                   </span>
                   <span className="text-xs font-bold text-dark-green-800">
                     {activeWeekRange.label}
@@ -178,7 +185,7 @@ export const WeeklyCheckInView: React.FC = () => {
               onClick={() => openWeeklyCheckInModal()}
               className="px-6 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer flex items-center gap-2"
             >
-              <span>Start Weekly Check-In</span>
+              <span>Weekly Check-in Ready</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>
@@ -244,7 +251,7 @@ export const WeeklyCheckInView: React.FC = () => {
             onClick={() => openWeeklyCheckInModal()}
             className="px-4 py-2 bg-beige-100 hover:bg-beige-200 text-dark-green-900 text-xs font-bold rounded-2xl border border-beige-300 transition cursor-pointer"
           >
-            Preview / Check In Early
+            Preview Check-In
           </button>
         </div>
       )}
@@ -283,14 +290,21 @@ export const WeeklyCheckInView: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="text-base">{cat.icon || '🏷️'}</span>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-7 h-7 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center shrink-0">
+                      <CategoryIcon
+                        name={cat.name}
+                        group={cat.group}
+                        icon={cat.icon}
+                        className="w-3.5 h-3.5 text-dark-green-900"
+                      />
+                    </div>
                     <span className="text-xs font-bold text-dark-green-900 truncate">
                       {cat.name}
                     </span>
                   </div>
 
-                  <span className="text-xs font-black text-dark-green-900">
+                  <span className="text-xs font-black text-dark-green-900 shrink-0">
                     {formatCurrency(cat.currentWeeklyBudget)}/wk
                   </span>
                 </div>

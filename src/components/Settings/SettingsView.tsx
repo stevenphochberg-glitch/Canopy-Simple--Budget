@@ -14,6 +14,12 @@ import {
   Smartphone,
   Info,
   DollarSign,
+  UserMinus,
+  Trash2,
+  AlertTriangle,
+  LogOut,
+  Home,
+  Loader2,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -26,12 +32,24 @@ export const SettingsView: React.FC = () => {
     resetHouseholdToOnboarding,
     triggerFreshStartAction,
     executeMonthEndResetAction,
+    leaveHousehold,
+    deleteAccount,
+    signOut,
   } = useHousehold();
 
   const [copied, setCopied] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showFreshStartConfirm, setShowFreshStartConfirm] = useState(false);
   const [showMonthEndConfirm, setShowMonthEndConfirm] = useState(false);
+
+  // Leave Household Workflow State
+  const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveStep, setLeaveStep] = useState<'confirm' | 'choice'>('confirm');
+  const [isLeaving, setIsLeaving] = useState(false);
+
+  // Delete Account State
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const handleCopySync = () => {
     if (household?.syncCode) {
@@ -47,6 +65,30 @@ export const SettingsView: React.FC = () => {
 
   const handleCalendarModeToggle = (mode: CalendarMode) => {
     updateHousehold({ calendarMode: mode });
+  };
+
+  const handleLeaveOptionChoice = async (choice: 'new_household' | 'sign_out') => {
+    setIsLeaving(true);
+    try {
+      await leaveHousehold();
+      if (choice === 'sign_out') {
+        await signOut();
+      }
+    } finally {
+      setIsLeaving(false);
+      setShowLeaveModal(false);
+      setLeaveStep('confirm');
+    }
+  };
+
+  const handleConfirmDeleteAccount = async () => {
+    setIsDeleting(true);
+    try {
+      await deleteAccount();
+    } finally {
+      setIsDeleting(false);
+      setShowDeleteModal(false);
+    }
   };
 
   return (
@@ -353,6 +395,163 @@ export const SettingsView: React.FC = () => {
           >
             <RotateCcw className="w-3.5 h-3.5" />
             <span>Re-open Tutorial Flow</span>
+          </button>
+        )}
+      </div>
+
+      {/* Leave Household Section */}
+      <div className="bg-white border border-beige-200 rounded-2xl p-5 sm:p-6 shadow-sm space-y-3">
+        <div className="flex items-center gap-2 text-dark-green-900 font-bold text-base">
+          <UserMinus className="w-5 h-5 text-brown-700" />
+          <span>Household Membership</span>
+        </div>
+        <p className="text-xs text-brown-700 leading-relaxed">
+          Disconnect your account from <span className="font-semibold text-dark-green-900">{household?.name || 'this household'}</span>.
+        </p>
+
+        {showLeaveModal ? (
+          <div className="p-4 bg-beige-100 border border-beige-300 rounded-xl space-y-4">
+            {leaveStep === 'confirm' ? (
+              <>
+                <div className="flex items-start gap-2.5 text-xs text-brown-900 font-medium">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Are you sure you want to leave <strong className="font-bold text-dark-green-900">{household?.name || 'the household'}</strong>? You will no longer have access to this shared budget unless you re-join with the sync code.
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    id="confirm-leave-household-step-btn"
+                    onClick={() => setLeaveStep('choice')}
+                    className="px-4 py-2 bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                  >
+                    Continue
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowLeaveModal(false)}
+                    className="px-4 py-2 bg-white border border-beige-300 hover:bg-beige-50 text-dark-grey-800 text-xs font-medium rounded-xl transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs font-bold text-dark-green-900">
+                  What would you like to do next?
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                  <button
+                    type="button"
+                    id="leave-and-new-household-btn"
+                    disabled={isLeaving}
+                    onClick={() => handleLeaveOptionChoice('new_household')}
+                    className="flex items-center justify-center gap-2 p-3 bg-white hover:bg-sage-50 border border-sage-300 hover:border-dark-green-700 text-dark-green-900 font-semibold text-xs rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isLeaving ? <Loader2 className="w-4 h-4 animate-spin text-dark-green-800" /> : <Home className="w-4 h-4 text-dark-green-800" />}
+                    <span>Set up a new household</span>
+                  </button>
+                  <button
+                    type="button"
+                    id="leave-and-sign-out-btn"
+                    disabled={isLeaving}
+                    onClick={() => handleLeaveOptionChoice('sign_out')}
+                    className="flex items-center justify-center gap-2 p-3 bg-white hover:bg-beige-50 border border-beige-300 hover:border-brown-400 text-brown-900 font-semibold text-xs rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isLeaving ? <Loader2 className="w-4 h-4 animate-spin text-brown-700" /> : <LogOut className="w-4 h-4 text-brown-700" />}
+                    <span>Sign out</span>
+                  </button>
+                </div>
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLeaveModal(false);
+                      setLeaveStep('confirm');
+                    }}
+                    className="text-xs text-dark-grey-600 hover:underline cursor-pointer"
+                  >
+                    Back to Settings
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            id="leave-household-btn"
+            onClick={() => {
+              setLeaveStep('confirm');
+              setShowLeaveModal(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-beige-100 hover:bg-beige-200 text-dark-green-900 text-xs font-semibold rounded-xl border border-beige-300 transition cursor-pointer"
+          >
+            <UserMinus className="w-3.5 h-3.5 text-brown-700" />
+            <span>Leave Household</span>
+          </button>
+        )}
+      </div>
+
+      {/* Danger Zone: Delete Account (Styled Entirely in Red) */}
+      <div className="bg-red-50/70 border border-red-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-3">
+        <div className="flex items-center gap-2 text-red-900 font-bold text-base">
+          <Trash2 className="w-5 h-5 text-red-700" />
+          <span>Delete Account</span>
+        </div>
+        <p className="text-xs text-red-800 leading-relaxed">
+          Permanently delete your user profile and login credentials. Deleting your account will immediately remove you from the household and route you to the sign-up page. This action cannot be undone.
+        </p>
+
+        {showDeleteModal ? (
+          <div className="p-4 bg-red-100/80 border border-red-300 rounded-xl space-y-3">
+            <div className="flex items-start gap-2 text-xs text-red-950 font-semibold">
+              <AlertTriangle className="w-4 h-4 text-red-700 flex-shrink-0 mt-0.5" />
+              <span>
+                Warning: Are you absolutely certain you want to delete your account? You will be removed from your household and returned to the initial registration page.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                id="confirm-delete-account-btn"
+                disabled={isDeleting}
+                onClick={handleConfirmDeleteAccount}
+                className="flex items-center gap-1.5 px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Deleting Account...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Permanently Delete My Account</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setShowDeleteModal(false)}
+                className="px-4 py-2 bg-white border border-red-200 hover:bg-red-50 text-red-900 text-xs font-medium rounded-xl transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            id="delete-account-btn"
+            onClick={() => setShowDeleteModal(true)}
+            className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl border border-red-700 transition cursor-pointer shadow-xs"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Delete Account</span>
           </button>
         )}
       </div>

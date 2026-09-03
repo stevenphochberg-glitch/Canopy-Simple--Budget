@@ -6,8 +6,15 @@ import {
   getCategoryBudgetForTimeframe,
   isExpenseInDateRange,
 } from '../../lib/calculations';
+import {
+  getFiscalMonthForDate,
+  detectExtraPaycheckMonth,
+  getFiscalTrackerInfo,
+} from '../../lib/fiscal445';
 import { CategoryCard } from './CategoryCard';
 import { CategoryIcon } from '../Common/CategoryIcon';
+import { ExtraPaycheckBanner } from './ExtraPaycheckBanner';
+import { RunwayVisualizer } from './RunwayVisualizer';
 import {
   Plus,
   ChevronLeft,
@@ -15,6 +22,7 @@ import {
   RotateCcw,
   Receipt,
   Trash2,
+  Calendar,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -23,6 +31,7 @@ interface DashboardViewProps {
 
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const {
+    household,
     categories,
     expenses,
     members,
@@ -38,7 +47,20 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     deleteExpense,
   } = useHousehold();
 
-  // 1. Calculate overall totals for active timeframe
+  // 1. Calculate 4-4-5 Fiscal Month & Tracker Coordinates & Extra Paycheck Detection
+  const fiscalMonth = useMemo(() => {
+    return getFiscalMonthForDate(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
+  }, [activeDateRange.startDate, household?.fiscalYearEndMonth]);
+
+  const fiscalTracker = useMemo(() => {
+    return getFiscalTrackerInfo(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
+  }, [activeDateRange.startDate, household?.fiscalYearEndMonth]);
+
+  const extraPaycheckInfo = useMemo(() => {
+    return detectExtraPaycheckMonth(members, fiscalMonth);
+  }, [members, fiscalMonth]);
+
+  // 2. Calculate overall totals for active timeframe
   const totalWeeklyBudget = categories.reduce(
     (sum, c) => sum + (Number(c.currentWeeklyBudget) || 0),
     0
@@ -67,6 +89,25 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   else if (overallPercentage >= 75) overallBarColor = 'bg-amber-600';
 
   const isCurrentTimeframe = timeframeOffset === 0;
+
+  // 3. Variable Income Buffer & Runway Calculations
+  const bufferCategory = useMemo(() => {
+    return categories.find(
+      (c) => c.id === 'cat_income_buffer' || c.name.toLowerCase().includes('buffer')
+    );
+  }, [categories]);
+
+  const isVariableIncome = household?.incomeType === 'variable' || Boolean(bufferCategory);
+  const bufferAmount = bufferCategory ? (Number(bufferCategory.currentWeeklyBudget) || 0) : (household?.initialBufferAmount || 0);
+  const baselineBurnRate = useMemo(() => {
+    if (household?.baselineWeeklyBurnRate && household.baselineWeeklyBurnRate > 0) {
+      return household.baselineWeeklyBurnRate;
+    }
+    const standardSum = categories
+      .filter((c) => c.id !== bufferCategory?.id)
+      .reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
+    return standardSum > 0 ? standardSum : totalWeeklyBudget;
+  }, [household?.baselineWeeklyBurnRate, categories, bufferCategory, totalWeeklyBudget]);
 
   return (
     <div className="space-y-6 pb-20 lg:pb-8">
@@ -107,6 +148,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               Month View
             </button>
           </div>
+
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-sage-50 border border-sage-200/90 rounded-xl text-[11px] font-bold text-dark-green-950 shadow-2xs">
+            <Calendar className="w-3.5 h-3.5 text-sage-700 shrink-0" />
+            <span className="font-extrabold tracking-tight">{fiscalTracker.label}</span>
+          </div>
         </div>
 
         {/* Center/Right: Timeframe Arrow Navigation (<, Date Range Label, >) */}
@@ -125,12 +171,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
                 {activeDateRange.label}
               </span>
-              <span className="text-[10px] text-brown-700 font-medium block">
-                {isCurrentTimeframe
-                  ? `Current ${timeframeMode === 'week' ? 'Fiscal Week' : 'Calendar Month'}`
-                  : timeframeOffset < 0
-                  ? `${Math.abs(timeframeOffset)} ${timeframeMode}${Math.abs(timeframeOffset) > 1 ? 's' : ''} ago`
-                  : `In ${timeframeOffset} ${timeframeMode}${timeframeOffset > 1 ? 's' : ''}`}
+              <span className="text-[10px] text-brown-700 font-semibold block">
+                {fiscalTracker.label}
               </span>
             </div>
 
@@ -158,6 +200,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           )}
         </div>
       </div>
+
+      {/* Extra Paycheck Month Banner */}
+      <ExtraPaycheckBanner extraInfo={extraPaycheckInfo} />
 
       {/* Executive Budget Summary Card */}
       <div className="bg-gradient-to-br from-sage-50 via-white to-beige-50 border border-sage-200/90 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
@@ -245,6 +290,16 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         </div>
       </div>
+
+      {/* Variable Income Runway Forecast with Canopy Woven Arch Visualizer */}
+      {isVariableIncome && (
+        <RunwayVisualizer
+          incomeBufferAmount={bufferAmount}
+          baselineWeeklyBurnRate={baselineBurnRate}
+          targetWeeks={12}
+          onOpenBufferModal={() => openAllocationModal()}
+        />
+      )}
 
       {/* Top-Level Budget Buckets Section (Flattened) */}
       <div className="space-y-4">

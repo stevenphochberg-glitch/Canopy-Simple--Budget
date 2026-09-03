@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange, calculateCategorySpending } from '../../lib/calculations';
+import { getFiscalMonthForDate } from '../../lib/fiscal445';
 import {
   Calendar,
   Sparkles,
@@ -24,7 +25,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
   isOpen,
   onClose,
 }) => {
-  const { household, categories, expenses, members, user, executeMonthEndResetAction } =
+  const { household, categories, expenses, members, user, checkIns, executeMonthEndResetAction } =
     useHousehold();
 
   const [intentionsText, setIntentionsText] = useState<string>('');
@@ -36,6 +37,19 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
   const monthRange = useMemo(() => {
     return getMonthRange(new Date(), 0);
   }, []);
+
+  // Check whether the final weekly check-in of the current fiscal month is complete
+  const isFinalWeeklyCheckInComplete = useMemo(() => {
+    const fiscalMonth = getFiscalMonthForDate(new Date(), household?.fiscalYearEndMonth || 12);
+    // End date of the fiscal month
+    const monthEndTime = fiscalMonth.endDate.getTime();
+    const finalWeekStartTime = monthEndTime - 6 * 24 * 60 * 60 * 1000;
+
+    return (checkIns || []).some((c) => {
+      const cEndTime = new Date(c.weekEndDate).getTime();
+      return cEndTime >= finalWeekStartTime;
+    });
+  }, [checkIns, household?.fiscalYearEndMonth]);
 
   // Compute month metrics
   const monthStats = useMemo(() => {
@@ -268,6 +282,15 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                 </p>
               </div>
 
+              {!isFinalWeeklyCheckInComplete && (
+                <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center gap-2.5 text-xs text-amber-950 font-medium">
+                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>
+                    * The last weekly check-in of the month needs to be completed before the Monthly Retrospective can be completed.
+                  </span>
+                </div>
+              )}
+
               {/* Intentions Textarea */}
               <div className="space-y-1.5">
                 <label className="text-xs font-bold text-dark-green-900 block">
@@ -296,15 +319,22 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
               Cancel
             </button>
 
-            <button
-              type="button"
-              onClick={handleExecuteReset}
-              disabled={isExecutingReset}
-              className="flex items-center gap-2 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer disabled:opacity-50"
-            >
-              <RotateCcw className="w-4 h-4" />
-              <span>{isExecutingReset ? 'Executing Reset...' : 'Execute Month-End Hard Reset'}</span>
-            </button>
+            <div className="flex flex-col items-end gap-1">
+              <button
+                type="button"
+                onClick={handleExecuteReset}
+                disabled={isExecutingReset || !isFinalWeeklyCheckInComplete}
+                className="flex items-center gap-2 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span>{isExecutingReset ? 'Executing Reset...' : 'Execute Month-End Hard Reset'}</span>
+              </button>
+              {!isFinalWeeklyCheckInComplete && (
+                <span className="text-[11px] text-amber-800 font-semibold italic text-right max-w-sm">
+                  * The last weekly check-in of the month needs to be completed before the Monthly Retrospective can be completed.
+                </span>
+              )}
+            </div>
           </div>
         )}
       </div>

@@ -3,7 +3,7 @@
  * Live Firestore Subscriptions, Dynamic Allocations, Real-time Feeds & Social Interactions
  * Project ID: canopy-d29a1
  */
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   AccountType,
   CalendarMode,
@@ -18,6 +18,7 @@ import {
   ActiveTab,
   StagedExpense,
   CategoryRolloverDecision,
+  ExtraPaycheckDecision,
   TimeframeMode,
   DateRange,
   FeedItem,
@@ -33,12 +34,16 @@ import {
   getWeekRange,
   getMonthRange,
   parseExpenseTimestamp,
+  formatCurrency,
 } from '../lib/calculations';
+import { getReactionDef } from '../components/Common/EarthToneReaction';
 import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
   signInWithPopup,
   signOut as firebaseSignOut,
   onAuthStateChanged,
+  deleteUser,
+  reauthenticateWithPopup,
 } from 'firebase/auth';
 import {
   collection,
@@ -172,6 +177,7 @@ export interface HouseholdContextType {
   saveCategoryAllocations: (updatedCategories: Category[]) => Promise<void>;
 
   // Expense mutations
+  addExpense: (expense: Omit<Expense, 'id'>) => Promise<void>;
   deleteExpense: (id: string) => Promise<void>;
   updateExpense: (id: string, updates: Partial<Expense>) => Promise<void>;
 
@@ -184,8 +190,16 @@ export interface HouseholdContextType {
   signInWithGoogle: () => Promise<void>;
   switchActiveMember: (memberId: string) => void;
   signOut: () => Promise<void>;
+  deleteAccount: () => Promise<void>;
   completeOnboarding: (data: OnboardingData) => Promise<void>;
-  joinHouseholdWithSyncCode: (syncCode: string) => Promise<{ success: boolean; message?: string }>;
+  joinHouseholdWithSyncCode: (
+    syncCode: string,
+    claimPlaceholderMemberId?: string,
+    memberCustomData?: Partial<HouseholdMember>
+  ) => Promise<{ success: boolean; message?: string }>;
+  getHouseholdBySyncCode: (
+    syncCode: string
+  ) => Promise<{ household: Household; members: HouseholdMember[] } | null>;
   leaveHousehold: () => Promise<void>;
   updateHousehold: (updated: Partial<Household>) => Promise<void>;
   updateMemberIncome: (
@@ -194,7 +208,13 @@ export interface HouseholdContextType {
     schedule: HouseholdMember['incomeSchedule'],
     hasProvided: boolean
   ) => Promise<void>;
+  applyExtraPaycheckDecision: (decision: ExtraPaycheckDecision) => Promise<void>;
   resetHouseholdToOnboarding: () => void;
+
+  // Multi-Household Switcher & Automated Buffer Drawdown
+  userHouseholds: Household[];
+  switchHousehold: (householdId: string) => Promise<void>;
+  triggerAutomatedDrawdown: () => Promise<void>;
 }
 
 const HouseholdContext = createContext<HouseholdContextType | undefined>(undefined);
@@ -203,6 +223,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Authentication & Async State Tracking
   const [user, setUser] = useState<UserProfile | null>(null);
   const [household, setHousehold] = useState<Household | null>(null);
+  const [userHouseholds, setUserHouseholds] = useState<Household[]>([]);
+  const [authInitialized, setAuthInitialized] = useState<boolean>(false);
+  const [currentAuthUser, setCurrentAuthUser] = useState<any>(null);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -211,6 +234,34 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isHouseholdLoading, setIsHouseholdLoading] = useState<boolean>(false);
+
+  // Helper to fetch all joined household documents for the multi-household switcher
+  const refreshUserHouseholds = useCallback(
+    async (householdIds: string[]) => {
+      if (!isFirebaseConfigured || !db || !householdIds || householdIds.length === 0) {
+        setUserHouseholds([]);
+        return;
+      }
+      try {
+        const uniqueIds = Array.from(new Set(householdIds)).filter(Boolean);
+        const list: Household[] = [];
+        for (const hid of uniqueIds) {
+          try {
+            const snap = await getDoc(doc(db, 'households', hid));
+            if (snap.exists()) {
+              list.push({ ...(snap.data() as Household), id: snap.id });
+            }
+          } catch (e) {
+            console.warn(`[HouseholdContext] Could not fetch household ${hid}:`, e);
+          }
+        }
+        setUserHouseholds(list);
+      } catch (e) {
+        console.warn('[HouseholdContext] refreshUserHouseholds error:', e);
+      }
+    },
+    []
+  );
 
   // UI Navigation & View Modes
   const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
@@ -286,10 +337,32 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setTimeframeOffset(0);
   };
 
+  // Active Firestore listeners reference & clean unsubscription helper
+  const activeListenersRef = useRef<(() => void)[]>([]);
+
+  const unsubscribeAllListeners = useCallback(() => {
+    if (activeListenersRef.current && activeListenersRef.current.length > 0) {
+      const listeners = [...activeListenersRef.current];
+      activeListenersRef.current = [];
+      listeners.forEach((unsub) => {
+        try {
+          if (typeof unsub === 'function') {
+            unsub();
+          }
+        } catch (e) {
+          console.warn('Error unsubscribing listener:', e);
+        }
+      });
+    }
+  }, []);
+
   // 1. Live Firebase Auth Listener & Session Binding
   useEffect(() => {
     if (isFirebaseConfigured && auth && db) {
       const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        setCurrentAuthUser(firebaseUser);
+        setAuthInitialized(true);
+
         if (firebaseUser) {
           try {
             setIsLoading(true);
@@ -297,6 +370,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             const userSnap = await getDoc(userDocRef);
 
             let activeHouseholdId: string | null = null;
+            let householdIds: string[] = [];
             let userProfileName = firebaseUser.displayName || 'Canopy Member';
             let userProfileAvatar =
               firebaseUser.photoURL ||
@@ -305,6 +379,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             if (userSnap.exists()) {
               const userData = userSnap.data();
               activeHouseholdId = userData.activeHouseholdId || null;
+              householdIds = Array.isArray(userData.householdIds)
+                ? userData.householdIds
+                : (userData.activeHouseholdId ? [userData.activeHouseholdId] : []);
               if (userData.name) userProfileName = userData.name;
               if (userData.avatarUrl) userProfileAvatar = userData.avatarUrl;
             } else {
@@ -317,6 +394,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                   email: firebaseUser.email || '',
                   avatarUrl: userProfileAvatar,
                   activeHouseholdId: null,
+                  householdIds: [],
                   createdAt: new Date().toISOString(),
                 })
               );
@@ -328,9 +406,17 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               email: firebaseUser.email || '',
               avatarUrl: userProfileAvatar,
               activeHouseholdId,
+              householdIds,
               createdAt: new Date().toISOString(),
             };
             setUser(profile);
+
+            // Fetch all joined households for multi-household switcher
+            if (householdIds.length > 0) {
+              refreshUserHouseholds(householdIds);
+            } else {
+              setUserHouseholds([]);
+            }
 
             // If activeHouseholdId exists, verify it exists in Firestore
             if (activeHouseholdId) {
@@ -345,48 +431,26 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               }
             }
 
-            // Fallback: check if user is the creator of any household
-            const hhQuery = query(collection(db, 'households'), where('createdById', '==', firebaseUser.uid));
-            const hhSnapshot = await getDocs(hhQuery);
-            if (!hhSnapshot.empty) {
-              const foundHhDoc = hhSnapshot.docs[0];
-              activeHouseholdId = foundHhDoc.id;
-              const loadedHousehold = { ...(foundHhDoc.data() as Household), id: foundHhDoc.id };
-              setHousehold(loadedHousehold);
-
-              // Update user doc with linked activeHouseholdId
-              await setDoc(
-                userDocRef,
-                sanitizeFirestorePayload({
-                  activeHouseholdId,
-                  updatedAt: new Date().toISOString(),
-                }),
-                { merge: true }
-              );
-
-              setUser({
-                ...profile,
-                activeHouseholdId,
-              });
-              setIsOnboarding(false);
-              setIsLoading(false);
-              return;
-            }
-
-            // If no household document exists for this user, open onboarding
+            // User has no active household or left household -> open Setup Wizard
+            setHousehold(null);
             setIsOnboarding(true);
             setIsLoading(false);
           } catch (err) {
             console.error('Firestore Error loading user session:', err);
             handleFirestoreError(err, OperationType.GET, `users/${firebaseUser.uid}`);
             showToast(`Session load note: ${err instanceof Error ? err.message : String(err)}`, 'error');
+            setHousehold(null);
             setIsOnboarding(true);
             setIsLoading(false);
           }
         } else {
           // Logged out
+          setCurrentAuthUser(null);
+          setAuthInitialized(true);
+          unsubscribeAllListeners();
           setUser(null);
           setHousehold(null);
+          setUserHouseholds([]);
           setMembers([]);
           setCategories([]);
           setExpenses([]);
@@ -400,12 +464,28 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     } else {
       // Firebase not configured yet
       setIsLoading(false);
+      setAuthInitialized(true);
     }
-  }, [showToast]);
+  }, [showToast, unsubscribeAllListeners, refreshUserHouseholds]);
 
   // 2. Live Firestore Subscriptions for Household, Categories, Members, Expenses, CheckIns, and Feed
   useEffect(() => {
-    if (!isFirebaseConfigured || !db || !household?.id) {
+    // Unsubscribe from any previously active listeners before establishing new ones
+    unsubscribeAllListeners();
+
+    // 1. FIX FIREBASE LISTENER RACE CONDITION:
+    // Explicitly wait for Firebase Auth to finish initializing and for currentUser to be truthy.
+    // If currentUser is null or loading, do not attach the data listeners.
+    if (
+      !isFirebaseConfigured ||
+      !db ||
+      !authInitialized ||
+      !currentAuthUser ||
+      !auth?.currentUser ||
+      !user?.userId ||
+      !household?.id ||
+      isLoading
+    ) {
       return;
     }
 
@@ -424,7 +504,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       },
       (err) => {
         setIsHouseholdLoading(false);
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}`);
+        console.warn(`[Firestore] Household listener note:`, err);
       }
     );
 
@@ -439,7 +519,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setCategories(loadedCats);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}/categories`);
+        console.warn(`[Firestore] Categories listener note:`, err);
       }
     );
 
@@ -455,7 +535,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setMembers(loadedMembers);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}/members`);
+        console.warn(`[Firestore] Members listener note:`, err);
       }
     );
 
@@ -480,7 +560,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setExpenses(loadedExpenses);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}/expenses`);
+        console.warn(`[Firestore] Expenses listener note:`, err);
       }
     );
 
@@ -496,7 +576,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setCheckIns(loadedCheckIns);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}/checkins`);
+        console.warn(`[Firestore] Checkins listener note:`, err);
       }
     );
 
@@ -512,19 +592,23 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setFeedItems(loadedFeed);
       },
       (err) => {
-        handleFirestoreError(err, OperationType.READ, `households/${householdId}/feed`);
+        console.warn(`[Firestore] Feed listener note:`, err);
       }
     );
 
+    activeListenersRef.current = [
+      unsubHousehold,
+      unsubCategories,
+      unsubMembers,
+      unsubExpenses,
+      unsubCheckIns,
+      unsubFeed,
+    ];
+
     return () => {
-      unsubHousehold();
-      unsubCategories();
-      unsubMembers();
-      unsubExpenses();
-      unsubCheckIns();
-      unsubFeed();
+      unsubscribeAllListeners();
     };
-  }, [household?.id, user?.userId]);
+  }, [authInitialized, currentAuthUser, user?.userId, household?.id, isLoading, unsubscribeAllListeners]);
 
   // Google Sign-In with real Firebase GoogleAuthProvider
   const signInWithGoogle = async () => {
@@ -538,6 +622,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const userSnap = await getDoc(userDocRef);
 
         let activeHouseholdId: string | null = null;
+        let householdIds: string[] = [];
         let userName = fbUser.displayName || 'Canopy Member';
         let avatarUrl =
           fbUser.photoURL ||
@@ -546,6 +631,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         if (userSnap.exists()) {
           const uData = userSnap.data();
           activeHouseholdId = uData.activeHouseholdId || null;
+          householdIds = Array.isArray(uData.householdIds)
+            ? uData.householdIds
+            : (uData.activeHouseholdId ? [uData.activeHouseholdId] : []);
           if (uData.name) userName = uData.name;
           if (uData.avatarUrl) avatarUrl = uData.avatarUrl;
         } else {
@@ -557,6 +645,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               email: fbUser.email || '',
               avatarUrl,
               activeHouseholdId: null,
+              householdIds: [],
               createdAt: new Date().toISOString(),
             })
           );
@@ -568,9 +657,16 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           email: fbUser.email || '',
           avatarUrl,
           activeHouseholdId,
+          householdIds,
           createdAt: new Date().toISOString(),
         };
         setUser(profile);
+
+        if (householdIds.length > 0) {
+          refreshUserHouseholds(householdIds);
+        } else {
+          setUserHouseholds([]);
+        }
 
         if (activeHouseholdId) {
           const hhRef = doc(db, 'households', activeHouseholdId);
@@ -581,24 +677,12 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             setIsOnboarding(false);
             setActiveTab('dashboard');
           } else {
+            setHousehold(null);
             setIsOnboarding(true);
           }
         } else {
-          // Check if user previously created a household
-          const hhQuery = query(collection(db, 'households'), where('createdById', '==', fbUser.uid));
-          const hhSnapshot = await getDocs(hhQuery);
-          if (!hhSnapshot.empty) {
-            const foundHhDoc = hhSnapshot.docs[0];
-            activeHouseholdId = foundHhDoc.id;
-            const loadedHousehold = { ...(foundHhDoc.data() as Household), id: foundHhDoc.id };
-            setHousehold(loadedHousehold);
-            await setDoc(userDocRef, sanitizeFirestorePayload({ activeHouseholdId }), { merge: true });
-            setUser({ ...profile, activeHouseholdId });
-            setIsOnboarding(false);
-            setActiveTab('dashboard');
-          } else {
-            setIsOnboarding(true);
-          }
+          setHousehold(null);
+          setIsOnboarding(true);
         }
 
         setIsLoading(false);
@@ -629,6 +713,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const signOut = async () => {
+    unsubscribeAllListeners();
     if (isFirebaseConfigured && auth) {
       try {
         await firebaseSignOut(auth);
@@ -662,20 +747,30 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       name: `${user.name.split(' ')[0]}'s Household`,
       syncCode,
       accountType: data.accountType,
+      incomeType: data.incomeType || 'predictable',
+      baselineWeeklyBurnRate: data.baselineWeeklyBurnRate,
+      initialBufferAmount: data.initialBufferAmount,
       roommateCount: isRoommate ? Number(data.roommateCount) || 3 : null,
       weeklyIncomePool: totalWeeklyPool,
       calendarMode: data.calendarMode,
       firstDayOfWeek: data.firstDayOfWeek,
       lastDayOfWeek: lastDay,
+      fiscalYearEndMonth: data.fiscalYearEndMonth || 12,
       createdById: user.userId,
       createdAt: new Date().toISOString(),
     };
 
-    const initialCategories = getDefaultCategories(totalWeeklyPool);
+    const initialCategories = data.categories && data.categories.length > 0
+      ? data.categories
+      : getDefaultCategories(totalWeeklyPool, data.incomeType, data.initialBufferAmount);
+
+    const existingHouseholdIds = user.householdIds || [];
+    const updatedHouseholdIds = Array.from(new Set([...existingHouseholdIds, householdId]));
 
     const updatedUser: UserProfile = {
       ...user,
       activeHouseholdId: householdId,
+      householdIds: updatedHouseholdIds,
     };
 
     // 1. Optimistic React State update
@@ -683,6 +778,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setMembers(data.members);
     setCategories(initialCategories);
     setUser(updatedUser);
+    setUserHouseholds((prev) => [...prev.filter((h) => h.id !== householdId), newHousehold]);
     setIsOnboarding(false);
     setActiveTab('dashboard');
 
@@ -738,8 +834,45 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Household created & live budget buckets initialized.');
   };
 
-  // Join Existing Household by 6-character Sync Code
-  const joinHouseholdWithSyncCode = async (syncCode: string): Promise<{ success: boolean; message?: string }> => {
+  // Inspect existing household by 6-character Sync Code
+  const getHouseholdBySyncCode = async (
+    syncCode: string
+  ): Promise<{ household: Household; members: HouseholdMember[] } | null> => {
+    const rawClean = syncCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!rawClean || rawClean.length < 4 || !isFirebaseConfigured || !db) return null;
+
+    try {
+      const householdsRef = collection(db, 'households');
+      const q = query(householdsRef);
+      const snapshot = await getDocs(q);
+
+      const targetDoc = snapshot.docs.find((d) => {
+        const sc = d.data().syncCode;
+        return sc && sc.toString().toUpperCase().replace(/[^A-Z0-9]/g, '') === rawClean;
+      });
+
+      if (!targetDoc) return null;
+
+      const hhData = { ...targetDoc.data(), id: targetDoc.id } as Household;
+      const membersSnap = await getDocs(collection(db, 'households', targetDoc.id, 'members'));
+      const hhMembers = membersSnap.docs.map((d) => ({
+        ...(d.data() as HouseholdMember),
+        userId: d.id,
+      }));
+
+      return { household: hhData, members: hhMembers };
+    } catch (e) {
+      console.warn('getHouseholdBySyncCode error:', e);
+      return null;
+    }
+  };
+
+  // Join Existing Household by 6-character Sync Code with Optional Placeholder Claiming
+  const joinHouseholdWithSyncCode = async (
+    syncCode: string,
+    claimPlaceholderMemberId?: string,
+    memberCustomData?: Partial<HouseholdMember>
+  ): Promise<{ success: boolean; message?: string }> => {
     const rawClean = syncCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!rawClean || rawClean.length < 4) {
       return { success: false, message: 'Please enter a valid sync code (e.g. CNP-8X2).' };
@@ -766,25 +899,53 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const targetHouseholdData = { ...targetDoc.data(), id: targetDoc.id } as Household;
         const targetHouseholdId = targetDoc.id;
 
+        const existingHouseholdIds = user.householdIds || [];
+        const updatedHouseholdIds = Array.from(new Set([...existingHouseholdIds, targetHouseholdId]));
+
         const updatedUser: UserProfile = {
           ...user,
           activeHouseholdId: targetHouseholdId,
+          householdIds: updatedHouseholdIds,
         };
+
+        let placeholderData: Partial<HouseholdMember> | null = null;
+        if (claimPlaceholderMemberId && claimPlaceholderMemberId !== user.userId) {
+          try {
+            const phSnap = await getDoc(
+              doc(db, 'households', targetHouseholdId, 'members', claimPlaceholderMemberId)
+            );
+            if (phSnap.exists()) {
+              placeholderData = phSnap.data() as HouseholdMember;
+            }
+          } catch (e) {
+            console.warn('Could not read placeholder before claiming:', e);
+          }
+        }
+
+        const rawIncome = memberCustomData?.rawIncome ?? placeholderData?.rawIncome ?? 1800;
+        const schedule = memberCustomData?.incomeSchedule ?? placeholderData?.incomeSchedule ?? 'bi-weekly';
 
         const newMember: HouseholdMember = {
           userId: user.userId,
-          name: user.name,
-          avatarUrl: user.avatarUrl,
-          rawIncome: 1800,
-          incomeSchedule: 'bi-weekly',
-          normalizedWeeklyIncome: normalizeToWeekly(1800, 'bi-weekly'),
+          name: memberCustomData?.name || placeholderData?.name || user.name,
+          avatarUrl: memberCustomData?.avatarUrl || placeholderData?.avatarUrl || user.avatarUrl,
+          rawIncome,
+          incomeSchedule: schedule,
+          normalizedWeeklyIncome: normalizeToWeekly(rawIncome, schedule),
           hasProvidedIncome: true,
           isCurrentUser: true,
+          isPlaceholder: false,
         };
 
         const batch = writeBatch(db);
         const userRef = doc(db, 'users', user.userId);
         batch.set(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
+
+        // If claiming an existing placeholder slot, remove the old placeholder document
+        if (claimPlaceholderMemberId && claimPlaceholderMemberId !== user.userId) {
+          const placeholderRef = doc(db, 'households', targetHouseholdId, 'members', claimPlaceholderMemberId);
+          batch.delete(placeholderRef);
+        }
 
         const memberRef = doc(db, 'households', targetHouseholdId, 'members', user.userId);
         batch.set(memberRef, sanitizeFirestorePayload(newMember), { merge: true });
@@ -796,7 +957,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           sanitizeFirestorePayload({
             id: `feed_join_${Date.now()}`,
             type: 'message',
-            content: `${user.name} joined the household!`,
+            content: claimPlaceholderMemberId
+              ? `${user.name} claimed their profile in ${targetHouseholdData.name || 'the household'}!`
+              : `${user.name} joined the household!`,
             authorId: user.userId,
             authorName: user.name,
             authorAvatar: user.avatarUrl,
@@ -807,11 +970,17 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         await batch.commit();
 
+        refreshUserHouseholds(updatedHouseholdIds);
         setUser(updatedUser);
         setHousehold(targetHouseholdData);
+        setUserHouseholds((prev) => [...prev.filter((h) => h.id !== targetHouseholdId), targetHouseholdData]);
         setIsOnboarding(false);
         setActiveTab('dashboard');
-        showToast(`Successfully connected to ${targetHouseholdData.name || 'household'}!`);
+        showToast(
+          claimPlaceholderMemberId
+            ? `Successfully claimed profile and joined ${targetHouseholdData.name || 'household'}!`
+            : `Successfully connected to ${targetHouseholdData.name || 'household'}!`
+        );
         return { success: true };
       } catch (err: any) {
         console.error('Firestore Join Failed:', err);
@@ -824,25 +993,203 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return { success: false, message: 'Please sign in to join a household.' };
   };
 
-  // Leave Current Household (preserves user profile & account history)
-  const leaveHousehold = async () => {
-    if (user) {
+  // Multi-Household Switcher
+  const switchHousehold = async (targetHouseholdId: string) => {
+    if (!user || !targetHouseholdId) return;
+    if (household?.id === targetHouseholdId) return;
+
+    setIsLoading(true);
+    unsubscribeAllListeners();
+
+    try {
       const updatedUser: UserProfile = {
         ...user,
-        activeHouseholdId: null,
+        activeHouseholdId: targetHouseholdId,
       };
-      setUser(updatedUser);
+
       if (isFirebaseConfigured && db) {
-        try {
-          const userRef = doc(db, 'users', user.userId);
-          await setDoc(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
-        } catch (err) {
-          console.error('Firestore Write Failed:', err);
-          handleFirestoreError(err, OperationType.UPDATE, `users/${user.userId}`);
-          showToast(`Error updating user record: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        const userRef = doc(db, 'users', user.userId);
+        await setDoc(userRef, sanitizeFirestorePayload(updatedUser), { merge: true });
+
+        const hhSnap = await getDoc(doc(db, 'households', targetHouseholdId));
+        if (hhSnap.exists()) {
+          const loadedHh = { ...(hhSnap.data() as Household), id: hhSnap.id };
+          setUser(updatedUser);
+          setHousehold(loadedHh);
+          setIsOnboarding(false);
+          setActiveTab('dashboard');
+          showToast(`Switched active household to ${loadedHh.name || 'household'}.`, 'success');
+          return;
         }
       }
+
+      setUser(updatedUser);
+    } catch (e: any) {
+      console.error('switchHousehold error:', e);
+      showToast(`Could not switch household: ${e.message || String(e)}`, 'error');
+    } finally {
+      setIsLoading(false);
     }
+  };
+
+  // Automated Drawdown from Income Buffer for Variable Income Households
+  const triggerAutomatedDrawdown = async () => {
+    if (!isFirebaseConfigured || !db || !household?.id || !user?.userId) return;
+
+    const bufferCategory = categories.find(
+      (c) => c.id === 'cat_income_buffer' || c.name.toLowerCase().includes('buffer')
+    );
+    if (!bufferCategory || (Number(bufferCategory.currentWeeklyBudget) || 0) <= 0) {
+      showToast('No available buffer funds to draw down.', 'info');
+      return;
+    }
+
+    const currentWeekKey = `${activeDateRange.startDate}_${activeDateRange.endDate}`;
+    const nonBufferCategories = categories.filter((c) => c.id !== bufferCategory.id);
+    const requiredFunding = nonBufferCategories.reduce(
+      (sum, c) => sum + (Number(c.baselineBudget) || 0),
+      0
+    );
+
+    if (requiredFunding <= 0) {
+      showToast('No baseline category funding required.', 'info');
+      return;
+    }
+
+    const availableBuffer = Number(bufferCategory.currentWeeklyBudget) || 0;
+    const drawAmount = Math.min(availableBuffer, requiredFunding);
+    if (drawAmount <= 0) return;
+
+    try {
+      const batch = writeBatch(db);
+
+      const newBufferBudget = Math.max(0, availableBuffer - drawAmount);
+      const bufferRef = doc(db, 'households', household.id, 'categories', bufferCategory.id);
+      batch.update(bufferRef, { currentWeeklyBudget: newBufferBudget });
+
+      nonBufferCategories.forEach((cat) => {
+        const catRef = doc(db, 'households', household.id, 'categories', cat.id);
+        batch.update(catRef, { currentWeeklyBudget: cat.baselineBudget || 0 });
+      });
+
+      const householdRef = doc(db, 'households', household.id);
+      batch.update(householdRef, {
+        lastAutomatedDrawdownWeek: currentWeekKey,
+      });
+
+      const feedRef = doc(db, 'households', household.id, 'feed', `feed_drawdown_${Date.now()}`);
+      batch.set(
+        feedRef,
+        sanitizeFirestorePayload({
+          id: `feed_drawdown_${Date.now()}`,
+          type: 'message',
+          content: `🌿 Automated Weekly Drawdown: ${formatCurrency(drawAmount)} transferred from Income Buffer to fill baseline allocations for ${activeDateRange.label}.`,
+          authorId: 'system',
+          authorName: 'Canopy Buffer Engine',
+          authorAvatar: 'https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=150&auto=format&fit=crop&q=80',
+          timestamp: Date.now(),
+          date: new Date().toISOString().split('T')[0],
+        })
+      );
+
+      await batch.commit();
+
+      setCategories((prev) =>
+        prev.map((c) => {
+          if (c.id === bufferCategory.id) {
+            return { ...c, currentWeeklyBudget: newBufferBudget };
+          }
+          return { ...c, currentWeeklyBudget: c.baselineBudget || 0 };
+        })
+      );
+
+      setHousehold((prev) => (prev ? { ...prev, lastAutomatedDrawdownWeek: currentWeekKey } : null));
+
+      showToast(`Automated drawdown: ${formatCurrency(drawAmount)} drawn from Income Buffer.`, 'success');
+    } catch (e: any) {
+      console.error('triggerAutomatedDrawdown error:', e);
+      showToast(`Drawdown failed: ${e.message || String(e)}`, 'error');
+    }
+  };
+
+  // Permanent Account Deletion
+  const deleteAccount = async () => {
+    // 1. Explicitly unsubscribe from all active Firestore listeners
+    unsubscribeAllListeners();
+
+    const currentUserId = user?.userId || auth?.currentUser?.uid;
+    const currentHouseholdId = household?.id;
+
+    if (isFirebaseConfigured && db && currentUserId) {
+      try {
+        // 1. Remove user from active household members collection if in a household
+        if (currentHouseholdId) {
+          const memberRef = doc(db, 'households', currentHouseholdId, 'members', currentUserId);
+          await deleteDoc(memberRef).catch((e) => {
+            console.warn('Member doc deletion note:', e);
+          });
+        }
+
+        // 2. Delete user profile document from Firestore
+        const userRef = doc(db, 'users', currentUserId);
+        await deleteDoc(userRef).catch((e) => {
+          console.warn('User doc deletion note:', e);
+        });
+
+        // 3. Delete Firebase Auth user if available with re-authentication fallback
+        if (auth?.currentUser) {
+          try {
+            await deleteUser(auth.currentUser);
+          } catch (authErr: any) {
+            console.warn('Initial deleteUser requires re-authentication, attempting popup:', authErr);
+            if (
+              authErr?.code === 'auth/requires-recent-login' ||
+              authErr?.message?.includes('requires-recent-login')
+            ) {
+              if (googleProvider) {
+                // Prompt user to re-authenticate via Google Auth popup to refresh credentials
+                await reauthenticateWithPopup(auth.currentUser, googleProvider);
+                // Re-attempt user doc deletion in Firestore
+                await deleteDoc(userRef).catch(() => {});
+                // Execute deleteUser with refreshed credentials
+                await deleteUser(auth.currentUser);
+              } else {
+                throw authErr;
+              }
+            } else {
+              throw authErr;
+            }
+          }
+        }
+      } catch (err: any) {
+        console.error('Account deletion cleanup error:', err);
+        showToast(`Account deletion error: ${err?.message || String(err)}`, 'error');
+        throw err;
+      }
+    }
+
+    // Clear local state and route to login / marketing page
+    unsubscribeAllListeners();
+    setUser(null);
+    setHousehold(null);
+    setMembers([]);
+    setCategories([]);
+    setExpenses([]);
+    setCheckIns([]);
+    setFeedItems([]);
+    setIsOnboarding(false);
+    setActiveTab('dashboard');
+    showToast('Your account has been deleted.');
+  };
+
+  // Leave Current Household (preserves user profile & account history)
+  const leaveHousehold = async () => {
+    // 1. Explicitly unsubscribe from all active Firestore listeners first
+    unsubscribeAllListeners();
+
+    const currentUserId = user?.userId || auth?.currentUser?.uid;
+
+    // 2. Immediately clear local React state and forcibly route to Setup Wizard
     setHousehold(null);
     setMembers([]);
     setCategories([]);
@@ -850,6 +1197,34 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setCheckIns([]);
     setFeedItems([]);
     setIsOnboarding(true);
+    setActiveTab('dashboard');
+
+    if (user) {
+      const updatedUser: UserProfile = {
+        ...user,
+        activeHouseholdId: null,
+      };
+      setUser(updatedUser);
+    }
+
+    // 3. Immediately update users/{userId}.activeHouseholdId to null in Firestore
+    if (isFirebaseConfigured && db && currentUserId) {
+      try {
+        const userRef = doc(db, 'users', currentUserId);
+        await setDoc(
+          userRef,
+          sanitizeFirestorePayload({
+            activeHouseholdId: null,
+            updatedAt: new Date().toISOString(),
+          }),
+          { merge: true }
+        );
+      } catch (err) {
+        console.error('Firestore leaveHousehold user record update error:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `users/${currentUserId}`);
+      }
+    }
+
     showToast('Left current household. You can now join an existing household or create a new one.');
   };
 
@@ -1264,6 +1639,98 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Expense removed.');
   };
 
+  const addExpense = async (expData: Omit<Expense, 'id'>) => {
+    const now = Date.now();
+    let ts = expData.timestamp;
+    if (!ts && expData.date) {
+      const parts = expData.date.split('-');
+      if (parts.length === 3) {
+        ts = new Date(
+          parseInt(parts[0], 10),
+          parseInt(parts[1], 10) - 1,
+          parseInt(parts[2], 10),
+          12,
+          0,
+          0
+        ).getTime();
+      } else {
+        ts = new Date(expData.date).getTime() || now;
+      }
+    }
+    const newExpense: Expense = {
+      id: `exp_${now}_${Math.random().toString(36).substr(2, 6)}`,
+      amount: Number(expData.amount),
+      description: expData.description?.trim() || 'Logged Expense',
+      categoryId: expData.categoryId,
+      date: expData.date || new Date().toISOString().split('T')[0],
+      timestamp: ts || now,
+      loggedByUserId: expData.loggedByUserId || user?.userId || 'usr_self',
+      receiptImgUrl: expData.receiptImgUrl,
+    };
+
+    // 1. Optimistic update
+    setExpenses((prev) => [newExpense, ...prev]);
+
+    if (newExpense.categoryId) {
+      setCategories((prevCats) =>
+        prevCats.map((cat) => {
+          if (cat.id !== newExpense.categoryId) return cat;
+          return {
+            ...cat,
+            totalLogged: (Number(cat.totalLogged) || 0) + newExpense.amount,
+            transactionCount: (Number(cat.transactionCount) || 0) + 1,
+          };
+        })
+      );
+    }
+
+    // 2. Live Firestore
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const batch = writeBatch(db);
+        const expRef = doc(db, 'households', household.id, 'expenses', newExpense.id);
+        batch.set(
+          expRef,
+          sanitizeFirestorePayload({
+            ...newExpense,
+            createdAt: serverTimestamp(),
+          })
+        );
+
+        if (newExpense.categoryId) {
+          const catRef = doc(db, 'households', household.id, 'categories', newExpense.categoryId);
+          batch.update(catRef, {
+            totalLogged: increment(newExpense.amount),
+            transactionCount: increment(1),
+          });
+        }
+
+        const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
+        batch.set(
+          feedRef,
+          sanitizeFirestorePayload({
+            id: `feed_${now}`,
+            type: 'transaction',
+            content: `Logged expense "${newExpense.description}" for $${newExpense.amount.toFixed(2)}`,
+            authorId: user?.userId || 'usr_self',
+            authorName: user?.name || 'Member',
+            authorAvatar: user?.avatarUrl,
+            timestamp: now,
+            date: newExpense.date,
+          })
+        );
+
+        await batch.commit();
+      } catch (err) {
+        console.error('Firestore Write Failed:', err);
+        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/expenses`);
+        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+
+    showToast(`Logged $${newExpense.amount.toFixed(2)} for ${newExpense.description}`);
+  };
+
   const updateExpense = async (id: string, updates: Partial<Expense>) => {
     setExpenses((prev) =>
       prev.map((e) => (e.id === id ? { ...e, ...updates } : e))
@@ -1373,65 +1840,76 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       avatarUrl: user?.avatarUrl || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
     };
 
-    const targetExpense = expenses.find((e) => e.id === expenseId);
-    const cat = categories.find((c) => c.id === targetExpense?.categoryId);
+    const targetDef = getReactionDef(emoji);
     const now = Date.now();
-
-    let updatedReactions: TransactionReaction[] = [];
+    let updatedReactionsForFirestore: TransactionReaction[] = [];
     let isAdding = true;
+    let targetExpenseSnapshot: Expense | undefined;
 
-    setExpenses((prev) =>
-      prev.map((e) => {
+    // Atomic update of expenses state with function updater to prevent race conditions & disappearing reactions
+    setExpenses((prev) => {
+      const exp = prev.find((e) => e.id === expenseId);
+      if (!exp) return prev;
+      targetExpenseSnapshot = exp;
+
+      const currentReactions = exp.reactions ? [...exp.reactions] : [];
+      const existingIdx = currentReactions.findIndex(
+        (r) =>
+          r.authorId === activeMember.userId &&
+          (r.emoji === targetDef.id || getReactionDef(r.emoji).id === targetDef.id)
+      );
+
+      if (existingIdx >= 0) {
+        isAdding = false;
+        // Toggle off: remove only this specific reaction by this author, preserving all others
+        updatedReactionsForFirestore = currentReactions.filter((_, idx) => idx !== existingIdx);
+      } else {
+        isAdding = true;
+        const newReaction: TransactionReaction = {
+          id: `react_${now}_${Math.random().toString(36).substring(2, 6)}`,
+          expenseId,
+          authorId: activeMember.userId,
+          authorName: activeMember.name,
+          authorAvatar: activeMember.avatarUrl,
+          emoji: targetDef.id,
+          timestamp: now,
+        };
+        // Append new reaction, keeping all existing reactions from this author and all other household members
+        updatedReactionsForFirestore = [...currentReactions, newReaction];
+      }
+
+      return prev.map((e) => {
         if (e.id === expenseId) {
-          const current = e.reactions || [];
-          const existingIdx = current.findIndex(
-            (r) => r.authorId === activeMember.userId && r.emoji === emoji
-          );
-
-          if (existingIdx >= 0) {
-            isAdding = false;
-            updatedReactions = current.filter((_, idx) => idx !== existingIdx);
-          } else {
-            isAdding = true;
-            const newReaction: TransactionReaction = {
-              id: `react_${now}_${Math.random().toString(36).substr(2, 4)}`,
-              expenseId,
-              authorId: activeMember.userId,
-              authorName: activeMember.name,
-              authorAvatar: activeMember.avatarUrl,
-              emoji,
-              timestamp: now,
-            };
-            updatedReactions = [...current, newReaction];
-          }
-          return { ...e, reactions: updatedReactions };
+          return { ...e, reactions: updatedReactionsForFirestore };
         }
         return e;
-      })
-    );
+      });
+    });
+
+    const cat = categories.find((c) => c.id === targetExpenseSnapshot?.categoryId);
 
     if (isAdding) {
       const feedItemId = `feed_reaction_${now}`;
       const feedItem: FeedItem = {
         id: feedItemId,
         type: 'reaction',
-        emoji,
-        content: `${activeMember.name} reacted with ${emoji}`,
+        emoji: targetDef.id,
+        content: `${activeMember.name} reacted with ${targetDef.label} to ${targetExpenseSnapshot?.description || 'expense'}`,
         authorId: activeMember.userId,
         authorName: activeMember.name,
         authorAvatar: activeMember.avatarUrl,
         timestamp: now,
         date: new Date(now).toISOString().split('T')[0],
         linkedExpenseId: expenseId,
-        linkedExpense: targetExpense
+        linkedExpense: targetExpenseSnapshot
           ? {
-              id: targetExpense.id,
-              description: targetExpense.description,
+              id: targetExpenseSnapshot.id,
+              description: targetExpenseSnapshot.description,
               categoryName: cat?.name || 'Category',
               categoryIcon: cat?.icon || 'tag',
-              amount: targetExpense.amount,
-              date: targetExpense.date,
-              payerName: members.find((m) => m.userId === targetExpense.loggedByUserId)?.name || 'Member',
+              amount: targetExpenseSnapshot.amount,
+              date: targetExpenseSnapshot.date,
+              payerName: members.find((m) => m.userId === targetExpenseSnapshot?.loggedByUserId)?.name || 'Member',
             }
           : undefined,
       };
@@ -1442,7 +1920,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         try {
           const batch = writeBatch(db);
           const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          batch.update(expRef, sanitizeFirestorePayload({ reactions: updatedReactions }));
+          batch.update(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
 
           const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
           batch.set(feedRef, sanitizeFirestorePayload(feedItem));
@@ -1458,7 +1936,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       if (isFirebaseConfigured && db && household?.id) {
         try {
           const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          await updateDoc(expRef, sanitizeFirestorePayload({ reactions: updatedReactions }));
+          await updateDoc(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
         } catch (err) {
           console.error('Firestore Write Failed:', err);
           handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/expenses/${expenseId}`);
@@ -1749,6 +2227,147 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Month-End Hard Reset executed. All category budgets returned to baseline values.');
   };
 
+  // Apply Extra Paycheck Decision (Savings / Prorate / Custom)
+  const applyExtraPaycheckDecision = async (decision: ExtraPaycheckDecision) => {
+    if (!household) return;
+
+    const currentDecisions = household.extraPaycheckDecisions || {};
+    const updatedDecisions = {
+      ...currentDecisions,
+      [decision.monthKey]: decision,
+    };
+
+    let updatedCats = [...categories];
+
+    if (decision.option === 'savings') {
+      // Allocate 100% of extra income to Savings group category
+      const savingsCat = updatedCats.find((c) => c.group === 'Savings' || c.name.toLowerCase().includes('savings')) || updatedCats[updatedCats.length - 1];
+      if (savingsCat) {
+        updatedCats = updatedCats.map((c) =>
+          c.id === savingsCat.id
+            ? { ...c, currentWeeklyBudget: (c.currentWeeklyBudget || c.baselineBudget) + decision.totalExtraIncome }
+            : c
+        );
+      }
+    } else if (decision.option === 'prorate') {
+      // Prorate across all categories according to baselineBudget proportions
+      const totalBaseline = updatedCats.reduce((s, c) => s + (c.baselineBudget || 1), 0);
+      if (totalBaseline > 0) {
+        let remainder = decision.totalExtraIncome;
+        updatedCats = updatedCats.map((c, idx) => {
+          const isLast = idx === updatedCats.length - 1;
+          const portion = isLast ? remainder : Math.round(decision.totalExtraIncome * ((c.baselineBudget || 1) / totalBaseline));
+          remainder -= portion;
+          return {
+            ...c,
+            currentWeeklyBudget: (c.currentWeeklyBudget || c.baselineBudget) + portion,
+          };
+        });
+      }
+    } else if (decision.option === 'extra_week_buffer') {
+      // Option C: Prorate for the extra week to maintain standard baseline, route remainder to savings
+      const totalBaseline = updatedCats.reduce((s, c) => s + (c.baselineBudget || 1), 0);
+      const extraWeekNeed = decision.extraWeekBufferAmount !== undefined ? decision.extraWeekBufferAmount : Math.min(decision.totalExtraIncome, totalBaseline);
+      const savingsRemainder = decision.savingsPortion !== undefined ? decision.savingsPortion : Math.max(0, decision.totalExtraIncome - extraWeekNeed);
+
+      if (totalBaseline > 0 && extraWeekNeed > 0) {
+        let remainder = extraWeekNeed;
+        updatedCats = updatedCats.map((c, idx) => {
+          const isLast = idx === updatedCats.length - 1;
+          const portion = isLast ? remainder : Math.round(extraWeekNeed * ((c.baselineBudget || 1) / totalBaseline));
+          remainder -= portion;
+          return {
+            ...c,
+            currentWeeklyBudget: (c.currentWeeklyBudget || c.baselineBudget) + portion,
+          };
+        });
+      }
+
+      if (savingsRemainder > 0) {
+        const savingsCat = updatedCats.find((c) => c.group === 'Savings' || c.name.toLowerCase().includes('savings')) || updatedCats[updatedCats.length - 1];
+        if (savingsCat) {
+          updatedCats = updatedCats.map((c) =>
+            c.id === savingsCat.id
+              ? { ...c, currentWeeklyBudget: (c.currentWeeklyBudget || c.baselineBudget) + savingsRemainder }
+              : c
+          );
+        }
+      }
+    } else if (decision.option === 'custom' && decision.customPercentages) {
+      // Custom percentage allocation per category
+      updatedCats = updatedCats.map((c) => {
+        const pct = decision.customPercentages?.[c.id] || 0;
+        const addAmount = Math.round((decision.totalExtraIncome * pct) / 100);
+        return {
+          ...c,
+          currentWeeklyBudget: (c.currentWeeklyBudget || c.baselineBudget) + addAmount,
+        };
+      });
+    }
+
+    // Optimistic update
+    setHousehold({ ...household, extraPaycheckDecisions: updatedDecisions });
+    setCategories(updatedCats);
+
+    const now = Date.now();
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const feedItem: FeedItem = {
+      id: `feed_extra_pay_${now}`,
+      type: 'message',
+      content: `🎉 Extra Paycheck Allocated: Added $${decision.totalExtraIncome} via ${
+        decision.option === 'savings'
+          ? 'Option A (100% Savings Pot)'
+          : decision.option === 'prorate'
+          ? 'Option B (Proportional Baseline Split)'
+          : decision.option === 'extra_week_buffer'
+          ? 'Option C (Extra Week Buffer & Savings Remainder)'
+          : 'Option D (Custom Category Split)'
+      }.`,
+      authorId: user?.userId || 'usr_self',
+      authorName: user?.name || 'Member',
+      authorAvatar: user?.avatarUrl,
+      timestamp: now,
+      date: todayStr,
+    };
+
+    setFeedItems((prev) => [feedItem, ...prev]);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const batch = writeBatch(db);
+        const householdRef = doc(db, 'households', household.id);
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            extraPaycheckDecisions: updatedDecisions,
+          })
+        );
+
+        updatedCats.forEach((c) => {
+          const catRef = doc(db, 'households', household.id, 'categories', c.id);
+          batch.update(
+            catRef,
+            sanitizeFirestorePayload({
+              currentWeeklyBudget: c.currentWeeklyBudget,
+            })
+          );
+        });
+
+        const feedRef = doc(db, 'households', household.id, 'feed', feedItem.id);
+        batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+
+        await batch.commit();
+      } catch (err) {
+        console.error('Firestore Write Failed for Extra Paycheck:', err);
+        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/extra_paycheck`);
+        showToast(`Error saving allocation: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+
+    showToast(`Extra paycheck of $${decision.totalExtraIncome} successfully allocated!`, 'success');
+  };
+
   const resetHouseholdToOnboarding = () => {
     setHousehold(null);
     setMembers([]);
@@ -1823,6 +2442,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteCategory,
         saveCategoryAllocations,
 
+        addExpense,
         deleteExpense,
         updateExpense,
 
@@ -1833,12 +2453,19 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         signInWithGoogle,
         switchActiveMember,
         signOut,
+        deleteAccount,
         completeOnboarding,
         joinHouseholdWithSyncCode,
+        getHouseholdBySyncCode,
         leaveHousehold,
         updateHousehold,
         updateMemberIncome,
+        applyExtraPaycheckDecision,
         resetHouseholdToOnboarding,
+
+        userHouseholds,
+        switchHousehold,
+        triggerAutomatedDrawdown,
       }}
     >
       {children}

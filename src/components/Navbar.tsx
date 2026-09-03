@@ -22,6 +22,7 @@ import {
   Loader2,
   X,
   AlertTriangle,
+  Home,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -32,6 +33,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
   const {
     user,
     household,
+    userHouseholds,
+    switchHousehold,
     members,
     activeTab,
     setActiveTab,
@@ -40,6 +43,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     openLogExpenseModal,
     openAllocationModal,
     joinHouseholdWithSyncCode,
+    getHouseholdBySyncCode,
     leaveHousehold,
   } = useHousehold();
   const [copiedSync, setCopiedSync] = useState(false);
@@ -50,9 +54,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
   const [joinCodeInput, setJoinCodeInput] = useState('');
   const [isJoining, setIsJoining] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
+  const [foundPlaceholders, setFoundPlaceholders] = useState<Array<{ userId: string; name: string; avatarUrl: string }>>([]);
+  const [selectedPlaceholderId, setSelectedPlaceholderId] = useState<string | null>(null);
+  const [joinStep, setJoinStep] = useState<'code' | 'claim'>('code');
 
   // Leave Household Confirmation Modal State
   const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveStep, setLeaveStep] = useState<'confirm' | 'choice'>('confirm');
   const [isLeaving, setIsLeaving] = useState(false);
 
   const handleCopySync = () => {
@@ -63,16 +71,39 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     }
   };
 
-  const handleJoinSubmit = async (e: React.FormEvent) => {
+  const handleLookupOrJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!joinCodeInput.trim()) return;
     setIsJoining(true);
     setJoinError(null);
     try {
-      const res = await joinHouseholdWithSyncCode(joinCodeInput.trim());
+      if (joinStep === 'code') {
+        const info = await getHouseholdBySyncCode(joinCodeInput.trim());
+        if (!info) {
+          setJoinError('No household found with that sync code. Please verify and try again.');
+          setIsJoining(false);
+          return;
+        }
+        const placeholders = info.members.filter((m) => m.isPlaceholder);
+        if (placeholders.length > 0) {
+          setFoundPlaceholders(placeholders);
+          setSelectedPlaceholderId(placeholders[0].userId);
+          setJoinStep('claim');
+          setIsJoining(false);
+          return;
+        }
+      }
+
+      const res = await joinHouseholdWithSyncCode(
+        joinCodeInput.trim(),
+        selectedPlaceholderId || undefined
+      );
       if (res.success) {
         setShowJoinModal(false);
         setJoinCodeInput('');
+        setJoinStep('code');
+        setFoundPlaceholders([]);
+        setSelectedPlaceholderId(null);
       } else {
         setJoinError(res.message || 'Household not found with that code.');
       }
@@ -83,13 +114,17 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     }
   };
 
-  const handleConfirmLeave = async () => {
+  const handleLeaveOptionChoice = async (choice: 'new_household' | 'sign_out') => {
     setIsLeaving(true);
     try {
       await leaveHousehold();
-      setShowLeaveModal(false);
+      if (choice === 'sign_out') {
+        await signOut();
+      }
     } finally {
       setIsLeaving(false);
+      setShowLeaveModal(false);
+      setLeaveStep('confirm');
     }
   };
 
@@ -127,9 +162,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             <button
               id="header-log-expense-btn"
               onClick={() => openLogExpenseModal()}
-              className="hidden sm:flex items-center gap-1.5 px-3.5 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
+              className="hidden sm:flex items-center justify-center px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
               <span>Log Expense</span>
             </button>
 
@@ -236,6 +270,83 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                       </div>
                     </div>
                   )}
+
+                  {/* Household Switcher Section */}
+                  <div className="space-y-1 pt-1 border-t border-beige-100">
+                    <div className="flex items-center justify-between px-2 py-0.5">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-brown-700">
+                        Households ({userHouseholds.length || 1})
+                      </p>
+                      <button
+                        id="add-household-btn"
+                        type="button"
+                        onClick={() => {
+                          setShowMemberDropdown(false);
+                          setShowJoinModal(true);
+                        }}
+                        className="text-[10px] font-bold text-dark-green-800 hover:text-dark-green-950 flex items-center gap-0.5 cursor-pointer"
+                      >
+                        <Plus className="w-3 h-3" />
+                        <span>Join Another</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-1">
+                      {userHouseholds && userHouseholds.length > 0 ? (
+                        userHouseholds.map((hh) => {
+                          const isActive = hh.id === household?.id;
+                          return (
+                            <button
+                              key={hh.id}
+                              type="button"
+                              onClick={() => {
+                                if (!isActive) {
+                                  switchHousehold(hh.id);
+                                }
+                                setShowMemberDropdown(false);
+                              }}
+                              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl text-left text-xs transition cursor-pointer ${
+                                isActive
+                                  ? 'bg-sage-100 font-bold text-dark-green-950 border border-sage-300'
+                                  : 'hover:bg-beige-50 text-dark-grey-800 border border-transparent'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div
+                                  className={`w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-extrabold ${
+                                    isActive ? 'bg-dark-green-800 text-white' : 'bg-beige-200 text-brown-800'
+                                  }`}
+                                >
+                                  <Home className="w-3.5 h-3.5" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <p className="truncate font-bold leading-tight">{hh.name || 'Household'}</p>
+                                  <p className="text-[10px] text-brown-600 font-mono">{hh.syncCode}</p>
+                                </div>
+                              </div>
+                              {isActive && (
+                                <span className="text-[10px] bg-dark-green-800 text-white font-extrabold px-1.5 py-0.5 rounded-md flex items-center gap-1">
+                                  <Check className="w-2.5 h-2.5" /> Active
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })
+                      ) : (
+                        household && (
+                          <div className="px-2.5 py-1.5 rounded-xl bg-sage-100/70 border border-sage-200 text-xs flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Home className="w-3.5 h-3.5 text-dark-green-800" />
+                              <span className="font-bold text-dark-green-950">{household.name}</span>
+                            </div>
+                            <span className="text-[10px] bg-dark-green-800 text-white font-bold px-1.5 py-0.5 rounded">
+                              Active
+                            </span>
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
 
                   {/* Relocated Administrative Actions */}
                   <div className="space-y-1 pt-1 border-t border-beige-100">
@@ -521,24 +632,86 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               </button>
             </div>
 
-            <form onSubmit={handleJoinSubmit} className="space-y-4">
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-dark-green-900 block">
-                  6-Character Sync Code
-                </label>
-                <input
-                  type="text"
-                  maxLength={10}
-                  required
-                  placeholder="e.g. CNP-8X2"
-                  value={joinCodeInput}
-                  onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
-                  className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl font-mono text-lg font-black tracking-widest text-dark-green-950 uppercase focus:outline-none focus:border-dark-green-800 focus:bg-white"
-                />
-                <p className="text-[11px] text-dark-grey-600">
-                  Your individual profile history and attribution will be preserved.
-                </p>
-              </div>
+            <form onSubmit={handleLookupOrJoin} className="space-y-4">
+              {joinStep === 'code' ? (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-dark-green-900 block">
+                    6-Character Sync Code
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={10}
+                    required
+                    placeholder="e.g. CNP-8X2"
+                    value={joinCodeInput}
+                    onChange={(e) => setJoinCodeInput(e.target.value.toUpperCase())}
+                    className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl font-mono text-lg font-black tracking-widest text-dark-green-950 uppercase focus:outline-none focus:border-dark-green-800 focus:bg-white"
+                  />
+                  <p className="text-[11px] text-dark-grey-600">
+                    Your individual profile history and attribution will be preserved.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="p-3 bg-sage-50 border border-sage-200 rounded-2xl">
+                    <p className="text-xs font-bold text-dark-green-900 mb-1">
+                      Choose Your Household Profile
+                    </p>
+                    <p className="text-[11px] text-brown-700">
+                      The household creator created placeholder profiles. Select which one is you:
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    {foundPlaceholders.map((p) => (
+                      <button
+                        key={p.userId}
+                        type="button"
+                        onClick={() => setSelectedPlaceholderId(p.userId)}
+                        className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition cursor-pointer ${
+                          selectedPlaceholderId === p.userId
+                            ? 'bg-sage-100 border-dark-green-800 ring-2 ring-sage-300/60'
+                            : 'bg-white border-beige-200 hover:bg-beige-50'
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <img src={p.avatarUrl} alt={p.name} className="w-8 h-8 rounded-full object-cover border border-sage-300" />
+                          <div>
+                            <span className="text-xs font-bold text-dark-green-900 block">{p.name}</span>
+                            <span className="text-[10px] text-dark-grey-600">Claim this profile slot</span>
+                          </div>
+                        </div>
+                        {selectedPlaceholderId === p.userId && (
+                          <Check className="w-4 h-4 text-dark-green-800" />
+                        )}
+                      </button>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={() => setSelectedPlaceholderId(null)}
+                      className={`w-full flex items-center justify-between p-3 rounded-xl border text-left transition cursor-pointer ${
+                        selectedPlaceholderId === null
+                          ? 'bg-sage-100 border-dark-green-800 ring-2 ring-sage-300/60'
+                          : 'bg-white border-beige-200 hover:bg-beige-50'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-beige-200 border border-beige-300 flex items-center justify-center text-brown-800 font-bold text-xs">
+                          +
+                        </div>
+                        <div>
+                          <span className="text-xs font-bold text-dark-green-900 block">Join as New Member</span>
+                          <span className="text-[10px] text-dark-grey-600">Add yourself as an additional member</span>
+                        </div>
+                      </div>
+                      {selectedPlaceholderId === null && (
+                        <Check className="w-4 h-4 text-dark-green-800" />
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {joinError && (
                 <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700 flex items-center gap-2">
@@ -550,14 +723,20 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               <div className="flex items-center justify-end gap-2.5 pt-2">
                 <button
                   type="button"
-                  onClick={() => setShowJoinModal(false)}
+                  onClick={() => {
+                    if (joinStep === 'claim') {
+                      setJoinStep('code');
+                    } else {
+                      setShowJoinModal(false);
+                    }
+                  }}
                   className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs font-bold text-brown-800 hover:bg-beige-50 cursor-pointer"
                 >
-                  Cancel
+                  {joinStep === 'claim' ? 'Back' : 'Cancel'}
                 </button>
                 <button
                   type="submit"
-                  disabled={isJoining || !joinCodeInput.trim()}
+                  disabled={isJoining || (joinStep === 'code' && !joinCodeInput.trim())}
                   className="px-5 py-2.5 rounded-xl bg-dark-green-800 hover:bg-dark-green-900 disabled:opacity-50 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
                 >
                   {isJoining ? (
@@ -566,7 +745,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                       <span>Connecting...</span>
                     </>
                   ) : (
-                    <span>Switch Household</span>
+                    <span>{joinStep === 'claim' ? 'Confirm & Join' : 'Lookup Household'}</span>
                   )}
                 </button>
               </div>
@@ -593,34 +772,68 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               </div>
             </div>
 
-            <p className="text-xs text-dark-grey-700 leading-relaxed bg-amber-50/70 border border-amber-200/80 p-3.5 rounded-2xl">
-              Leaving will detach your active profile from this household budget. Your user account and historical logged transaction data will be preserved, and you can create or join another household immediately.
-            </p>
+            {leaveStep === 'confirm' ? (
+              <>
+                <p className="text-xs text-dark-grey-700 leading-relaxed bg-amber-50/70 border border-amber-200/80 p-3.5 rounded-2xl">
+                  Leaving will detach your active profile from this household budget. You will no longer have access to this shared budget unless you re-join with the sync code.
+                </p>
 
-            <div className="flex items-center justify-end gap-2.5 pt-2">
-              <button
-                type="button"
-                onClick={() => setShowLeaveModal(false)}
-                className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs font-bold text-brown-800 hover:bg-beige-50 cursor-pointer"
-              >
-                Keep Household
-              </button>
-              <button
-                type="button"
-                onClick={handleConfirmLeave}
-                disabled={isLeaving}
-                className="px-5 py-2.5 rounded-xl bg-red-700 hover:bg-red-800 disabled:opacity-50 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
-              >
-                {isLeaving ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Leaving...</span>
-                  </>
-                ) : (
-                  <span>Yes, Leave Household</span>
-                )}
-              </button>
-            </div>
+                <div className="flex items-center justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowLeaveModal(false)}
+                    className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs font-bold text-brown-800 hover:bg-beige-50 cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLeaveStep('choice')}
+                    className="px-5 py-2.5 rounded-xl bg-amber-700 hover:bg-amber-800 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
+                  >
+                    <span>Continue</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-xs font-bold text-dark-green-900">
+                  What would you like to do next?
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    disabled={isLeaving}
+                    onClick={() => handleLeaveOptionChoice('new_household')}
+                    className="flex items-center justify-center gap-2 p-3 bg-white hover:bg-sage-50 border border-sage-300 hover:border-dark-green-700 text-dark-green-900 font-semibold text-xs rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isLeaving ? <Loader2 className="w-4 h-4 animate-spin text-dark-green-800" /> : <Home className="w-4 h-4 text-dark-green-800" />}
+                    <span>Set up a new household</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isLeaving}
+                    onClick={() => handleLeaveOptionChoice('sign_out')}
+                    className="flex items-center justify-center gap-2 p-3 bg-white hover:bg-beige-50 border border-beige-300 hover:border-brown-400 text-brown-900 font-semibold text-xs rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
+                  >
+                    {isLeaving ? <Loader2 className="w-4 h-4 animate-spin text-brown-700" /> : <LogOut className="w-4 h-4 text-brown-700" />}
+                    <span>Sign out</span>
+                  </button>
+                </div>
+                <div className="pt-1 flex justify-start">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowLeaveModal(false);
+                      setLeaveStep('confirm');
+                    }}
+                    className="text-xs text-dark-grey-600 hover:underline cursor-pointer"
+                  >
+                    Stay in household
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

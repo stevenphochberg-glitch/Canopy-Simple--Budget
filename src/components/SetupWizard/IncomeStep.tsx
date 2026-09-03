@@ -1,11 +1,20 @@
 import React from 'react';
-import { HouseholdMember, PaySchedule } from '../../types';
+import { HouseholdMember, PaySchedule, IncomeType } from '../../types';
 import { normalizeToWeekly, formatCurrency, calculateWeeklyPool } from '../../lib/calculations';
-import { ArrowLeft, ArrowRight, DollarSign, Calculator, HelpCircle, Check, User } from 'lucide-react';
+import { FISCAL_MONTH_NAMES } from '../../lib/fiscal445';
+import { ArrowLeft, ArrowRight, DollarSign, Calculator, Calendar, User, Shield, TrendingUp, Sparkles } from 'lucide-react';
 
 interface IncomeStepProps {
   members: HouseholdMember[];
   setMembers: React.Dispatch<React.SetStateAction<HouseholdMember[]>>;
+  fiscalYearEndMonth: number;
+  setFiscalYearEndMonth: (m: number) => void;
+  incomeType?: IncomeType;
+  setIncomeType?: (t: IncomeType) => void;
+  baselineWeeklyBurnRate?: number;
+  setBaselineWeeklyBurnRate?: (r: number) => void;
+  initialBufferAmount?: number;
+  setInitialBufferAmount?: (a: number) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -13,12 +22,21 @@ interface IncomeStepProps {
 const SCHEDULE_OPTIONS: Array<{ value: PaySchedule; label: string; formula: string }> = [
   { value: 'weekly', label: 'Weekly', formula: 'Amount / week' },
   { value: 'bi-weekly', label: 'Bi-Weekly (Every 2 wks)', formula: '(Amount × 26) ÷ 52' },
+  { value: 'semi-monthly', label: 'Semi-Monthly (Twice a month)', formula: '(Amount × 24) ÷ 52' },
   { value: 'monthly', label: 'Monthly', formula: '(Amount × 12) ÷ 52' },
 ];
 
 export const IncomeStep: React.FC<IncomeStepProps> = ({
   members,
   setMembers,
+  fiscalYearEndMonth,
+  setFiscalYearEndMonth,
+  incomeType = 'predictable',
+  setIncomeType,
+  baselineWeeklyBurnRate = 0,
+  setBaselineWeeklyBurnRate,
+  initialBufferAmount = 0,
+  setInitialBufferAmount,
   onNext,
   onBack,
 }) => {
@@ -57,6 +75,12 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
     );
   };
 
+  const handleLastPayDateChange = (userId: string, dateStr: string) => {
+    setMembers((prev) =>
+      prev.map((m) => (m.userId === userId ? { ...m, lastPayDate: dateStr } : m))
+    );
+  };
+
   const handleToggleSelfInput = (userId: string, willInputSelf: boolean) => {
     setMembers((prev) =>
       prev.map((m) => {
@@ -83,10 +107,131 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
   return (
     <div className="space-y-6">
       <div className="text-center sm:text-left space-y-1">
-        <h2 className="text-2xl font-bold text-dark-green-900">Income & Weekly Normalization</h2>
+        <h2 className="text-2xl font-bold text-dark-green-900">Income & Dynamic Pay Cadence</h2>
         <p className="text-sm text-brown-700">
-          Enter income schedules to automatically normalize and convert them into your unified weekly budget pool.
+          Set up your household pay frequency, paycheck timing, and fiscal year calendar to forecast extra paycheck months.
         </p>
+      </div>
+
+      {/* Income Structure Type Selection */}
+      <div className="bg-white border border-beige-200 rounded-2xl p-5 space-y-3 shadow-xs">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 block">
+            Income Structure Type
+          </label>
+          <span className="text-[11px] text-brown-700">Choose how your household earns</span>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            type="button"
+            id="income-type-predictable-btn"
+            onClick={() => setIncomeType?.('predictable')}
+            className={`p-4 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+              incomeType === 'predictable'
+                ? 'bg-sage-50/80 border-dark-green-800 ring-2 ring-dark-green-800/20'
+                : 'bg-white border-beige-200 hover:border-beige-300'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-extrabold text-sm text-dark-green-900">Predictable Income</span>
+              <Calendar className="w-4 h-4 text-sage-700" />
+            </div>
+            <p className="text-xs text-brown-700 leading-relaxed">
+              Steady, regular paychecks (salaried, hourly, bi-weekly, or monthly). Automatic 4-4-5 extra paycheck detection.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            id="income-type-variable-btn"
+            onClick={() => {
+              setIncomeType?.('variable');
+              if (setBaselineWeeklyBurnRate && baselineWeeklyBurnRate === 0) {
+                setBaselineWeeklyBurnRate(totalWeeklyPool > 0 ? totalWeeklyPool : 1500);
+              }
+              if (setInitialBufferAmount && initialBufferAmount === 0) {
+                setInitialBufferAmount(totalWeeklyPool > 0 ? totalWeeklyPool * 4 : 6000);
+              }
+            }}
+            className={`p-4 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+              incomeType === 'variable'
+                ? 'bg-sage-50/80 border-dark-green-800 ring-2 ring-dark-green-800/20'
+                : 'bg-white border-beige-200 hover:border-beige-300'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="font-extrabold text-sm text-dark-green-900">Variable / Freelance</span>
+              <Shield className="w-4 h-4 text-dark-green-800" />
+            </div>
+            <p className="text-xs text-brown-700 leading-relaxed">
+              Fluctuating or irregular deposits. Earnings feed a dedicated Income Buffer tank, with automated weekly drawdown.
+            </p>
+          </button>
+        </div>
+
+        {/* Variable Income Configuration Panel */}
+        {incomeType === 'variable' && (
+          <div className="pt-3 border-t border-beige-200/80 space-y-4">
+            <div className="p-3.5 bg-dark-green-900 text-white rounded-xl text-xs space-y-1">
+              <div className="flex items-center gap-2 font-bold text-sage-200">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Automated Buffer Drawdown Architecture</span>
+              </div>
+              <p className="text-sage-100/90 leading-relaxed">
+                In variable income mode, an <strong>Income Buffer</strong> category is generated. Income flows into the buffer, and at the start of each fiscal week, Canopy automatically draws down funds to fill your baseline budget allocations.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label
+                  htmlFor="baseline-burn-rate-input"
+                  className="text-xs font-bold text-dark-green-900 block"
+                >
+                  Baseline Weekly Burn Rate ($/wk)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-brown-600 font-bold">$</span>
+                  <input
+                    type="number"
+                    id="baseline-burn-rate-input"
+                    min="0"
+                    step="50"
+                    value={baselineWeeklyBurnRate || ''}
+                    onChange={(e) => setBaselineWeeklyBurnRate?.(Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="1200"
+                    className="w-full pl-7 pr-3 py-2 bg-beige-50/50 border border-beige-300 rounded-xl text-dark-green-900 font-bold text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-dark-green-700/20"
+                  />
+                </div>
+                <span className="text-[10px] text-brown-700">Minimum essentials required per week</span>
+              </div>
+
+              <div className="space-y-1">
+                <label
+                  htmlFor="initial-buffer-amount-input"
+                  className="text-xs font-bold text-dark-green-900 block"
+                >
+                  Initial Income Buffer Reserve ($)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2.5 text-xs text-brown-600 font-bold">$</span>
+                  <input
+                    type="number"
+                    id="initial-buffer-amount-input"
+                    min="0"
+                    step="100"
+                    value={initialBufferAmount || ''}
+                    onChange={(e) => setInitialBufferAmount?.(Math.max(0, parseFloat(e.target.value) || 0))}
+                    placeholder="5000"
+                    className="w-full pl-7 pr-3 py-2 bg-beige-50/50 border border-beige-300 rounded-xl text-dark-green-900 font-bold text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-dark-green-700/20"
+                  />
+                </div>
+                <span className="text-[10px] text-brown-700">Initial cash buffer on hand</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Unified Weekly Pool Callout Card */}
@@ -108,8 +253,33 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
         <div className="text-xs text-dark-green-900 bg-white/80 border border-sage-200 px-3.5 py-2 rounded-xl text-center sm:text-right">
           <p className="font-semibold">Normalized Baseline</p>
           <p className="text-dark-grey-600">
-            {formatCurrency(totalWeeklyPool * 52 / 12)} / month equivalent
+            {formatCurrency((totalWeeklyPool * 52) / 12)} / month equivalent
           </p>
+        </div>
+      </div>
+
+      {/* Household Fiscal Year-End Configuration */}
+      <div className="p-4 sm:p-5 bg-white border border-beige-200 rounded-2xl space-y-2 shadow-xs">
+        <div className="flex items-center gap-2 text-dark-green-900 font-extrabold text-sm">
+          <Calendar className="w-4 h-4 text-sage-700" />
+          <span>Household Fiscal Year-End Month</span>
+        </div>
+        <p className="text-xs text-brown-700">
+          Used to calculate the 4-4-5 accounting calendar (four 13-week quarters: 4-4-5 weeks).
+        </p>
+        <div className="pt-1 max-w-sm">
+          <select
+            id="fiscal-year-end-month-select"
+            value={fiscalYearEndMonth}
+            onChange={(e) => setFiscalYearEndMonth(parseInt(e.target.value, 10))}
+            className="w-full px-3.5 py-2.5 bg-beige-50/70 border border-beige-300 rounded-xl text-dark-green-900 font-bold text-sm focus:bg-white focus:outline-none focus:border-dark-green-700 cursor-pointer"
+          >
+            {FISCAL_MONTH_NAMES.map((name, idx) => (
+              <option key={name} value={idx + 1}>
+                {name} (Month {idx + 1}) {idx === 11 ? '— Standard (Default)' : ''}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -120,7 +290,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
           return (
             <div
               key={member.userId}
-              className="p-4 sm:p-5 bg-white border border-beige-200 rounded-xl space-y-4 shadow-sm"
+              className="p-4 sm:p-5 bg-white border border-beige-200 rounded-2xl space-y-4 shadow-sm"
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-beige-100 pb-3">
                 <div className="flex items-center gap-3">
@@ -168,12 +338,12 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
               {member.hasProvidedIncome ? (
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5 items-end">
                   {/* Income Amount */}
-                  <div className="sm:col-span-5 space-y-1">
+                  <div className="sm:col-span-4 space-y-1">
                     <label
                       htmlFor={`income-amount-${member.userId}`}
                       className="text-xs font-semibold text-dark-grey-800 block"
                     >
-                      Take-Home Income Amount
+                      Take-Home Paycheck ($)
                     </label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-dark-grey-600">
@@ -198,7 +368,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                       htmlFor={`pay-schedule-${member.userId}`}
                       className="text-xs font-semibold text-dark-grey-800 block"
                     >
-                      Pay Schedule
+                      Pay Frequency
                     </label>
                     <select
                       id={`pay-schedule-${member.userId}`}
@@ -216,15 +386,32 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                     </select>
                   </div>
 
-                  {/* Normalized Result Pill */}
-                  <div className="sm:col-span-3">
-                    <div className="p-2.5 rounded-xl bg-sage-50 border border-sage-200 text-center sm:text-right">
-                      <span className="text-[10px] font-bold uppercase tracking-wider text-sage-800 block">
-                        Weekly Normalized
+                  {/* Date of Last Paycheck */}
+                  <div className="sm:col-span-4 space-y-1">
+                    <label
+                      htmlFor={`last-pay-date-${member.userId}`}
+                      className="text-xs font-semibold text-dark-grey-800 block"
+                    >
+                      Date of Last Paycheck
+                    </label>
+                    <input
+                      type="date"
+                      id={`last-pay-date-${member.userId}`}
+                      value={member.lastPayDate || ''}
+                      onChange={(e) => handleLastPayDateChange(member.userId, e.target.value)}
+                      className="w-full px-3 py-2.5 bg-beige-50/50 border border-beige-300 rounded-xl text-dark-green-900 font-medium text-sm focus:bg-white focus:outline-none focus:ring-2 focus:ring-dark-green-700/20 focus:border-dark-green-700 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Normalized Result Banner */}
+                  <div className="sm:col-span-12 pt-1">
+                    <div className="p-2.5 rounded-xl bg-sage-50 border border-sage-200 flex items-center justify-between text-xs">
+                      <span className="font-bold uppercase tracking-wider text-sage-800">
+                        Weekly Normalized Income:
                       </span>
-                      <span className="text-base font-extrabold text-dark-green-900">
+                      <span className="text-sm sm:text-base font-extrabold text-dark-green-900">
                         {formatCurrency(member.normalizedWeeklyIncome)}
-                        <span className="text-xs font-normal text-brown-700">/wk</span>
+                        <span className="text-xs font-normal text-brown-700 ml-1">/ week</span>
                       </span>
                     </div>
                   </div>
