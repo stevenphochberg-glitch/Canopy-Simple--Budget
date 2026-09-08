@@ -1,4 +1,5 @@
 import { DayOfWeek, PaySchedule, HouseholdMember, Category, TimeframeMode, DateRange, Expense } from '../types';
+import { is53WeekFiscalYear, getFiscalMonthForDate } from './fiscal445';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Monday',
@@ -354,25 +355,117 @@ export function getCategoryBudgetForTimeframe(weeklyBudget: number, mode: Timefr
 }
 
 /**
- * Calculates spending and transaction count for a category within a date range
+ * Dynamic Proration for Paid-Only Bills:
+ * - Strict Logging Rule: Only log and prorate the exact amount of the expense that has actively been paid.
+ * - Annual Bills: Dynamically calculate the exact number of fiscal weeks in the current year
+ *   (52-week or 53-week year based on Jan 5, 2026 anchor). Divide actively paid bill amount by this exact integer
+ *   to display weekly amount. For monthly view, multiply that weekly amount by the 4 or 5 weeks in current fiscal month.
+ *   The prorated amount covers the active timeframe (e.g., Sept to Sept) without auto-renewing.
+ * - Monthly Bills: Split the actively paid expense across the weeks of that specific month based on 4-4-5 structure.
+ *   Only prorated across the weeks of the single month it was logged for, with no adjustments pushed to unpaid future months.
+ * - Weekly Bills / Regular Expenses: Direct allocation to that specific week.
+ */
+export function getProratedExpenseAmount(
+  exp: Expense,
+  start: Date,
+  end: Date,
+  fiscalYearEndMonth: number = 12
+): number {
+  const amount = Number(exp.amount) || 0;
+  if (amount <= 0) return 0;
+
+  // If no billFrequency or weekly bill, use standard date range check
+  if (!exp.billFrequency || exp.billFrequency === 'weekly') {
+    return isExpenseInDateRange(exp, start, end) ? amount : 0;
+  }
+
+  const expDate = new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : ''));
+  const expTime = isNaN(expDate.getTime()) ? (exp.timestamp || Date.now()) : expDate.getTime();
+  const validExpDate = new Date(expTime);
+
+  const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
+  const isWeeklyView = diffDays <= 9;
+
+  if (exp.billFrequency === 'monthly') {
+    const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEndMonth);
+    const mStart = billFiscalMonth.startDate.getTime();
+    const mEnd = billFiscalMonth.endDate.getTime();
+
+    // Must overlap with this specific fiscal month
+    if (end.getTime() < mStart || start.getTime() > mEnd) {
+      return 0;
+    }
+
+    if (isWeeklyView) {
+      // Split actively paid expense across the weeks of that specific 4-4-5 month
+      const weeksInMonth = billFiscalMonth.weekCount || 4;
+      return Math.round((amount / weeksInMonth) * 100) / 100;
+    } else {
+      // For the monthly view of this single month, full paid amount is recognized
+      return amount;
+    }
+  }
+
+  if (exp.billFrequency === 'annually') {
+    const expYear = validExpDate.getFullYear();
+    const totalWeeksInYear = is53WeekFiscalYear(expYear, fiscalYearEndMonth) ? 53 : 52;
+    const weeklyAmount = amount / totalWeeksInYear;
+
+    // Active timeframe: totalWeeksInYear weeks starting from the fiscal week of validExpDate
+    const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEndMonth);
+    const daysFromMonthStart = Math.max(
+      0,
+      Math.floor((validExpDate.getTime() - billFiscalMonth.startDate.getTime()) / (1000 * 60 * 60 * 24))
+    );
+    const weekOfFiscalMonth = Math.min(
+      billFiscalMonth.weekCount,
+      Math.floor(daysFromMonthStart / 7) + 1
+    );
+    const weekStartTime = billFiscalMonth.startDate.getTime() + (weekOfFiscalMonth - 1) * 7 * 24 * 60 * 60 * 1000;
+    const activeStartTime = weekStartTime;
+    const activeEndTime = activeStartTime + totalWeeksInYear * 7 * 24 * 60 * 60 * 1000 - 1;
+
+    if (end.getTime() < activeStartTime || start.getTime() > activeEndTime) {
+      return 0;
+    }
+
+    if (isWeeklyView) {
+      return Math.round(weeklyAmount * 100) / 100;
+    } else {
+      const currentFiscalMonth = getFiscalMonthForDate(start, fiscalYearEndMonth);
+      const weeksInMonth = currentFiscalMonth.weekCount || 4;
+      return Math.round((weeklyAmount * weeksInMonth) * 100) / 100;
+    }
+  }
+
+  return isExpenseInDateRange(exp, start, end) ? amount : 0;
+}
+
+/**
+ * Calculates spending and transaction count for a category within a date range,
+ * applying dynamic paid-only bill proration.
  */
 export function calculateCategorySpending(
   expenses: Expense[],
   categoryId: string,
   start: Date,
-  end: Date
+  end: Date,
+  fiscalYearEndMonth: number = 12
 ): { totalSpent: number; count: number } {
   let totalSpent = 0;
   let count = 0;
 
   for (const exp of expenses) {
-    if (exp.categoryId === categoryId && isExpenseInDateRange(exp, start, end)) {
-      totalSpent += Number(exp.amount) || 0;
-      count += 1;
+    if (exp.categoryId === categoryId) {
+      const prorated = getProratedExpenseAmount(exp, start, end, fiscalYearEndMonth);
+      if (prorated > 0) {
+        totalSpent += prorated;
+        count += 1;
+      }
     }
   }
 
-  return { totalSpent, count };
+  return { totalSpent: Math.round(totalSpent * 100) / 100, count };
 }
 
 /**

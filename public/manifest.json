@@ -6,7 +6,26 @@
     {
       "src": "/logo.jpeg",
       "type": "image/jpeg",
-      "sizes": "192x192 512x512"
+      "sizes": "192x192 512x512 1024x1024 2048x2048",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo.jpeg",
+      "type": "image/jpeg",
+      "sizes": "192x192 512x512 1024x1024 2048x2048",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/logo2.jpeg",
+      "type": "image/jpeg",
+      "sizes": "1024x1024",
+      "purpose": "any"
+    },
+    {
+      "src": "/logo2.jpeg",
+      "type": "image/jpeg",
+      "sizes": "1024x1024",
+      "purpose": "maskable"
     }
   ],
   "start_url": "/",
@@ -15,3 +34,4 @@
   "display": "standalone",
   "orientation": "portrait"
 }
+

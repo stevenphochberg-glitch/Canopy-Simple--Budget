@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { Category, CategoryGroup, StagedExpense } from '../../types';
+import { Category, CategoryGroup, StagedExpense, BillFrequency } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
 import { parseQuickNoteWithGemini, scanReceiptWithGemini } from '../../lib/geminiApi';
 import {
@@ -72,9 +72,15 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   const [manualLoggedBy, setManualLoggedBy] = useState<string>(
     user?.userId || 'usr_self'
   );
+  const [manualBillFrequency, setManualBillFrequency] = useState<BillFrequency>('monthly');
 
   // Manual Batch Queue (for "Save & Add Another")
   const [manualBatch, setManualBatch] = useState<StagedExpense[]>([]);
+
+  const selectedManualCat = categories.find((c) => c.id === manualCategoryId);
+  const isBillsCategory =
+    selectedManualCat?.group === 'Bills' ||
+    selectedManualCat?.name.toLowerCase().includes('bill');
 
   useEffect(() => {
     if (initialCategory?.id) {
@@ -111,6 +117,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       categoryId: resolvedCategoryId,
       date: manualDate || new Date().toISOString().split('T')[0],
       loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
+      billFrequency: isBillsCategory ? manualBillFrequency : undefined,
     };
 
     setManualBatch((prev) => [...prev, newItem]);
@@ -137,6 +144,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
         categoryId: resolvedCategoryId,
         date: manualDate || new Date().toISOString().split('T')[0],
         loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
+        billFrequency: isBillsCategory ? manualBillFrequency : undefined,
       });
     }
 
@@ -507,6 +515,36 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     ))}
                   </select>
                 </div>
+
+                {/* Bill Frequency Dropdown (when Bills category is selected) */}
+                {isBillsCategory && (
+                  <div className="space-y-1.5 p-3.5 bg-sage-50/80 border border-sage-200 rounded-2xl animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                        <Tag className="w-3.5 h-3.5 text-sage-700" />
+                        Bill Billing Frequency
+                      </label>
+                      <span className="text-[10px] font-bold text-sage-800 bg-sage-200/70 px-2 py-0.5 rounded-full">
+                        Paid-Only Proration
+                      </span>
+                    </div>
+
+                    <select
+                      id="manual-select-bill-frequency"
+                      value={manualBillFrequency}
+                      onChange={(e) => setManualBillFrequency(e.target.value as BillFrequency)}
+                      className="w-full px-3.5 py-2 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                    >
+                      <option value="weekly">Weekly (Full expense charged to current week)</option>
+                      <option value="monthly">Monthly (Prorated across current 4-4-5 month weeks)</option>
+                      <option value="annually">Annually (Prorated across fiscal year / 52 weeks)</option>
+                    </select>
+
+                    <p className="text-[11px] text-brown-700 leading-snug pt-0.5">
+                      <strong>Paid-Only Rule:</strong> Only the active prorated share of this paid bill will hit this week's budget. Unpaid future recurring bills will not be auto-scheduled.
+                    </p>
+                  </div>
+                )}
 
                 {/* Payer & Date Optional Row */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">

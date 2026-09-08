@@ -15,6 +15,7 @@ import { CategoryCard } from './CategoryCard';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { ExtraPaycheckBanner } from './ExtraPaycheckBanner';
 import { RunwayVisualizer } from './RunwayVisualizer';
+import { calculateCheckInStatus } from '../../lib/checkInCalculations';
 import {
   Plus,
   ChevronLeft,
@@ -23,6 +24,10 @@ import {
   Receipt,
   Trash2,
   Calendar,
+  CheckCircle,
+  CheckCircle2,
+  Clock,
+  ArrowRight,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -34,6 +39,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     household,
     categories,
     expenses,
+    checkIns,
     members,
     timeframeMode,
     setTimeframeMode,
@@ -44,6 +50,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     openStagingModal,
     openLogExpenseModal,
     openAllocationModal,
+    openWeeklyCheckInModal,
+    openMonthlyRetroModal,
     deleteExpense,
   } = useHousehold();
 
@@ -59,6 +67,18 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const extraPaycheckInfo = useMemo(() => {
     return detectExtraPaycheckMonth(members, fiscalMonth);
   }, [members, fiscalMonth]);
+
+  // Check if active timeframe is a historical week with a completed check-in
+  const historicalCheckIn = useMemo(() => {
+    if (timeframeMode !== 'week' || timeframeOffset >= 0) return null;
+    const startStr = activeDateRange.startDate.toISOString().split('T')[0];
+    const endStr = activeDateRange.endDate.toISOString().split('T')[0];
+    return checkIns.find(
+      (c) =>
+        c.status === 'completed' &&
+        (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+    );
+  }, [timeframeMode, timeframeOffset, activeDateRange, checkIns]);
 
   // 2. Calculate overall totals for active timeframe
   const totalWeeklyBudget = categories.reduce(
@@ -109,8 +129,117 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     return standardSum > 0 ? standardSum : totalWeeklyBudget;
   }, [household?.baselineWeeklyBurnRate, categories, bufferCategory, totalWeeklyBudget]);
 
+  // 3. Reactive Review Due Status for Actionable Alert Badge & Prominent Banner
+  const reviewDueStatus = useMemo(() => {
+    if (!household) return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
+    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
+
+    if (isWeeklyDue) {
+      return {
+        isDue: true,
+        type: 'weekly' as const,
+        isPastDue: statusInfo.isPastDue,
+        title: statusInfo.isPastDue
+          ? 'Weekly Check-In is Past Due'
+          : statusInfo.isLastDayOfWeek
+            ? 'Weekly Household Alignment Due Today'
+            : 'Weekly Check-In Due',
+        description: statusInfo.isPastDue
+          ? 'You have unreviewed envelope balances from a previous week. Reconcile spending and bank savings to keep budgets accurate.'
+          : 'Review this week’s expenses, bank category surpluses into savings, and set envelope allocations for next week.',
+      };
+    }
+
+    const currentFiscalMonth = getFiscalMonthForDate(new Date(), household.fiscalYearEndMonth || 12);
+    const monthEndTime = currentFiscalMonth.endDate.getTime();
+    const finalWeekStartTime = monthEndTime - 7 * 24 * 60 * 60 * 1000;
+    const isMonthEnd = new Date().getTime() >= finalWeekStartTime;
+
+    if (isMonthEnd) {
+      const hasCompletedMonthRetro = (checkIns || []).some((c) => {
+        const cEndTime = new Date(c.weekEndDate).getTime();
+        return cEndTime >= finalWeekStartTime && c.status === 'completed';
+      });
+      if (!hasCompletedMonthRetro) {
+        const isPastDueMonth = new Date().getTime() > monthEndTime;
+        return {
+          isDue: true,
+          type: 'monthly' as const,
+          isPastDue: isPastDueMonth,
+          title: isPastDueMonth
+            ? 'Monthly Retrospective Past Due'
+            : 'Monthly Retrospective Ready',
+          description:
+            'The fiscal month has concluded. Review your macro budget performance, analyze category pacing, and establish next month’s baseline.',
+        };
+      }
+    }
+
+    return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
+  }, [household, checkIns, expenses]);
+
   return (
     <div className="space-y-6 pb-20 lg:pb-8">
+      {/* Prominent Actionable Review Due Element */}
+      {reviewDueStatus.isDue && (
+        <div
+          id="dashboard-review-due-alert"
+          className="bg-white border-2 border-red-500 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
+        >
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="relative flex-shrink-0">
+              <div className="w-12 h-12 rounded-2xl bg-red-50 border border-red-200 flex items-center justify-center text-red-600">
+                <CheckCircle className="w-6 h-6" />
+              </div>
+              {/* Solid Red Dot - Red is strictly reserved for actionable alerts and past-due notifications */}
+              <span
+                id="dashboard-review-notification-dot"
+                className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-600 rounded-full ring-2 ring-white"
+                title="Actionable alert"
+                aria-label="Actionable alert"
+              />
+            </div>
+
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-red-700 bg-red-100/90 px-2.5 py-0.5 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-red-600" />
+                  Action Required &bull; {reviewDueStatus.type === 'monthly' ? 'Monthly Retrospective' : 'Weekly Check-In'}
+                </span>
+                {reviewDueStatus.isPastDue && (
+                  <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
+                    Past Due
+                  </span>
+                )}
+              </div>
+
+              <h3 className="text-base sm:text-lg font-black text-dark-green-950">
+                {reviewDueStatus.title}
+              </h3>
+              <p className="text-xs text-brown-700 max-w-xl">
+                {reviewDueStatus.description}
+              </p>
+            </div>
+          </div>
+
+          <button
+            id="dashboard-start-review-cta"
+            onClick={() => {
+              if (reviewDueStatus.type === 'monthly') {
+                openMonthlyRetroModal();
+              } else {
+                openWeeklyCheckInModal();
+              }
+            }}
+            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+          >
+            <span>{reviewDueStatus.type === 'monthly' ? 'Start Monthly Retro' : 'Complete Check-In'}</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Timeframe Selector & Navigation Bar */}
       <div className="bg-white border border-beige-200/90 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         {/* Left: Timeframe Toggle (Week / Month) */}
@@ -203,6 +332,56 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
       {/* Extra Paycheck Month Banner */}
       <ExtraPaycheckBanner extraInfo={extraPaycheckInfo} />
+
+      {/* Historical Week Check-In Action Banner */}
+      {timeframeMode === 'week' && timeframeOffset < 0 && (
+        <div
+          id="dashboard-historical-checkin-banner"
+          className="bg-white border-2 border-sage-300 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
+        >
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Clock className="w-6 h-6" />
+            </div>
+            <div className="space-y-0.5 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-dark-green-900 bg-sage-100 px-2.5 py-0.5 rounded-full">
+                  <Clock className="w-3 h-3 text-dark-green-800" />
+                  Historical Week &bull; {activeDateRange.label}
+                </span>
+                {historicalCheckIn ? (
+                  <span className="text-[10px] font-extrabold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+                    <CheckCircle2 className="w-3 h-3 text-emerald-700" />
+                    Check-In Completed (${formatCurrency(historicalCheckIn.totalSaved)} saved)
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-extrabold text-amber-900 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full">
+                    Check-In Not Yet Executed
+                  </span>
+                )}
+              </div>
+              <h3 className="text-base sm:text-lg font-black text-dark-green-950">
+                {historicalCheckIn ? 'Past Weekly Check-In Recorded' : 'Execute Historical Weekly Check-In'}
+              </h3>
+              <p className="text-xs text-brown-700 max-w-xl">
+                {historicalCheckIn
+                  ? `Weekly check-in recorded for ${activeDateRange.label}. You can review or re-execute this past check-in at any time.`
+                  : `Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for ${activeDateRange.label}.`}
+              </p>
+            </div>
+          </div>
+
+          <button
+            id="dashboard-historical-checkin-cta"
+            onClick={() => openWeeklyCheckInModal()}
+            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+          >
+            <Clock className="w-4 h-4" />
+            <span>{historicalCheckIn ? 'Review Historical Check-In' : 'Execute Check-In for this Week'}</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Executive Budget Summary Card */}
       <div className="bg-gradient-to-br from-sage-50 via-white to-beige-50 border border-sage-200/90 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { CategoryGroup, StagedExpense } from '../../types';
+import { CategoryGroup, StagedExpense, BillFrequency } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
 import {
   X,
@@ -260,6 +260,40 @@ export const ReviewAndConfirmModal: React.FC = () => {
                     </select>
                   </div>
                 </div>
+
+                {/* Bill Frequency Row (When category is Bills or frequency is set) */}
+                {(selectedCategory?.group === 'Bills' ||
+                  selectedCategory?.name.toLowerCase().includes('bill') ||
+                  item.billFrequency) && (
+                  <div className="p-3 bg-sage-50/80 border border-sage-200 rounded-xl space-y-1.5 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                        <Tag className="w-3 h-3 text-sage-700" />
+                        Bill Billing Frequency
+                      </label>
+                      <span className="text-[9px] font-extrabold text-sage-800 bg-sage-200/70 px-2 py-0.5 rounded-full">
+                        Paid-Only Proration
+                      </span>
+                    </div>
+
+                    <select
+                      value={item.billFrequency || 'monthly'}
+                      onChange={(e) =>
+                        updateStagedItem(index, {
+                          billFrequency: e.target.value as BillFrequency,
+                        })
+                      }
+                      className="w-full px-3 py-1.5 bg-white border border-sage-300 rounded-lg text-xs font-bold text-dark-green-900 focus:outline-none"
+                    >
+                      <option value="weekly">Weekly (Full expense charged to current week)</option>
+                      <option value="monthly">Monthly (Prorated across current 4-4-5 month weeks)</option>
+                      <option value="annually">Annually (Prorated across fiscal year / 52 weeks)</option>
+                    </select>
+                    <p className="text-[10px] text-brown-700 leading-tight">
+                      Only the active prorated amount of this paid bill will be charged to the current fiscal period. Unpaid future recurring bills are not forward-generated.
+                    </p>
+                  </div>
+                )}
               </div>
             );
           })}

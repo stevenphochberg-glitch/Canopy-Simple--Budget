@@ -40,6 +40,8 @@ export const FeedView: React.FC = () => {
     household,
     members,
     user,
+    expenses,
+    checkIns,
     postFeedMessage,
     navigateToCategoryLedger,
     categories,
@@ -93,7 +95,25 @@ export const FeedView: React.FC = () => {
 
   // Calendar computations strictly enforcing 4-4-5 Fiscal Month Structure
   const calendarData = useMemo(() => {
-    // Map of date string YYYY-MM-DD -> items summary
+    // 1. Build an aggregate map of all logged household transactions per date
+    const dailyExpensesMap: Record<string, { totalSpent: number; count: number }> = {};
+    expenses.forEach((exp) => {
+      const amount = Number(exp.amount) || 0;
+      if (amount <= 0) return;
+      let dStr = exp.date;
+      if (!dStr && exp.timestamp) {
+        dStr = new Date(exp.timestamp).toISOString().split('T')[0];
+      }
+      if (dStr) {
+        if (!dailyExpensesMap[dStr]) {
+          dailyExpensesMap[dStr] = { totalSpent: 0, count: 0 };
+        }
+        dailyExpensesMap[dStr].totalSpent += amount;
+        dailyExpensesMap[dStr].count += 1;
+      }
+    });
+
+    // 2. Map of date string YYYY-MM-DD -> items summary
     const daysMap: Record<
       string,
       {
@@ -102,35 +122,71 @@ export const FeedView: React.FC = () => {
         hasCheckin: boolean;
         hasStar: boolean;
         totalDailySpent: number;
+        transactionCount: number;
       }
     > = {};
 
-    feedItems.forEach((item) => {
-      const dStr = item.date || new Date(item.timestamp).toISOString().split('T')[0];
+    // Helper to initialize day entry
+    const getOrInitDay = (dStr: string) => {
       if (!daysMap[dStr]) {
         daysMap[dStr] = {
           items: [],
           commentCount: 0,
           hasCheckin: false,
           hasStar: false,
-          totalDailySpent: 0,
+          totalDailySpent: dailyExpensesMap[dStr]?.totalSpent || 0,
+          transactionCount: dailyExpensesMap[dStr]?.count || 0,
         };
       }
-      daysMap[dStr].items.push(item);
+      return daysMap[dStr];
+    };
 
+    // Populate from feedItems
+    feedItems.forEach((item) => {
+      const dStr = item.date || new Date(item.timestamp).toISOString().split('T')[0];
+      const entry = getOrInitDay(dStr);
+      entry.items.push(item);
+
+      // Chat bubbles for comments / notes
       if (item.type === 'comment' || item.type === 'message') {
-        daysMap[dStr].commentCount += 1;
+        entry.commentCount += 1;
       }
-      if (item.type === 'checkin' || item.type === 'monthEndReset') {
-        daysMap[dStr].hasCheckin = true;
+      // Green checkmarks for completed weekly check-ins
+      if (item.type === 'checkin') {
+        entry.hasCheckin = true;
       }
-      if (item.type === 'freshStart' || (item.metadata?.totalSaved && item.metadata.totalSaved > 50)) {
-        daysMap[dStr].hasStar = true;
+      // Stars for monthly reviews & major milestones
+      if (item.type === 'monthEndReset' || item.type === 'freshStart' || (item.metadata?.totalSaved && item.metadata.totalSaved > 50)) {
+        entry.hasStar = true;
       }
-      if (item.linkedExpense?.amount) {
-        daysMap[dStr].totalDailySpent += item.linkedExpense.amount;
+      // Fallback if expense was only captured in feedItem
+      if (item.linkedExpense?.amount && !dailyExpensesMap[dStr]) {
+        entry.totalDailySpent += item.linkedExpense.amount;
+        entry.transactionCount += 1;
       }
     });
+
+    // Populate completed check-ins directly from checkIns collection
+    checkIns.forEach((c) => {
+      if (c.status === 'completed') {
+        if (c.weekEndDate) {
+          const entry = getOrInitDay(c.weekEndDate);
+          entry.hasCheckin = true;
+        }
+        if (c.timestamp) {
+          const cDate = new Date(c.timestamp).toISOString().split('T')[0];
+          const entry = getOrInitDay(cDate);
+          entry.hasCheckin = true;
+        }
+      }
+    });
+
+    // Populate monthly review star from household lastMonthEndReset
+    if (household?.lastMonthEndReset) {
+      const resetDateStr = new Date(household.lastMonthEndReset).toISOString().split('T')[0];
+      const entry = getOrInitDay(resetDateStr);
+      entry.hasStar = true;
+    }
 
     const days = [];
     const current = new Date(fiscalMonth.startDate);
@@ -144,19 +200,16 @@ export const FeedView: React.FC = () => {
       const dayNumber = current.getDate();
       const monthShort = current.toLocaleDateString('en-US', { month: 'short' });
 
+      // Ensure day entry exists
+      const meta = getOrInitDay(dateStr);
+
       days.push({
         date: new Date(current),
         dayNumber,
         monthShort,
         dateStr,
         fiscalWeekNumber: weekNumber,
-        meta: daysMap[dateStr] || {
-          items: [],
-          commentCount: 0,
-          hasCheckin: false,
-          hasStar: false,
-          totalDailySpent: 0,
-        },
+        meta,
       });
 
       dayInWeekIndex++;
@@ -168,8 +221,8 @@ export const FeedView: React.FC = () => {
       current.setDate(current.getDate() + 1);
     }
 
-    return { fiscalMonth, fiscalTracker, days };
-  }, [fiscalMonth, fiscalTracker, feedItems]);
+    return { fiscalMonth, fiscalTracker, days, dailyExpensesMap };
+  }, [fiscalMonth, fiscalTracker, feedItems, expenses, checkIns, household?.lastMonthEndReset]);
 
   const prevFiscalMonth = () => {
     // Jump 7 days before the start of the current fiscal month into previous fiscal month
@@ -336,7 +389,7 @@ export const FeedView: React.FC = () => {
           <div className="flex items-center gap-4 text-xs font-semibold text-brown-700 flex-wrap bg-beige-50/70 p-3 rounded-2xl border border-beige-200">
             <span className="text-dark-green-900 font-extrabold">Fiscal Calendar Indicators:</span>
             <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-sage-100 border border-sage-300 flex items-center justify-center text-sage-800">
+              <div className="w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 flex items-center justify-center text-emerald-800">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
               <span>Weekly Check-In</span>
@@ -345,13 +398,19 @@ export const FeedView: React.FC = () => {
               <div className="w-5 h-5 rounded-full bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-700">
                 <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-600" />
               </div>
-              <span>Milestone / Savings</span>
+              <span>Monthly Review</span>
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-5 h-5 rounded-full bg-beige-200 border border-beige-300 flex items-center justify-center text-dark-green-900">
                 <MessageSquare className="w-3 h-3" />
               </div>
-              <span>Notes & Stream</span>
+              <span>Comments & Notes</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className="px-2 py-0.5 rounded-md bg-white border border-beige-300 font-mono font-black text-dark-green-900 text-[10px] shadow-2xs">
+                $0.00
+              </div>
+              <span>Daily Transaction Total</span>
             </div>
           </div>
 
@@ -368,7 +427,7 @@ export const FeedView: React.FC = () => {
 
             {calendarData.days.map((cell) => {
               const isSelected = selectedDateFilter === cell.dateStr;
-              const hasActivity = cell.meta.items.length > 0;
+              const hasActivity = cell.meta.items.length > 0 || cell.meta.totalDailySpent > 0;
               const isToday =
                 cell.dateStr === new Date().toISOString().split('T')[0];
 
@@ -382,7 +441,7 @@ export const FeedView: React.FC = () => {
                       setSelectedDateFilter(cell.dateStr);
                     }
                   }}
-                  className={`min-h-[125px] sm:min-h-[140px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
+                  className={`min-h-[130px] sm:min-h-[145px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
                     isSelected
                       ? 'bg-sage-50 border-dark-green-800 ring-2 ring-dark-green-800/20 shadow-xs'
                       : isToday
@@ -408,18 +467,18 @@ export const FeedView: React.FC = () => {
                     </span>
                   </div>
 
-                  {/* Middle: Vertically Stacked Indicators */}
+                  {/* Middle: Vertically Stacked Indicators (Icons) */}
                   <div className="flex-1 flex flex-col justify-center gap-1 my-1">
                     {cell.meta.hasCheckin && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-sage-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-200" title="Weekly Check-In Completed">
-                        <CheckCircle2 className="w-3 h-3 text-sage-700 shrink-0" />
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-900 bg-emerald-100/90 px-1.5 py-0.5 rounded-md border border-emerald-300" title="Weekly Check-In Completed">
+                        <CheckCircle2 className="w-3 h-3 text-emerald-700 shrink-0" />
                         <span className="truncate hidden sm:inline">Check-in</span>
                       </div>
                     )}
                     {cell.meta.hasStar && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-md border border-amber-200" title="Milestone / High Savings">
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-md border border-amber-300" title="Monthly Review / Major Milestone">
                         <Star className="w-3 h-3 fill-amber-500 text-amber-600 shrink-0" />
-                        <span className="truncate hidden sm:inline">Milestone</span>
+                        <span className="truncate hidden sm:inline">Review</span>
                       </div>
                     )}
                     {cell.meta.commentCount > 0 && (
@@ -430,12 +489,20 @@ export const FeedView: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Bottom: Daily Spent Pill */}
+                  {/* Bottom: Daily Aggregate Transaction Dollar Total */}
                   <div className="mt-auto pt-1">
                     {cell.meta.totalDailySpent > 0 ? (
-                      <span className="inline-block w-full text-center text-[10px] sm:text-xs font-mono font-black text-dark-green-900 bg-beige-100/90 px-1 py-0.5 rounded-md border border-beige-200/80 whitespace-nowrap overflow-hidden text-ellipsis">
-                        {formatCurrency(cell.meta.totalDailySpent)}
-                      </span>
+                      <div
+                        className="w-full flex items-center justify-between px-1.5 py-0.5 bg-dark-green-900/5 group-hover:bg-dark-green-900/10 border border-dark-green-900/15 rounded-md text-dark-green-950 shadow-2xs transition"
+                        title={`Total Logged: ${formatCurrency(cell.meta.totalDailySpent)} across ${cell.meta.transactionCount} transaction${cell.meta.transactionCount === 1 ? '' : 's'}`}
+                      >
+                        <span className="text-[9px] font-black text-sage-800 uppercase tracking-tight hidden sm:inline">
+                          Total
+                        </span>
+                        <span className="text-[10px] sm:text-xs font-mono font-black text-dark-green-900 truncate">
+                          {formatCurrency(cell.meta.totalDailySpent)}
+                        </span>
+                      </div>
                     ) : cell.meta.items.length > 0 ? (
                       <span className="block text-center text-[9px] font-bold text-brown-700 truncate">
                         {cell.meta.items.length} {cell.meta.items.length === 1 ? 'event' : 'events'}
@@ -455,7 +522,11 @@ export const FeedView: React.FC = () => {
                   Date Filter Active: {formatDateDisplay(selectedDateFilter)}
                 </span>
                 <span className="text-xs text-brown-700">
-                  Showing only transactions, notes, and check-ins recorded on this day.
+                  Total Logged: <strong className="text-dark-green-900 font-bold">{formatCurrency(calendarData.dailyExpensesMap[selectedDateFilter]?.totalSpent || 0)}</strong>
+                  {calendarData.dailyExpensesMap[selectedDateFilter]?.count
+                    ? ` (${calendarData.dailyExpensesMap[selectedDateFilter].count} transaction${calendarData.dailyExpensesMap[selectedDateFilter].count > 1 ? 's' : ''})`
+                    : ' (No transactions logged)'}
+                  {' '}&bull; Showing all activity recorded on this day.
                 </span>
               </div>
               <div className="flex items-center gap-2">

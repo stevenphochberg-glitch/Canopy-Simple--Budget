@@ -1511,6 +1511,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         timestamp: ts,
         loggedByUserId: item.loggedByUserId || user?.userId || 'usr_self',
         receiptImgUrl: item.receiptImgUrl || undefined,
+        billFrequency: item.billFrequency || undefined,
       };
     });
 
@@ -1548,6 +1549,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             createdAt: serverTimestamp(),
             loggedByUserId: exp.loggedByUserId,
             receiptImgUrl: exp.receiptImgUrl || null,
+            billFrequency: exp.billFrequency || null,
           };
           batch.set(expRef, sanitizeFirestorePayload(expPayload));
 
@@ -1666,6 +1668,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       timestamp: ts || now,
       loggedByUserId: expData.loggedByUserId || user?.userId || 'usr_self',
       receiptImgUrl: expData.receiptImgUrl,
+      billFrequency: expData.billFrequency,
     };
 
     // 1. Optimistic update

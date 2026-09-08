@@ -2,7 +2,7 @@
  * Canopy Budgeting App - Phase 2 Master Architecture
  * My Budget Dashboard, Universal Staging & Live Firestore Ledger
  */
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { HouseholdProvider, useHousehold } from './context/HouseholdContext';
 import { LoginPage } from './components/LoginPage';
 import { SetupWizard } from './components/SetupWizard/SetupWizard';
@@ -18,6 +18,8 @@ import { ReviewAndConfirmModal } from './components/Staging/ReviewAndConfirmModa
 import { WeeklyCheckInModal } from './components/CheckIn/WeeklyCheckInModal';
 import { MonthlyRetrospectiveModal } from './components/CheckIn/MonthlyRetrospectiveModal';
 import { CategoryAllocationModal } from './components/Dashboard/CategoryAllocationModal';
+import { calculateCheckInStatus } from './lib/checkInCalculations';
+import { getFiscalMonthForDate } from './lib/fiscal445';
 import {
   LayoutDashboard,
   Receipt,
@@ -40,6 +42,8 @@ const MainLayout: React.FC = () => {
     isOnboarding,
     activeTab,
     setActiveTab,
+    expenses,
+    checkIns,
     toastMessage,
     toastType,
     openStagingModal,
@@ -55,6 +59,40 @@ const MainLayout: React.FC = () => {
     closeAllocationModal,
   } = useHousehold();
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+
+  // Reactive Review Due Status for Check-in Alert Badge
+  const reviewDueStatus = useMemo(() => {
+    if (!household) return { isDue: false, isPastDue: false };
+    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
+
+    if (isWeeklyDue) {
+      return {
+        isDue: true,
+        isPastDue: statusInfo.isPastDue,
+      };
+    }
+
+    const fiscalMonth = getFiscalMonthForDate(new Date(), household.fiscalYearEndMonth || 12);
+    const monthEndTime = fiscalMonth.endDate.getTime();
+    const finalWeekStartTime = monthEndTime - 7 * 24 * 60 * 60 * 1000;
+    const isMonthEnd = new Date().getTime() >= finalWeekStartTime;
+
+    if (isMonthEnd) {
+      const hasCompletedMonthCheckin = (checkIns || []).some((c) => {
+        const cEndTime = new Date(c.weekEndDate).getTime();
+        return cEndTime >= finalWeekStartTime && c.status === 'completed';
+      });
+      if (!hasCompletedMonthCheckin) {
+        return {
+          isDue: true,
+          isPastDue: new Date().getTime() > monthEndTime,
+        };
+      }
+    }
+
+    return { isDue: false, isPastDue: false };
+  }, [household, checkIns, expenses]);
 
   // 0. Initial Loading State while Firebase Auth resolves
   if (isLoading) {
@@ -116,19 +154,30 @@ const MainLayout: React.FC = () => {
             {navLinks.map((item) => {
               const Icon = item.icon;
               const isActive = activeTab === item.id;
+              const hasAlert = item.id === 'checkin' && reviewDueStatus.isDue;
               return (
                 <button
                   key={item.id}
                   id={`desktop-sidebar-${item.id}`}
                   onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
                     isActive
                       ? 'bg-dark-green-800 text-white shadow-xs'
                       : 'text-dark-grey-800 hover:bg-beige-100 hover:text-dark-green-900'
                   }`}
                 >
-                  <Icon className="w-4 h-4" />
-                  <span>{item.label}</span>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  {hasAlert && (
+                    <span
+                      id="desktop-checkin-notification-dot"
+                      className="w-2.5 h-2.5 bg-red-600 rounded-full ring-2 ring-white shrink-0"
+                      title="Review due"
+                      aria-label="Review due alert"
+                    />
+                  )}
                 </button>
               );
             })}

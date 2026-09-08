@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useHousehold } from '../context/HouseholdContext';
 import { ActiveTab } from '../types';
+import { calculateCheckInStatus } from '../lib/checkInCalculations';
+import { getFiscalMonthForDate } from '../lib/fiscal445';
 import {
   LayoutDashboard,
   Receipt,
@@ -36,6 +38,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     userHouseholds,
     switchHousehold,
     members,
+    expenses,
+    checkIns,
     activeTab,
     setActiveTab,
     switchActiveMember,
@@ -48,6 +52,57 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
   } = useHousehold();
   const [copiedSync, setCopiedSync] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+
+  // Click-outside listener for the Account dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (accountMenuRef.current && !accountMenuRef.current.contains(event.target as Node)) {
+        setShowMemberDropdown(false);
+      }
+    };
+
+    if (showMemberDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showMemberDropdown]);
+
+  // Reactive Review Due Status for Check-in Alert Badge
+  const reviewDueStatus = useMemo(() => {
+    if (!household) return { isDue: false, isPastDue: false };
+    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
+
+    if (isWeeklyDue) {
+      return {
+        isDue: true,
+        isPastDue: statusInfo.isPastDue,
+      };
+    }
+
+    const fiscalMonth = getFiscalMonthForDate(new Date(), household.fiscalYearEndMonth || 12);
+    const monthEndTime = fiscalMonth.endDate.getTime();
+    const finalWeekStartTime = monthEndTime - 7 * 24 * 60 * 60 * 1000;
+    const isMonthEnd = new Date().getTime() >= finalWeekStartTime;
+
+    if (isMonthEnd) {
+      const hasCompletedMonthCheckin = (checkIns || []).some((c) => {
+        const cEndTime = new Date(c.weekEndDate).getTime();
+        return cEndTime >= finalWeekStartTime && c.status === 'completed';
+      });
+      if (!hasCompletedMonthCheckin) {
+        return {
+          isDue: true,
+          isPastDue: new Date().getTime() > monthEndTime,
+        };
+      }
+    }
+
+    return { isDue: false, isPastDue: false };
+  }, [household, checkIns, expenses]);
 
   // Switch / Join Modal State
   const [showJoinModal, setShowJoinModal] = useState(false);
@@ -168,7 +223,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             </button>
 
             {/* Account & Administrative Dropdown Menu */}
-            <div className="relative">
+            <div ref={accountMenuRef} className="relative">
               <button
                 id="user-profile-menu-btn"
                 onClick={() => setShowMemberDropdown(!showMemberDropdown)}
@@ -190,13 +245,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                 <ChevronDown className={`w-3 h-3 text-dark-green-800 transition-transform ${showMemberDropdown ? 'rotate-180' : ''}`} />
               </button>
 
-              {/* Invisible backdrop for outside-click dismissal */}
-              {showMemberDropdown && (
-                <div
-                  className="fixed inset-0 z-40"
-                  onClick={() => setShowMemberDropdown(false)}
-                />
-              )}
+              {/* Dropdown Menu Container (closed via click-outside ref listener) */}
 
               {/* Dropdown Menu Container */}
               {showMemberDropdown && (
@@ -567,18 +616,26 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
         <button
           id="mobile-nav-checkin"
           onClick={() => setActiveTab('checkin')}
-          className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition cursor-pointer ${
+          className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-xl transition cursor-pointer relative ${
             activeTab === 'checkin'
               ? 'text-dark-green-900 font-bold'
               : 'text-dark-grey-600 hover:text-dark-green-800'
           }`}
         >
           <div
-            className={`p-1 rounded-lg transition-transform ${
+            className={`relative p-1 rounded-lg transition-transform ${
               activeTab === 'checkin' ? 'bg-sage-100 text-dark-green-800 scale-105' : ''
             }`}
           >
             <CheckCircle className="w-4 h-4" />
+            {reviewDueStatus.isDue && (
+              <span
+                id="mobile-checkin-notification-dot"
+                className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-600 rounded-full ring-2 ring-white"
+                title="Review due"
+                aria-label="Review due alert"
+              />
+            )}
           </div>
           <span className="text-[10px] tracking-tight mt-0.5">Check-in</span>
         </button>

@@ -135,6 +135,8 @@ export interface TransactionReaction {
   timestamp: number;
 }
 
+export type BillFrequency = 'weekly' | 'monthly' | 'annually';
+
 export interface Expense {
   id: string;
   amount: number;
@@ -144,6 +146,7 @@ export interface Expense {
   date: string;
   loggedByUserId: string;
   receiptImgUrl?: string;
+  billFrequency?: BillFrequency;
   comments?: TransactionComment[];
   reactions?: TransactionReaction[];
 }
@@ -156,6 +159,7 @@ export interface StagedExpense {
   date: string;
   loggedByUserId: string;
   receiptImgUrl?: string;
+  billFrequency?: BillFrequency;
 }
 
 export interface DateRange {

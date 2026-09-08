@@ -1,11 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { Category, Expense } from '../../types';
-import { formatCurrency } from '../../lib/calculations';
+import { Category, Expense, DateRange } from '../../types';
+import { formatCurrency, getWeekRange, isExpenseInDateRange } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   calculateCheckInStatus,
   calculateCategoryDecisions,
+  getRemainingWeeksInMonth,
 } from '../../lib/checkInCalculations';
 import {
   Clock,
@@ -43,6 +44,9 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     completeWeeklyCheckIn,
     addExpense,
     showToast,
+    timeframeMode,
+    timeframeOffset,
+    activeDateRange,
   } = useHousehold();
 
   // Active step in the check-in wizard (1: Review expenses, 2: Rollovers/Deficits, 3: Confirm)
@@ -61,25 +65,79 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const [inlineLoggedBy, setInlineLoggedBy] = useState<string>(user?.userId || 'usr_self');
   const [isSavingInline, setIsSavingInline] = useState<boolean>(false);
 
-  // Compute status info
+  // Compute status info for current week
   const statusInfo = useMemo(() => {
     return calculateCheckInStatus(household, checkIns, expenses);
   }, [household, checkIns, expenses]);
 
-  const { activeWeekRange, remainingWeeksInMonth, isLastDayOfWeek, isPastDue, isFirstWeekGracePeriod } = statusInfo;
+  // Selected week range for check-in: allows historical navigation
+  const [selectedWeekRange, setSelectedWeekRange] = useState<DateRange>(() => {
+    if (timeframeMode === 'week' && timeframeOffset < 0) {
+      return activeDateRange;
+    }
+    return statusInfo.activeWeekRange;
+  });
+
+  // Whenever modal opens or activeDateRange changes, sync selectedWeekRange
+  useEffect(() => {
+    if (isOpen) {
+      if (timeframeMode === 'week' && timeframeOffset < 0) {
+        setSelectedWeekRange(activeDateRange);
+      } else {
+        setSelectedWeekRange(statusInfo.activeWeekRange);
+      }
+      setStep(1);
+      setForceEarlyCheckIn(false);
+    }
+  }, [isOpen, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange]);
+
+  // Navigate week forward or backward directly inside modal
+  const navigateModalWeek = (direction: -1 | 1) => {
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    const targetDate = new Date(selectedWeekRange.startDate.getTime() + direction * 7 * 24 * 60 * 60 * 1000);
+    const newRange = getWeekRange(targetDate, firstDay, 0);
+    setSelectedWeekRange(newRange);
+    setStep(1);
+  };
+
+  // Determine if selected week is a historical week (ended in the past)
+  const isHistoricalWeek = useMemo(() => {
+    return selectedWeekRange.endDate.getTime() < Date.now();
+  }, [selectedWeekRange]);
+
+  // Check if a completed check-in already exists for this selected week
+  const existingCheckInForWeek = useMemo(() => {
+    const startStr = selectedWeekRange.startDate.toISOString().split('T')[0];
+    const endStr = selectedWeekRange.endDate.toISOString().split('T')[0];
+    return checkIns.find(
+      (c) =>
+        c.status === 'completed' &&
+        (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+    );
+  }, [selectedWeekRange, checkIns]);
+
+  // If this is a historical week, it has already passed!
+  // Therefore it is NEVER "too early" to check in, and is NEVER restricted to preview mode!
+  const isTooEarly = !isHistoricalWeek && !statusInfo.isLastDayOfWeek && !statusInfo.isPastDue && !forceEarlyCheckIn;
+  const isPreviewMode = !isHistoricalWeek && !statusInfo.isLastDayOfWeek && !statusInfo.isPastDue && !forceEarlyCheckIn;
 
   // Filter expenses for this check-in week
   const weekExpenses = useMemo(() => {
     return expenses.filter((exp) => {
-      let expTime = exp.timestamp;
-      if (!expTime && exp.date) expTime = new Date(exp.date).getTime();
-      if (!expTime) return false;
-      return (
-        expTime >= activeWeekRange.startDate.getTime() &&
-        expTime <= activeWeekRange.endDate.getTime()
-      );
+      return isExpenseInDateRange(exp, selectedWeekRange.startDate, selectedWeekRange.endDate);
     });
-  }, [expenses, activeWeekRange]);
+  }, [expenses, selectedWeekRange]);
+
+  // Calculate remaining weeks in month relative to selected week
+  const targetRemainingWeeks = useMemo(() => {
+    if (isHistoricalWeek) {
+      return getRemainingWeeksInMonth(selectedWeekRange.endDate);
+    }
+    return statusInfo.remainingWeeksInMonth;
+  }, [isHistoricalWeek, selectedWeekRange.endDate, statusInfo.remainingWeeksInMonth]);
+
+  const remainingWeeksInMonth = targetRemainingWeeks;
+  const { isPastDue, isLastDayOfWeek, isFirstWeekGracePeriod } = statusInfo;
 
   // Calculate pacing decisions for each category
   const {
@@ -93,17 +151,13 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     return calculateCategoryDecisions(
       categories,
       expenses,
-      activeWeekRange,
-      remainingWeeksInMonth,
+      selectedWeekRange,
+      targetRemainingWeeks,
       userChoices
     );
-  }, [categories, expenses, activeWeekRange, remainingWeeksInMonth, userChoices]);
+  }, [categories, expenses, selectedWeekRange, targetRemainingWeeks, userChoices]);
 
   if (!isOpen) return null;
-
-  // If not yet check-in day and user hasn't chosen to proceed early
-  const isTooEarly = !isLastDayOfWeek && !isPastDue && !forceEarlyCheckIn;
-  const isPreviewMode = !isLastDayOfWeek && !isPastDue;
 
   const handleChoiceChange = (categoryId: string, choice: 'savings' | 'rollover') => {
     setUserChoices((prev) => ({
@@ -131,7 +185,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         amount: numAmount,
         description: inlineDescription.trim() || 'Logged Expense',
         categoryId: resolvedCategoryId,
-        date: inlineDate || new Date().toISOString().split('T')[0],
+        date: inlineDate || selectedWeekRange.endDate.toISOString().split('T')[0],
         loggedByUserId: inlineLoggedBy || user?.userId || 'usr_self',
       });
       // Reset inline form
@@ -153,17 +207,24 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     setIsSubmitting(true);
     try {
       await completeWeeklyCheckIn({
-        weekStartDate: activeWeekRange.startDate.toISOString().split('T')[0],
-        weekEndDate: activeWeekRange.endDate.toISOString().split('T')[0],
+        weekStartDate: selectedWeekRange.startDate.toISOString().split('T')[0],
+        weekEndDate: selectedWeekRange.endDate.toISOString().split('T')[0],
         notes: intentionsNote.trim() || undefined,
         decisions,
         totalSaved,
         totalSpent,
         totalBudget,
       });
+      showToast(
+        isHistoricalWeek
+          ? `Historical check-in for ${selectedWeekRange.label} recorded successfully!`
+          : 'Weekly check-in completed successfully!',
+        'success'
+      );
       onClose();
     } catch (err) {
       console.error('Failed to complete check-in:', err);
+      showToast('Failed to save check-in. Please try again.', 'error');
     } finally {
       setIsSubmitting(false);
     }
@@ -179,17 +240,44 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               <Clock className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] font-black uppercase tracking-wider text-sage-800 bg-sage-100 px-2 py-0.5 rounded-full">
-                  Weekly Alignment
+                  {isHistoricalWeek ? 'Historical Check-In' : 'Weekly Alignment'}
                 </span>
-                <span className="text-xs text-dark-grey-600">
-                  {activeWeekRange.label}
-                </span>
+                {/* Week switcher controls */}
+                <div className="flex items-center gap-1 bg-white/90 border border-beige-300 rounded-xl px-1.5 py-0.5 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => navigateModalWeek(-1)}
+                    title="Previous week"
+                    className="p-0.5 hover:bg-beige-100 rounded text-dark-green-900 transition cursor-pointer"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-[11px] font-extrabold text-dark-green-950 px-1 whitespace-nowrap">
+                    {selectedWeekRange.label}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => navigateModalWeek(1)}
+                    title="Next week"
+                    className="p-0.5 hover:bg-beige-100 rounded text-dark-green-900 transition cursor-pointer"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
               <h2 className="text-lg sm:text-xl font-black text-dark-green-900 leading-tight">
-                Household Weekly Check-In
+                {isHistoricalWeek ? 'Historical Weekly Check-In' : 'Household Weekly Check-In'}
               </h2>
+              {existingCheckInForWeek && (
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 mt-0.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>
+                    Check-in completed for this week (${formatCurrency(existingCheckInForWeek.totalSaved)} saved). Submitting will reconcile and update it.
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 
@@ -319,16 +407,19 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                 </button>
               </div>
 
-              {isPastDue && (
+              {isHistoricalWeek ? (
+                <span className="text-[10px] font-bold text-dark-green-900 bg-sage-200 px-2.5 py-0.5 rounded-full">
+                  Historical Week
+                </span>
+              ) : isPastDue ? (
                 <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">
                   Past-Due Cycle
                 </span>
-              )}
-              {isPreviewMode && !isPastDue && (
+              ) : isPreviewMode ? (
                 <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md">
                   Preview Mode
                 </span>
-              )}
+              ) : null}
             </div>
 
             {/* Modal Body Container */}
@@ -913,7 +1004,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                     ) : (
                       <>
                         <Check className="w-4 h-4" />
-                        <span>Confirm & Complete Check-In</span>
+                        <span>{isHistoricalWeek ? 'Confirm & Record Historical Check-In' : 'Confirm & Complete Check-In'}</span>
                       </>
                     )}
                   </button>
