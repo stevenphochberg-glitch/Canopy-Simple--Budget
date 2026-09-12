@@ -24,6 +24,8 @@ import {
   FeedItem,
   TransactionComment,
   TransactionReaction,
+  OneOffDeposit,
+  SavingsGoal,
 } from '../types';
 import {
   calculateWeeklyPool,
@@ -35,6 +37,10 @@ import {
   getMonthRange,
   parseExpenseTimestamp,
   formatCurrency,
+  getWeekId,
+  getFutureWeeksInFiscalMonth,
+  formatLocalDate,
+  getTodayLocalDateString,
 } from '../lib/calculations';
 import { getReactionDef } from '../components/Common/EarthToneReaction';
 import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
@@ -59,6 +65,7 @@ import {
   writeBatch,
   increment,
   serverTimestamp,
+  deleteField,
 } from 'firebase/firestore';
 
 /**
@@ -167,6 +174,7 @@ export interface HouseholdContextType {
     totalSpent: number;
     totalBudget: number;
   }) => Promise<void>;
+  deleteWeeklyCheckIn: (checkInId: string) => Promise<void>;
   triggerFreshStartAction: () => Promise<void>;
   executeMonthEndResetAction: () => Promise<void>;
 
@@ -175,6 +183,12 @@ export interface HouseholdContextType {
   updateCategory: (id: string, updates: Partial<Category>) => Promise<void>;
   deleteCategory: (id: string) => Promise<void>;
   saveCategoryAllocations: (updatedCategories: Category[]) => Promise<void>;
+
+  // Savings Goals subcollections
+  savingsGoals: SavingsGoal[];
+  createSavingsGoal: (goal: Omit<SavingsGoal, 'id'>) => Promise<void>;
+  updateSavingsGoal: (id: string, updates: Partial<SavingsGoal>) => Promise<void>;
+  deleteSavingsGoal: (id: string) => Promise<void>;
 
   // Expense mutations
   addExpense: (expense: Omit<Expense, 'id'>) => Promise<void>;
@@ -201,13 +215,22 @@ export interface HouseholdContextType {
     syncCode: string
   ) => Promise<{ household: Household; members: HouseholdMember[] } | null>;
   leaveHousehold: () => Promise<void>;
+  removeHouseholdMember: (memberId: string) => Promise<void>;
   updateHousehold: (updated: Partial<Household>) => Promise<void>;
   updateMemberIncome: (
     memberId: string,
     rawIncome: number,
     schedule: HouseholdMember['incomeSchedule'],
-    hasProvided: boolean
+    hasProvided: boolean,
+    lastPayDate?: string
   ) => Promise<void>;
+  addOneOffDeposit: (depositData: {
+    description: string;
+    amount: number;
+    date: string;
+    payerMemberId?: string;
+    notes?: string;
+  }) => Promise<void>;
   applyExtraPaycheckDecision: (decision: ExtraPaycheckDecision) => Promise<void>;
   resetHouseholdToOnboarding: () => void;
 
@@ -228,6 +251,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [currentAuthUser, setCurrentAuthUser] = useState<any>(null);
   const [members, setMembers] = useState<HouseholdMember[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [checkIns, setCheckIns] = useState<CheckIn[]>([]);
   const [feedItems, setFeedItems] = useState<FeedItem[]>([]);
@@ -596,6 +620,21 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     );
 
+    // Savings Goals listener
+    const unsubSavingsGoals = onSnapshot(
+      collection(db, 'households', householdId, 'savingsGoals'),
+      (snapshot) => {
+        const loadedGoals = snapshot.docs.map((d) => ({
+          ...(d.data() as SavingsGoal),
+          id: d.id,
+        }));
+        setSavingsGoals(loadedGoals);
+      },
+      (err) => {
+        console.warn(`[Firestore] SavingsGoals listener note:`, err);
+      }
+    );
+
     activeListenersRef.current = [
       unsubHousehold,
       unsubCategories,
@@ -603,6 +642,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       unsubExpenses,
       unsubCheckIns,
       unsubFeed,
+      unsubSavingsGoals,
     ];
 
     return () => {
@@ -1228,6 +1268,90 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Left current household. You can now join an existing household or create a new one.');
   };
 
+  // Remove Household Member (removes from household and cleans user doc if authenticated)
+  const removeHouseholdMember = async (memberId: string) => {
+    if (!household) return;
+
+    const targetMember = members.find((m) => m.userId === memberId);
+    if (!targetMember) return;
+
+    const isCurrentLoggedInUser = memberId === user?.userId;
+
+    if (isCurrentLoggedInUser) {
+      await leaveHousehold();
+      return;
+    }
+
+    // 1. Optimistic local state update
+    const remainingMembers = members.filter((m) => m.userId !== memberId);
+    setMembers(remainingMembers);
+
+    // Recalculate household weekly income pool
+    const newWeeklyPool = calculateWeeklyPool(remainingMembers);
+    setHousehold((prev) => (prev ? { ...prev, weeklyIncomePool: newWeeklyPool } : null));
+
+    // 2. Database Execution
+    if (isFirebaseConfigured && db && household.id) {
+      try {
+        const batch = writeBatch(db);
+
+        // Delete member document from households/{householdId}/members/{memberId}
+        const memberRef = doc(db, 'households', household.id, 'members', memberId);
+        batch.delete(memberRef);
+
+        // Update household weekly income pool
+        const householdRef = doc(db, 'households', household.id);
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            weeklyIncomePool: newWeeklyPool,
+            updatedAt: new Date().toISOString(),
+          })
+        );
+
+        await batch.commit();
+
+        // 3. Placeholder vs Real User Logic:
+        // If the removed profile is a real user, update users/{userId} doc
+        if (!targetMember.isPlaceholder) {
+          try {
+            const userRef = doc(db, 'users', memberId);
+            const userSnap = await getDoc(userRef);
+            if (userSnap.exists()) {
+              const userData = userSnap.data();
+              const existingHouseholdIds: string[] = Array.isArray(userData.householdIds)
+                ? userData.householdIds
+                : [];
+              const updatedHouseholdIds = existingHouseholdIds.filter((id) => id !== household.id);
+              const newActiveId =
+                userData.activeHouseholdId === household.id
+                  ? updatedHouseholdIds[0] || null
+                  : userData.activeHouseholdId || null;
+
+              await updateDoc(
+                userRef,
+                sanitizeFirestorePayload({
+                  householdIds: updatedHouseholdIds,
+                  activeHouseholdId: newActiveId,
+                  updatedAt: new Date().toISOString(),
+                })
+              );
+            }
+          } catch (userUpdateErr) {
+            console.warn('[Firestore] Note updating removed user profile:', userUpdateErr);
+          }
+        }
+      } catch (err) {
+        console.error('Firestore removeHouseholdMember error:', err);
+        handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/members/${memberId}`);
+        showToast(`Error removing member: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        return;
+      }
+    }
+
+    showToast(`Removed ${targetMember.name} from the household.`);
+  };
+
   const updateHousehold = async (updated: Partial<Household>) => {
     if (!household) return;
     const newHousehold = { ...household, ...updated };
@@ -1253,7 +1377,8 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     memberId: string,
     rawIncome: number,
     schedule: HouseholdMember['incomeSchedule'],
-    hasProvided: boolean
+    hasProvided: boolean,
+    lastPayDate?: string
   ) => {
     const updatedMembers = members.map((m) => {
       if (m.userId === memberId) {
@@ -1264,6 +1389,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           incomeSchedule: schedule,
           normalizedWeeklyIncome: normalized,
           hasProvidedIncome: hasProvided,
+          lastPayDate: lastPayDate !== undefined ? lastPayDate : m.lastPayDate,
         };
       }
       return m;
@@ -1329,6 +1455,93 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
     showToast('Income updated & category budgets recalculated.');
+  };
+
+  // One-Off Deposit routing directly into the top-level Income Buffer
+  const addOneOffDeposit = async (depositData: {
+    description: string;
+    amount: number;
+    date: string;
+    payerMemberId?: string;
+    notes?: string;
+  }) => {
+    if (!household) return;
+
+    const safeAmount = Math.max(0, depositData.amount);
+    const newDeposit: OneOffDeposit = {
+      id: `dep_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      description: depositData.description.trim() || 'One-off Deposit',
+      amount: safeAmount,
+      date: depositData.date || new Date().toISOString().split('T')[0],
+      payerMemberId: depositData.payerMemberId,
+      notes: depositData.notes,
+    };
+
+    const updatedDeposits = [...(household.oneOffDeposits || []), newDeposit];
+    const newBufferAmount = (household.initialBufferAmount || 0) + safeAmount;
+
+    // Check if an "Income Buffer" category exists; if not, create it
+    const existingBuffer = categories.find(
+      (c) => c.name.toLowerCase() === 'income buffer' || c.id === 'cat_income_buffer'
+    );
+    let targetBufferCat: Category;
+    let updatedCategories = [...categories];
+
+    if (existingBuffer) {
+      targetBufferCat = {
+        ...existingBuffer,
+        currentWeeklyBudget: (existingBuffer.currentWeeklyBudget || 0) + safeAmount,
+      };
+      updatedCategories = categories.map((c) => (c.id === targetBufferCat.id ? targetBufferCat : c));
+    } else {
+      targetBufferCat = {
+        id: 'cat_income_buffer',
+        name: 'Income Buffer',
+        group: 'Savings',
+        type: 'savings',
+        icon: 'shield',
+        color: 'dark-green',
+        baselineBudget: 0,
+        currentWeeklyBudget: safeAmount,
+        subcategories: ['One-Off Deposits', 'Bonuses', 'Gifts', 'Tax Return', 'Operating Buffer'],
+        description: 'Dedicated holding tank for one-off deposits and lump sum reserves.',
+        totalLogged: 0,
+        transactionCount: 0,
+      };
+      updatedCategories = [targetBufferCat, ...categories];
+    }
+
+    setCategories(updatedCategories);
+
+    const updatedHousehold: Household = {
+      ...household,
+      oneOffDeposits: updatedDeposits,
+      initialBufferAmount: newBufferAmount,
+    };
+    setHousehold(updatedHousehold);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const batch = writeBatch(db);
+        const householdRef = doc(db, 'households', household.id);
+        batch.update(
+          householdRef,
+          sanitizeFirestorePayload({
+            oneOffDeposits: updatedDeposits,
+            initialBufferAmount: newBufferAmount,
+            updatedAt: new Date().toISOString(),
+          })
+        );
+        const catRef = doc(db, 'households', household.id, 'categories', targetBufferCat.id);
+        batch.set(catRef, sanitizeFirestorePayload(targetBufferCat), { merge: true });
+        await batch.commit();
+      } catch (err) {
+        console.error('Firestore addOneOffDeposit error:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}`);
+      }
+    }
+
+    showToast(`Routed ${formatCurrency(safeAmount)} directly to the Income Buffer!`, 'success');
   };
 
   // Category Mutations
@@ -1408,6 +1621,63 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
     showToast('Category allocations updated successfully.');
+  };
+
+  // Savings Goal Mutations
+  const createSavingsGoal = async (goalData: Omit<SavingsGoal, 'id'>) => {
+    const newId = `goal_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+    const newGoal: SavingsGoal = {
+      ...goalData,
+      id: newId,
+      currentAmount: goalData.currentAmount || 0,
+      isAchieved: false,
+    };
+
+    setSavingsGoals((prev) => [...prev, newGoal]);
+
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const goalRef = doc(db, 'households', household.id, 'savingsGoals', newId);
+        await setDoc(goalRef, sanitizeFirestorePayload(newGoal));
+      } catch (err) {
+        console.error('Firestore Write Failed for savings goal:', err);
+        handleFirestoreError(err, OperationType.CREATE, `households/${household.id}/savingsGoals/${newId}`);
+        showToast(`Error creating savings goal: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+    showToast(`Created savings goal "${newGoal.name}"!`, 'success');
+  };
+
+  const updateSavingsGoal = async (id: string, updates: Partial<SavingsGoal>) => {
+    setSavingsGoals((prev) => prev.map((g) => (g.id === id ? { ...g, ...updates } : g)));
+
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const goalRef = doc(db, 'households', household.id, 'savingsGoals', id);
+        await updateDoc(goalRef, sanitizeFirestorePayload(updates));
+      } catch (err) {
+        console.error('Firestore Update Failed for savings goal:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/savingsGoals/${id}`);
+        showToast(`Error updating savings goal: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+  };
+
+  const deleteSavingsGoal = async (id: string) => {
+    const target = savingsGoals.find((g) => g.id === id);
+    setSavingsGoals((prev) => prev.filter((g) => g.id !== id));
+
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const goalRef = doc(db, 'households', household.id, 'savingsGoals', id);
+        await deleteDoc(goalRef);
+      } catch (err) {
+        console.error('Firestore Delete Failed for savings goal:', err);
+        handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/savingsGoals/${id}`);
+        showToast(`Error deleting savings goal: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+    showToast(`Removed goal "${target?.name || ''}".`);
   };
 
   // Universal Staging & Confirmation Flow
@@ -2017,47 +2287,70 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       decisions: data.decisions,
     };
 
-    const updatedCategories = categories.map((cat) => {
-      const decision = data.decisions.find((d) => d.categoryId === cat.id);
-      if (decision) {
-        return {
-          ...cat,
-          currentWeeklyBudget: decision.newWeeklyBudget,
-        };
-      }
-      return cat;
-    });
-    setCategories(updatedCategories);
+    // Calculate future weeks strictly in the fiscal month after current week
+    const currentWeekStart = new Date(data.weekStartDate + (data.weekStartDate.length === 10 ? 'T12:00:00' : ''));
+    const currentWeekEnd = new Date(data.weekEndDate + (data.weekEndDate.length === 10 ? 'T12:00:00' : ''));
+    const currentWeekRange: DateRange = {
+      startDate: currentWeekStart,
+      endDate: currentWeekEnd,
+      label: `${data.weekStartDate} – ${data.weekEndDate}`,
+    };
 
+    const futureWeeks = getFutureWeeksInFiscalMonth(currentWeekRange, household);
+
+    // Build the weeklyOverrides map for FUTURE week IDs only
+    // STRICT RULE: Baseline categories remain completely untouched in Firestore and state.
+    const newWeeklyOverrides: Record<string, Record<string, number>> = {
+      ...(household.weeklyOverrides || {}),
+    };
+
+    const householdDocUpdates: Record<string, any> = {
+      lastCheckInAt: now,
+    };
+
+    futureWeeks.forEach((fw) => {
+      const fwId = getWeekId(fw, household.firstDayOfWeek || 'Monday');
+      if (!newWeeklyOverrides[fwId]) {
+        newWeeklyOverrides[fwId] = {};
+      }
+      data.decisions.forEach((dec) => {
+        const cat = categories.find((c) => c.id === dec.categoryId);
+        const targetBudget = dec.newWeeklyBudget;
+        
+        // Write to future week override payload
+        householdDocUpdates[`weeklyOverrides.${fwId}.${dec.categoryId}`] = targetBudget;
+        newWeeklyOverrides[fwId][dec.categoryId] = targetBudget;
+
+        if (cat?.name) {
+          const slug = cat.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+          const altSlug = cat.name.toLowerCase().replace(/\s+/g, '');
+          if (slug) {
+            householdDocUpdates[`weeklyOverrides.${fwId}.${slug}`] = targetBudget;
+            newWeeklyOverrides[fwId][slug] = targetBudget;
+          }
+          if (altSlug && altSlug !== slug) {
+            householdDocUpdates[`weeklyOverrides.${fwId}.${altSlug}`] = targetBudget;
+            newWeeklyOverrides[fwId][altSlug] = targetBudget;
+          }
+        }
+      });
+    });
+
+    // Update household in local state (WITHOUT mutating categories)
+    setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: newWeeklyOverrides, lastCheckInAt: now } : prev));
     setCheckIns((prev) => [newCheckIn, ...prev]);
 
     if (isFirebaseConfigured && db) {
       try {
         const batch = writeBatch(db);
 
-        // Update category currentWeeklyBudget values
-        data.decisions.forEach((dec) => {
-          const catRef = doc(db, 'households', household.id, 'categories', dec.categoryId);
-          batch.update(
-            catRef,
-            sanitizeFirestorePayload({
-              currentWeeklyBudget: dec.newWeeklyBudget,
-            })
-          );
-        });
-
-        // Add checkin doc
+        // Add immutable checkin doc for the historical record
         const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
         batch.set(checkinRef, sanitizeFirestorePayload(newCheckIn));
 
-        // Update household doc
+        // Update household document with future weeklyOverrides ONLY (no past or current week IDs, baseline untouched)
         const householdRef = doc(db, 'households', household.id);
-        batch.update(
-          householdRef,
-          sanitizeFirestorePayload({
-            lastCheckInAt: now,
-          })
-        );
+        batch.update(householdRef, sanitizeFirestorePayload(householdDocUpdates));
 
         // Add activity feed item
         const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
@@ -2087,6 +2380,93 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast(`Weekly Check-In completed. $${data.totalSaved} banked into savings pot.`);
   };
 
+  // Delete Historical Weekly Check-In & State Reversal
+  const deleteWeeklyCheckIn = async (checkInId: string) => {
+    if (!household) return;
+
+    const targetCheckIn = checkIns.find((c) => c.id === checkInId);
+    if (!targetCheckIn) {
+      console.warn(`[HouseholdContext] Check-in ${checkInId} not found.`);
+      return;
+    }
+
+    // 1. Calculate future weeks in this fiscal month that were affected by this check-in
+    const checkInWeekStart = new Date(
+      targetCheckIn.weekStartDate + (targetCheckIn.weekStartDate.length === 10 ? 'T12:00:00' : '')
+    );
+    const checkInWeekEnd = new Date(
+      targetCheckIn.weekEndDate + (targetCheckIn.weekEndDate.length === 10 ? 'T12:00:00' : '')
+    );
+    const checkInWeekRange: DateRange = {
+      startDate: checkInWeekStart,
+      endDate: checkInWeekEnd,
+      label: `${targetCheckIn.weekStartDate} – ${targetCheckIn.weekEndDate}`,
+    };
+
+    const futureWeeks = getFutureWeeksInFiscalMonth(checkInWeekRange, household);
+    const futureWeekIds = new Set(futureWeeks.map((fw) => getWeekId(fw, household.firstDayOfWeek || 'Monday')));
+
+    // Clean weeklyOverrides: remove overrides for these future week IDs
+    const currentWeeklyOverrides = household.weeklyOverrides || {};
+    const updatedWeeklyOverrides: Record<string, Record<string, number>> = {};
+    const householdDocUpdates: Record<string, any> = {};
+
+    // Explicitly target all future week IDs affected by this check-in with deleteField()
+    futureWeekIds.forEach((fwId) => {
+      householdDocUpdates[`weeklyOverrides.${fwId}`] = deleteField();
+    });
+
+    Object.entries(currentWeeklyOverrides).forEach(([wId, catOverrides]) => {
+      if (futureWeekIds.has(wId)) {
+        householdDocUpdates[`weeklyOverrides.${wId}`] = deleteField();
+      } else {
+        updatedWeeklyOverrides[wId] = catOverrides as Record<string, number>;
+      }
+    });
+
+    // 2. Optimistic local state update
+    setCheckIns((prev) => prev.filter((c) => c.id !== checkInId));
+    setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: updatedWeeklyOverrides } : prev));
+
+    showToast('Weekly check-in deleted and budget prorations reversed.', 'info');
+
+    // 3. Firestore Deletion and Overrides Clean-up via updateDoc with deleteField()
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        // Delete checkin document
+        const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
+        await deleteDoc(checkinRef);
+
+        // Update household document with cleaned weeklyOverrides
+        if (Object.keys(householdDocUpdates).length > 0) {
+          const householdRef = doc(db, 'households', household.id);
+          await updateDoc(householdRef, householdDocUpdates);
+        }
+
+        // Add activity feed item for deletion
+        const now = Date.now();
+        const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
+        await setDoc(
+          feedRef,
+          sanitizeFirestorePayload({
+            id: `feed_${now}`,
+            type: 'milestone',
+            title: 'Weekly Check-In Reverted',
+            description: `Weekly check-in for ${targetCheckIn.weekStartDate} – ${targetCheckIn.weekEndDate} was deleted. Budget prorations were reversed back to baseline.`,
+            timestamp: now,
+            authorId: user?.userId || 'usr_self',
+            authorName: user?.name || 'Household Member',
+            date: formatLocalDate(new Date(now)),
+          })
+        );
+      } catch (err) {
+        console.error('Firestore Check-In Deletion Failed:', err);
+        handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/checkins/${checkInId}`);
+        showToast(`Failed to delete check-in from cloud: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+  };
+
   // Trigger Fresh Start (Resolves missed weeks with $0 on-budget expenses)
   const triggerFreshStartAction = async () => {
     if (!household) return;
@@ -2094,11 +2474,8 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const now = Date.now();
     const todayStr = new Date().toISOString().split('T')[0];
 
-    const resetCats = categories.map((cat) => ({
-      ...cat,
-      currentWeeklyBudget: cat.baselineBudget,
-    }));
-    setCategories(resetCats);
+    // Reset weeklyOverrides to empty
+    setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: {}, lastFreshStartAt: now } : prev));
 
     const freshCheckIn: CheckIn = {
       id: `checkin_fresh_${now}`,
@@ -2119,26 +2496,16 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         const batch = writeBatch(db);
 
-        // Reset category budgets
-        resetCats.forEach((c) => {
-          const catRef = doc(db, 'households', household.id, 'categories', c.id);
-          batch.update(
-            catRef,
-            sanitizeFirestorePayload({
-              currentWeeklyBudget: c.baselineBudget,
-            })
-          );
-        });
-
         // Add checkin doc
         const checkinRef = doc(db, 'households', household.id, 'checkins', freshCheckIn.id);
         batch.set(checkinRef, sanitizeFirestorePayload(freshCheckIn));
 
-        // Update household
+        // Update household: reset weeklyOverrides and set lastFreshStartAt
         const householdRef = doc(db, 'households', household.id);
         batch.update(
           householdRef,
           sanitizeFirestorePayload({
+            weeklyOverrides: {},
             lastFreshStartAt: now,
           })
         );
@@ -2177,29 +2544,19 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const now = Date.now();
     const todayStr = new Date().toISOString().split('T')[0];
 
-    const resetCats = categories.map((cat) => ({
-      ...cat,
-      currentWeeklyBudget: cat.baselineBudget,
-    }));
-    setCategories(resetCats);
+    // Monthly Reset: Roll-overs only happen within a month.
+    // At the end of the month, the budget is reset to default baseline and weeklyOverrides is cleared.
+    setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: {}, lastMonthEndReset: now } : prev));
 
     if (isFirebaseConfigured && db) {
       try {
         const batch = writeBatch(db);
-        resetCats.forEach((c) => {
-          const catRef = doc(db, 'households', household.id, 'categories', c.id);
-          batch.update(
-            catRef,
-            sanitizeFirestorePayload({
-              currentWeeklyBudget: c.baselineBudget,
-            })
-          );
-        });
 
         const householdRef = doc(db, 'households', household.id);
         batch.update(
           householdRef,
           sanitizeFirestorePayload({
+            weeklyOverrides: {},
             lastMonthEndReset: now,
           })
         );
@@ -2437,6 +2794,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         openAllocationModal,
         closeAllocationModal,
         completeWeeklyCheckIn,
+        deleteWeeklyCheckIn,
         triggerFreshStartAction,
         executeMonthEndResetAction,
 
@@ -2444,6 +2802,11 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateCategory,
         deleteCategory,
         saveCategoryAllocations,
+
+        savingsGoals,
+        createSavingsGoal,
+        updateSavingsGoal,
+        deleteSavingsGoal,
 
         addExpense,
         deleteExpense,
@@ -2461,8 +2824,10 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         joinHouseholdWithSyncCode,
         getHouseholdBySyncCode,
         leaveHousehold,
+        removeHouseholdMember,
         updateHousehold,
         updateMemberIncome,
+        addOneOffDeposit,
         applyExtraPaycheckDecision,
         resetHouseholdToOnboarding,
 

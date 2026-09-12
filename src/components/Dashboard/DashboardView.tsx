@@ -1,10 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { Category, CategoryGroup } from '../../types';
 import {
   formatCurrency,
   getCategoryBudgetForTimeframe,
   isExpenseInDateRange,
+  getProratedExpenseAmount,
+  getWeekId,
+  getCategoryEffectiveWeeklyBudget,
+  formatLocalDate,
 } from '../../lib/calculations';
 import {
   getFiscalMonthForDate,
@@ -23,11 +27,12 @@ import {
   RotateCcw,
   Receipt,
   Trash2,
-  Calendar,
   CheckCircle,
   CheckCircle2,
   Clock,
   ArrowRight,
+  AlertTriangle,
+  X,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -53,7 +58,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     openWeeklyCheckInModal,
     openMonthlyRetroModal,
     deleteExpense,
+    deleteWeeklyCheckIn,
   } = useHousehold();
+
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
 
   // 1. Calculate 4-4-5 Fiscal Month & Tracker Coordinates & Extra Paycheck Detection
   const fiscalMonth = useMemo(() => {
@@ -71,8 +80,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   // Check if active timeframe is a historical week with a completed check-in
   const historicalCheckIn = useMemo(() => {
     if (timeframeMode !== 'week' || timeframeOffset >= 0) return null;
-    const startStr = activeDateRange.startDate.toISOString().split('T')[0];
-    const endStr = activeDateRange.endDate.toISOString().split('T')[0];
+    const startStr = formatLocalDate(activeDateRange.startDate);
+    const endStr = formatLocalDate(activeDateRange.endDate);
     return checkIns.find(
       (c) =>
         c.status === 'completed' &&
@@ -80,23 +89,85 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     );
   }, [timeframeMode, timeframeOffset, activeDateRange, checkIns]);
 
-  // 2. Calculate overall totals for active timeframe
-  const totalWeeklyBudget = categories.reduce(
-    (sum, c) => sum + (Number(c.currentWeeklyBudget) || 0),
-    0
-  );
-  const totalTimeframeBudget = getCategoryBudgetForTimeframe(totalWeeklyBudget, timeframeMode);
+  // Helper to identify Bills categories
+  const isBillsCategory = (c: { group?: string; name?: string; id?: string }) =>
+    c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills' || c.id === 'cat_bills';
 
-  // Total spent in active timeframe
-  const timeframeExpenses = useMemo(() => {
-    return expenses.filter((exp) =>
-      isExpenseInDateRange(exp, activeDateRange.startDate, activeDateRange.endDate)
+  // 2. Filter categories according to timeframe mode:
+  // When Timeframe is set to "Week View", strictly filter out and hide the "Bills" category card.
+  // Bills must ONLY render when Timeframe is toggled to "Month View".
+  const visibleCategories = useMemo(() => {
+    if (timeframeMode === 'week') {
+      return categories.filter((c) => !isBillsCategory(c));
+    }
+    return categories;
+  }, [categories, timeframeMode]);
+
+  const weeksInFiscalMonth = fiscalMonth.weekCount || 4;
+
+  const activeWeekId = getWeekId(activeDateRange, household?.firstDayOfWeek || 'Monday');
+
+  // Baseline sum for visible categories
+  const totalWeeklyBaseline = useMemo(() => {
+    return visibleCategories.reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
+  }, [visibleCategories]);
+
+  // 3. Executive Overview Spending Summary Calculations:
+  // - Week View: Budget Set sums only weekly allocations of Essentials, Fun Money, and Savings (non-Bills), resolving weeklyOverrides[activeWeekId] if present.
+  // - Month View: Total Monthly Budget is a statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month).
+  const { totalTimeframeBudget, hasAnyWeeklyOverride } = useMemo(() => {
+    if (timeframeMode === 'week') {
+      let sum = 0;
+      let overridePresent = false;
+      visibleCategories.forEach((c) => {
+        const { budget, isOverridden } = getCategoryEffectiveWeeklyBudget(c, activeWeekId, household);
+        sum += budget;
+        if (isOverridden) {
+          overridePresent = true;
+        }
+      });
+      return { totalTimeframeBudget: sum, hasAnyWeeklyOverride: overridePresent };
+    }
+    // Month View: Statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month)
+    const monthSum = categories.reduce(
+      (sum, c) => sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth),
+      0
     );
-  }, [expenses, activeDateRange]);
+    return { totalTimeframeBudget: monthSum, hasAnyWeeklyOverride: false };
+  }, [timeframeMode, visibleCategories, categories, weeksInFiscalMonth, activeWeekId, household]);
+
+  // Total spent in active timeframe:
+  // In Week View, completely exclude Bills transactions from calculations.
+  // In Month View, include all transactions (with dynamic paid-only bill proration).
+  const timeframeExpenses = useMemo(() => {
+    return expenses.filter((exp) => {
+      if (timeframeMode === 'week') {
+        const cat = categories.find((c) => c.id === exp.categoryId);
+        if (cat && isBillsCategory(cat)) {
+          return false;
+        }
+      }
+      const prorated = getProratedExpenseAmount(
+        exp,
+        activeDateRange.startDate,
+        activeDateRange.endDate,
+        household?.fiscalYearEndMonth || 12
+      );
+      return prorated > 0;
+    });
+  }, [expenses, activeDateRange, household?.fiscalYearEndMonth, timeframeMode, categories]);
 
   const totalTimeframeSpent = useMemo(() => {
-    return timeframeExpenses.reduce((sum, exp) => sum + (Number(exp.amount) || 0), 0);
-  }, [timeframeExpenses]);
+    return timeframeExpenses.reduce((sum, exp) => {
+      const prorated = getProratedExpenseAmount(
+        exp,
+        activeDateRange.startDate,
+        activeDateRange.endDate,
+        household?.fiscalYearEndMonth || 12
+      );
+      return sum + prorated;
+    }, 0);
+  }, [timeframeExpenses, activeDateRange, household?.fiscalYearEndMonth]);
 
   const netRemaining = totalTimeframeBudget - totalTimeframeSpent;
   const isNetOverBudget = netRemaining < 0;
@@ -104,13 +175,19 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     totalTimeframeBudget > 0 ? Math.round((totalTimeframeSpent / totalTimeframeBudget) * 100) : 0;
 
   // Dynamic Overall Progress Bar Color
+  // Smooth transition: earth-tone green (<80%) -> warm warning amber (80-94%) -> deep amber (95-99%) -> Actionable alert red (>=100%)
   let overallBarColor = 'bg-sage-600';
-  if (overallPercentage >= 100) overallBarColor = 'bg-red-600';
-  else if (overallPercentage >= 75) overallBarColor = 'bg-amber-600';
+  if (overallPercentage >= 100) {
+    overallBarColor = 'bg-red-600';
+  } else if (overallPercentage >= 95) {
+    overallBarColor = 'bg-amber-700';
+  } else if (overallPercentage >= 80) {
+    overallBarColor = 'bg-amber-600';
+  }
 
   const isCurrentTimeframe = timeframeOffset === 0;
 
-  // 3. Variable Income Buffer & Runway Calculations
+  // 4. Variable Income Buffer & Runway Calculations
   const bufferCategory = useMemo(() => {
     return categories.find(
       (c) => c.id === 'cat_income_buffer' || c.name.toLowerCase().includes('buffer')
@@ -126,10 +203,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     const standardSum = categories
       .filter((c) => c.id !== bufferCategory?.id)
       .reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
-    return standardSum > 0 ? standardSum : totalWeeklyBudget;
-  }, [household?.baselineWeeklyBurnRate, categories, bufferCategory, totalWeeklyBudget]);
+    return standardSum > 0 ? standardSum : totalTimeframeBudget;
+  }, [household?.baselineWeeklyBurnRate, categories, bufferCategory, totalTimeframeBudget]);
 
-  // 3. Reactive Review Due Status for Actionable Alert Badge & Prominent Banner
+  // 5. Reactive Review Due Status for Actionable Alert Badge & Prominent Banner
   const reviewDueStatus = useMemo(() => {
     if (!household) return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
     const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
@@ -277,11 +354,6 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               Month View
             </button>
           </div>
-
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-sage-50 border border-sage-200/90 rounded-xl text-[11px] font-bold text-dark-green-950 shadow-2xs">
-            <Calendar className="w-3.5 h-3.5 text-sage-700 shrink-0" />
-            <span className="font-extrabold tracking-tight">{fiscalTracker.label}</span>
-          </div>
         </div>
 
         {/* Center/Right: Timeframe Arrow Navigation (<, Date Range Label, >) */}
@@ -296,12 +368,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <ChevronLeft className="w-4 h-4" />
             </button>
 
-            <div className="px-3 sm:px-4 py-1 text-center min-w-[160px] sm:min-w-[200px]">
+            <div className="px-3 sm:px-4 py-1 text-center min-w-[140px] sm:min-w-[180px]">
               <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
                 {activeDateRange.label}
-              </span>
-              <span className="text-[10px] text-brown-700 font-semibold block">
-                {fiscalTracker.label}
               </span>
             </div>
 
@@ -371,75 +440,111 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </div>
           </div>
 
-          <button
-            id="dashboard-historical-checkin-cta"
-            onClick={() => openWeeklyCheckInModal()}
-            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
-          >
-            <Clock className="w-4 h-4" />
-            <span>{historicalCheckIn ? 'Review Historical Check-In' : 'Execute Check-In for this Week'}</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
+            {historicalCheckIn && (
+              <button
+                id="dashboard-historical-checkin-delete-btn"
+                onClick={() => setIsDeleteConfirmOpen(true)}
+                className="flex-shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs sm:text-sm font-extrabold rounded-2xl shadow-2xs transition active:scale-95 cursor-pointer"
+                title="Delete this historical check-in record and reverse future prorations"
+              >
+                <Trash2 className="w-4 h-4 text-rose-600" />
+                <span>Delete Check-In</span>
+              </button>
+            )}
+
+            <button
+              id="dashboard-historical-checkin-cta"
+              onClick={() => openWeeklyCheckInModal()}
+              className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+            >
+              <Clock className="w-4 h-4" />
+              <span>{historicalCheckIn ? 'Review Check-In' : 'Execute Check-In for this Week'}</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Executive Budget Summary Card */}
-      <div className="bg-gradient-to-br from-sage-50 via-white to-beige-50 border border-sage-200/90 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-sage-100 pb-3">
-          <div>
-            <span className="text-[10px] font-extrabold uppercase tracking-wider text-dark-green-800 bg-sage-100 px-2.5 py-0.5 rounded-full">
-              Executive Overview &bull; {timeframeMode === 'week' ? 'Weekly View' : 'Monthly Normalized'}
+      {/* Executive Budget Summary Card - Compact, Low Visual Weight */}
+      <div className="bg-white border border-beige-200/80 rounded-xl p-3 sm:p-3.5 shadow-2xs space-y-2.5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-beige-100 pb-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[9px] font-extrabold uppercase tracking-wider text-dark-green-800 bg-sage-100/80 px-2 py-0.5 rounded-md">
+              {timeframeMode === 'week' ? 'Weekly' : 'Monthly Normalized'}
             </span>
-            <h2 className="text-lg sm:text-xl font-black text-dark-green-900 mt-1">
+            <h2 className="text-xs sm:text-sm font-extrabold text-dark-green-900">
               {activeDateRange.label} Spending Summary
             </h2>
           </div>
 
           <div className="flex items-center gap-2">
-            <span className="text-xs text-brown-800">
-              {timeframeExpenses.length} {timeframeExpenses.length === 1 ? 'transaction' : 'transactions'} logged
+            <span className="text-[10px] text-brown-700 font-medium">
+              {timeframeExpenses.length} {timeframeExpenses.length === 1 ? 'transaction' : 'transactions'}
             </span>
           </div>
         </div>
 
-        {/* 3 High-contrast Metric Columns */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <div className="p-4 bg-white/90 border border-beige-200 rounded-2xl shadow-2xs space-y-1">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-dark-grey-600 block">
+        {/* 3 Metric Columns - Low-Weight Streamlined */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-2.5">
+          <div className="p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5">
+            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
               Budget Set ({timeframeMode === 'week' ? 'Weekly' : 'Monthly'})
             </span>
-            <div className="text-2xl sm:text-3xl font-black text-dark-green-900 tracking-tight">
-              {formatCurrency(totalTimeframeBudget)}
+            <div className="text-lg sm:text-xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1.5 flex-wrap">
+              {hasAnyWeeklyOverride ? (
+                <>
+                  <span
+                    className="line-through text-dark-grey-600/70 text-xs sm:text-sm font-semibold"
+                    title={`Global Baseline: ${formatCurrency(totalWeeklyBaseline)}`}
+                  >
+                    {formatCurrency(totalWeeklyBaseline)}
+                  </span>
+                  <span
+                    className="text-dark-green-900"
+                    title={`Active Weekly Prorated: ${formatCurrency(totalTimeframeBudget)}`}
+                  >
+                    {formatCurrency(totalTimeframeBudget)}
+                  </span>
+                  <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-sage-100 text-sage-900 border border-sage-200">
+                    Prorated
+                  </span>
+                </>
+              ) : (
+                formatCurrency(totalTimeframeBudget)
+              )}
             </div>
-            <p className="text-[11px] text-brown-700">
-              Allocated across {categories.length} categories
+            <p className="text-[10px] text-brown-700 truncate">
+              {hasAnyWeeklyOverride
+                ? `Prorated from check-in (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(totalTimeframeBudget - totalWeeklyBaseline)})`
+                : `Across ${visibleCategories.length} ${timeframeMode === 'week' ? 'weekly categories' : 'categories'}`}
             </p>
           </div>
 
-          <div className="p-4 bg-white/90 border border-beige-200 rounded-2xl shadow-2xs space-y-1">
-            <span className="text-[10px] uppercase font-bold tracking-wider text-dark-grey-600 block">
+          <div className="p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5">
+            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
               Total Logged
             </span>
-            <div className="text-2xl sm:text-3xl font-black text-dark-green-900 tracking-tight">
+            <div className="text-lg sm:text-xl font-black font-mono text-dark-green-900 tracking-tight">
               {formatCurrency(totalTimeframeSpent)}
             </div>
-            <p className="text-[11px] text-brown-700">
+            <p className="text-[10px] text-brown-700 truncate">
               {overallPercentage}% of allocated budget spent
             </p>
           </div>
 
           <div
-            className={`p-4 border rounded-2xl shadow-2xs space-y-1 ${
+            className={`p-2.5 border rounded-lg space-y-0.5 ${
               isNetOverBudget
-                ? 'bg-red-50/90 border-red-200'
-                : 'bg-sage-50/90 border-sage-200'
+                ? 'bg-red-50/70 border-red-200'
+                : 'bg-sage-50/60 border-sage-200'
             }`}
           >
-            <span className="text-[10px] uppercase font-bold tracking-wider text-dark-grey-600 block">
+            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
               {isNetOverBudget ? 'Net Over Budget' : 'Safe Remaining'}
             </span>
             <div
-              className={`text-2xl sm:text-3xl font-black tracking-tight ${
+              className={`text-lg sm:text-xl font-black font-mono tracking-tight ${
                 isNetOverBudget ? 'text-red-600' : 'text-sage-900'
               }`}
             >
@@ -447,23 +552,23 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 ? `-${formatCurrency(Math.abs(netRemaining))}`
                 : formatCurrency(netRemaining)}
             </div>
-            <p className="text-[11px] text-brown-700">
+            <p className="text-[10px] text-brown-700 truncate">
               {isNetOverBudget
                 ? 'Exceeded total allocated budget'
-                : 'Available before next cycle reset'}
+                : 'Available before next reset'}
             </p>
           </div>
         </div>
 
-        {/* Global Progress Bar */}
-        <div className="space-y-1.5 pt-1">
-          <div className="flex items-center justify-between text-xs font-bold text-dark-green-900">
+        {/* Global Progress Bar - Slim & Smooth */}
+        <div className="space-y-1">
+          <div className="flex items-center justify-between text-[10px] font-bold text-dark-green-900">
             <span>Overall Budget Consumption</span>
             <span>{overallPercentage}%</span>
           </div>
-          <div className="w-full h-3 bg-beige-200 rounded-full overflow-hidden border border-beige-300/60">
+          <div className="w-full h-1.5 bg-beige-200 rounded-full overflow-hidden border border-beige-300/40">
             <div
-              className={`h-full ${overallBarColor} transition-all duration-500 rounded-full`}
+              className={`h-full ${overallBarColor} transition-all duration-500 ease-out rounded-full`}
               style={{ width: `${Math.min(100, Math.max(0, overallPercentage))}%` }}
             />
           </div>
@@ -504,7 +609,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
 
         {/* Flattened Responsive Cards Grid */}
-        {categories.length === 0 ? (
+        {visibleCategories.length === 0 ? (
           <div className="py-10 text-center space-y-3 bg-white border border-dashed border-beige-300 rounded-3xl p-6">
             <div className="w-12 h-12 mx-auto bg-sage-100 rounded-2xl flex items-center justify-center text-dark-green-900">
               <Plus className="w-6 h-6" />
@@ -524,8 +629,14 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {categories.map((cat) => (
+          <div
+            className={`grid grid-cols-1 sm:grid-cols-2 ${
+              timeframeMode === 'week' || visibleCategories.length === 3
+                ? 'lg:grid-cols-3'
+                : 'lg:grid-cols-4'
+            } gap-4`}
+          >
+            {visibleCategories.map((cat) => (
               <CategoryCard
                 key={cat.id}
                 category={cat}
@@ -552,7 +663,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
 
           <button
-            onClick={() => openStagingModal()}
+            onClick={() => openLogExpenseModal()}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer border border-beige-300"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -574,7 +685,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               </p>
             </div>
             <button
-              onClick={() => openStagingModal()}
+              onClick={() => openLogExpenseModal()}
               className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
@@ -617,9 +728,28 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
                   <div className="flex items-center gap-3">
                     <div className="text-right">
-                      <span className="text-sm sm:text-base font-extrabold text-dark-green-900">
-                        {formatCurrency(exp.amount)}
-                      </span>
+                      {(() => {
+                        const proratedAmt = getProratedExpenseAmount(
+                          exp,
+                          activeDateRange.startDate,
+                          activeDateRange.endDate,
+                          household?.fiscalYearEndMonth || 12
+                        );
+                        const isProrated = Boolean(exp.billFrequency && exp.billFrequency !== 'weekly');
+
+                        return (
+                          <>
+                            <span className="text-sm sm:text-base font-extrabold text-dark-green-900">
+                              {formatCurrency(isProrated ? proratedAmt : exp.amount)}
+                            </span>
+                            {isProrated && (
+                              <span className="block text-[9px] font-bold text-sage-800">
+                                Prorated ({formatCurrency(exp.amount)} {exp.billFrequency})
+                              </span>
+                            )}
+                          </>
+                        );
+                      })()}
                     </div>
 
                     <button
@@ -636,6 +766,82 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         )}
       </div>
+
+      {/* Delete Historical Check-In Confirmation Modal */}
+      {isDeleteConfirmOpen && historicalCheckIn && (
+        <div
+          id="delete-checkin-modal-backdrop"
+          className="fixed inset-0 z-50 bg-dark-green-950/60 backdrop-blur-xs flex items-center justify-center p-4"
+        >
+          <div
+            id="delete-checkin-modal"
+            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-beige-300 space-y-5 animate-in fade-in zoom-in-95 duration-150"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-100 border border-rose-200 text-rose-700 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-dark-green-950">
+                    Delete Historical Check-In
+                  </h3>
+                  <p className="text-xs font-bold text-brown-600">
+                    {activeDateRange.label}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => !isDeletingCheckIn && setIsDeleteConfirmOpen(false)}
+                className="p-1.5 text-brown-600 hover:text-dark-green-900 rounded-xl hover:bg-beige-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 space-y-2">
+              <p className="text-sm font-extrabold text-rose-900">
+                Are you sure? This will reverse all budget prorations and savings transfers for this week.
+              </p>
+              <p className="text-xs text-rose-800 leading-relaxed">
+                Deleting this check-in will erase the reconciliation record, restore future-week budget envelopes back to their baseline allocations, and return this week to an un-reconciled state.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                id="cancel-delete-checkin-btn"
+                onClick={() => setIsDeleteConfirmOpen(false)}
+                disabled={isDeletingCheckIn}
+                className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs sm:text-sm font-extrabold text-brown-800 hover:bg-beige-100 transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                id="confirm-delete-checkin-btn"
+                onClick={async () => {
+                  if (!historicalCheckIn) return;
+                  setIsDeletingCheckIn(true);
+                  try {
+                    await deleteWeeklyCheckIn(historicalCheckIn.id);
+                    setIsDeleteConfirmOpen(false);
+                  } finally {
+                    setIsDeletingCheckIn(false);
+                  }
+                }}
+                disabled={isDeletingCheckIn}
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-extrabold shadow-sm transition active:scale-95 cursor-pointer flex items-center gap-2 disabled:opacity-50"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{isDeletingCheckIn ? 'Deleting...' : 'Delete Check-In'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -82,6 +82,40 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     selectedManualCat?.group === 'Bills' ||
     selectedManualCat?.name.toLowerCase().includes('bill');
 
+  // Additive Quick-Add Math Logic: increments the current manualAmount by preset value
+  const handleQuickAdd = (preset: number) => {
+    const current = parseFloat(manualAmount) || 0;
+    const next = Math.round((current + preset) * 100) / 100;
+    setManualAmount(Number.isInteger(next) ? next.toString() : next.toFixed(2));
+  };
+
+  // Helper for dynamic category examples
+  const getCategoryExamples = (cat?: Category | null): string => {
+    if (!cat) return 'Groceries, Fuel, Dining, Subscriptions';
+    const name = cat.name.toLowerCase();
+    const group = cat.group?.toLowerCase() || '';
+
+    if (name.includes('bill') || group.includes('bill')) {
+      return 'Subscriptions, Utilities, Mortgage, Rent';
+    }
+    if (cat.subcategories && cat.subcategories.length > 0) {
+      return cat.subcategories.join(', ');
+    }
+    if (name.includes('essential') || name.includes('grocer') || group.includes('essential')) {
+      return 'Groceries, Gas & Transit, Personal Goods, Pharmacy';
+    }
+    if (name.includes('fun') || name.includes('dining') || group.includes('fun')) {
+      return 'Restaurants & Dining, Coffee & Drinks, Shopping, Entertainment';
+    }
+    if (name.includes('saving') || group.includes('saving')) {
+      return 'Emergency Fund, Long-term Savings, Vacation Fund';
+    }
+    if (name.includes('buffer')) {
+      return 'Client Invoices, Commission Deposits, Operating Buffer';
+    }
+    return 'General household spending';
+  };
+
   useEffect(() => {
     if (initialCategory?.id) {
       setManualCategoryId(initialCategory.id);
@@ -325,7 +359,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                 Log Expense
               </h2>
               <p className="text-xs text-brown-700">
-                Choose your preferred logging path &bull; Routed to Universal Staging
+                Choose your preferred logging path &bull; Routed to Review & Confirm
               </p>
             </div>
           </div>
@@ -465,13 +499,13 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     />
                   </div>
 
-                  {/* Quick Preset Buttons */}
+                  {/* Quick Preset Buttons - Additive Math Logic */}
                   <div className="flex gap-1.5 pt-1">
                     {[5, 10, 20, 50, 100].map((preset) => (
                       <button
                         key={preset}
                         type="button"
-                        onClick={() => setManualAmount(preset.toString())}
+                        onClick={() => handleQuickAdd(preset)}
                         className="px-2.5 py-1 rounded-lg bg-beige-100 hover:bg-sage-100 text-[11px] font-bold text-dark-green-900 border border-beige-200 transition cursor-pointer"
                       >
                         +${preset}
@@ -515,6 +549,16 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     ))}
                   </select>
                 </div>
+
+                {/* Contextual Category Tags / Examples Helper Row */}
+                {selectedManualCat && (
+                  <div className="flex items-start gap-1.5 px-3 py-2 bg-beige-100/70 border border-beige-200/90 rounded-xl text-xs text-brown-800 animate-in fade-in duration-150">
+                    <span className="font-bold text-dark-green-900 shrink-0">Examples:</span>
+                    <span className="text-brown-800 font-medium leading-relaxed">
+                      {getCategoryExamples(selectedManualCat)}
+                    </span>
+                  </div>
+                )}
 
                 {/* Bill Frequency Dropdown (when Bills category is selected) */}
                 {isBillsCategory && (

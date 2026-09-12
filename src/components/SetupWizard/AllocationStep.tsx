@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Category } from '../../types';
-import { formatCurrency } from '../../lib/calculations';
+import { formatCurrency, RECOMMENDED_CATEGORY_PERCENTAGES } from '../../lib/calculations';
 import {
   ArrowLeft,
   ArrowRight,
@@ -45,6 +45,7 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState('shopping-bag');
+  const [newType, setNewType] = useState<'expense' | 'savings'>('expense');
   const [newSubcategories, setNewSubcategories] = useState('');
   const [newAllocation, setNewAllocation] = useState<number>(50);
 
@@ -80,6 +81,7 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
       id: `cat_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       name: newName.trim(),
       group: newName.trim(),
+      type: newType,
       icon: newIcon,
       color: 'sage',
       baselineBudget: newAllocation,
@@ -93,6 +95,7 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
 
     setCategories((prev) => [...prev, newCat]);
     setNewName('');
+    setNewType('expense');
     setNewSubcategories('');
     setNewAllocation(50);
     setIsAddingNew(false);
@@ -101,6 +104,30 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
   const handleDelete = (id: string) => {
     if (categories.length <= 1) return;
     setCategories((prev) => prev.filter((c) => c.id !== id));
+  };
+
+  const handleApplyDynamicSuggestions = () => {
+    if (weeklyIncomePool <= 0 || categories.length === 0) return;
+    const defaultPercentageMap: Record<string, number> = {
+      Bills: 0.35,
+      Essentials: 0.30,
+      'Fun Money': 0.20,
+      Savings: 0.15,
+    };
+
+    let remaining = weeklyIncomePool;
+    const targetCats = categories.map((cat, idx) => {
+      const pct = defaultPercentageMap[cat.name] ?? defaultPercentageMap[cat.group];
+      if (pct !== undefined) {
+        const isLast = idx === categories.length - 1;
+        const portion = isLast ? remaining : Math.round(weeklyIncomePool * pct);
+        remaining -= portion;
+        const safe = Math.max(0, portion);
+        return { ...cat, baselineBudget: safe, currentWeeklyBudget: safe };
+      }
+      return cat;
+    });
+    setCategories(targetCats);
   };
 
   const handleAutoBalance = () => {
@@ -188,6 +215,54 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
               </button>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Dynamic Percentage Suggestions Banner */}
+      <div className="p-4 bg-white border border-beige-200 rounded-2xl shadow-xs space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-dark-green-800" />
+            <span className="text-xs font-bold text-dark-green-900">
+              Dynamic Budget Allocation Suggestions
+            </span>
+          </div>
+          <button
+            type="button"
+            id="apply-dynamic-suggestions-btn"
+            onClick={handleApplyDynamicSuggestions}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-sage-100 hover:bg-sage-200 text-dark-green-900 border border-sage-300 rounded-xl text-xs font-bold transition cursor-pointer self-start sm:self-auto"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-dark-green-800" />
+            <span>Apply Dynamic Suggestions (35/30/20/15)</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
+            <span className="text-[10px] uppercase font-bold text-brown-700 block">Bills (35%)</span>
+            <span className="text-xs font-extrabold text-dark-green-900">
+              {formatCurrency(Math.round(weeklyIncomePool * 0.35))}/wk
+            </span>
+          </div>
+          <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
+            <span className="text-[10px] uppercase font-bold text-brown-700 block">Essentials (30%)</span>
+            <span className="text-xs font-extrabold text-dark-green-900">
+              {formatCurrency(Math.round(weeklyIncomePool * 0.30))}/wk
+            </span>
+          </div>
+          <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
+            <span className="text-[10px] uppercase font-bold text-brown-700 block">Fun Money (20%)</span>
+            <span className="text-xs font-extrabold text-dark-green-900">
+              {formatCurrency(Math.round(weeklyIncomePool * 0.20))}/wk
+            </span>
+          </div>
+          <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
+            <span className="text-[10px] uppercase font-bold text-brown-700 block">Savings (15%)</span>
+            <span className="text-xs font-extrabold text-dark-green-900">
+              {formatCurrency(Math.round(weeklyIncomePool * 0.15))}/wk
+            </span>
+          </div>
         </div>
       </div>
 
@@ -283,6 +358,44 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
               </div>
             </div>
 
+            {/* Category Classification: Expense vs Savings */}
+            <div>
+              <label className="text-[11px] font-bold text-dark-grey-700 block mb-1.5">
+                Category Classification *
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setNewType('expense')}
+                  className={`p-2.5 rounded-xl border text-left transition cursor-pointer flex flex-col gap-0.5 ${
+                    newType === 'expense'
+                      ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                      : 'bg-white border-beige-300 text-dark-green-900 hover:bg-beige-50'
+                  }`}
+                >
+                  <span className="text-xs font-bold">Expense Bucket</span>
+                  <span className={`text-[10px] ${newType === 'expense' ? 'text-sage-200' : 'text-dark-grey-600'}`}>
+                    Tracks weekly spending against baseline cap
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setNewType('savings')}
+                  className={`p-2.5 rounded-xl border text-left transition cursor-pointer flex flex-col gap-0.5 ${
+                    newType === 'savings'
+                      ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                      : 'bg-white border-beige-300 text-dark-green-900 hover:bg-beige-50'
+                  }`}
+                >
+                  <span className="text-xs font-bold">Savings Bucket</span>
+                  <span className={`text-[10px] ${newType === 'savings' ? 'text-sage-200' : 'text-dark-grey-600'}`}>
+                    Tracks progressive savings accumulations & goals
+                  </span>
+                </button>
+              </div>
+            </div>
+
             <div>
               <label className="text-[11px] font-bold text-dark-grey-700 block mb-1">
                 Subcategories / Examples (comma separated)
@@ -315,6 +428,11 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
                 ? Math.round(((cat.currentWeeklyBudget || 0) / weeklyIncomePool) * 100)
                 : 0;
 
+            const recRatio =
+              RECOMMENDED_CATEGORY_PERCENTAGES[cat.name] ??
+              RECOMMENDED_CATEGORY_PERCENTAGES[cat.group];
+            const suggestedDollars = recRatio ? Math.round(weeklyIncomePool * recRatio) : null;
+
             return (
               <div
                 key={cat.id}
@@ -332,6 +450,16 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
                       <span className="text-[10px] font-bold text-brown-700 bg-beige-100 px-2 py-0.5 rounded-md">
                         {pct}%
                       </span>
+                      {suggestedDollars !== null && (
+                        <button
+                          type="button"
+                          onClick={() => handleBudgetChange(cat.id, suggestedDollars)}
+                          className="text-[10px] font-bold text-sage-800 bg-sage-100 hover:bg-sage-200 px-2 py-0.5 rounded-md transition cursor-pointer"
+                          title={`Click to set to recommended ${recRatio! * 100}% (${formatCurrency(suggestedDollars)}/wk)`}
+                        >
+                          Sug: {recRatio! * 100}% ({formatCurrency(suggestedDollars)})
+                        </button>
+                      )}
                     </div>
                     {cat.subcategories && cat.subcategories.length > 0 && (
                       <p className="text-[11px] text-dark-grey-600 truncate max-w-xs sm:max-w-sm">

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { formatCurrency, getMonthRange } from '../../lib/calculations';
+import { formatCurrency, getMonthRange, getCategoryEffectiveWeeklyBudget, getWeekId } from '../../lib/calculations';
 import { calculateCheckInStatus } from '../../lib/checkInCalculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
@@ -53,12 +53,18 @@ export const WeeklyCheckInView: React.FC = () => {
       .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   }, [checkIns]);
 
-  // Categories currently adjusted from baseline
+  // Derive previewed week ID for weeklyOverrides lookup
+  const previewedWeekId = useMemo(() => {
+    return getWeekId(activeWeekRange, household?.firstDayOfWeek || 'Monday');
+  }, [activeWeekRange, household?.firstDayOfWeek]);
+
+  // Categories currently adjusted from baseline for the previewed week
   const adjustedCategories = useMemo(() => {
-    return categories.filter(
-      (c) => Number(c.currentWeeklyBudget) !== Number(c.baselineBudget)
-    );
-  }, [categories]);
+    return categories.filter((cat) => {
+      const effective = getCategoryEffectiveWeeklyBudget(cat, previewedWeekId, household);
+      return effective.isOverridden;
+    });
+  }, [categories, previewedWeekId, household]);
 
   return (
     <div className="space-y-6 pb-20 lg:pb-8">
@@ -275,14 +281,17 @@ export const WeeklyCheckInView: React.FC = () => {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {categories.map((cat) => {
-            const isDifferent = Number(cat.currentWeeklyBudget) !== Number(cat.baselineBudget);
-            const diff = Number(cat.currentWeeklyBudget) - Number(cat.baselineBudget);
+            const effective = getCategoryEffectiveWeeklyBudget(cat, previewedWeekId, household);
+            const baselineBudget = effective.baseline;
+            const displayBudget = effective.budget;
+            const isOverridden = effective.isOverridden;
+            const diff = displayBudget - baselineBudget;
 
             return (
               <div
                 key={cat.id}
                 className={`p-3.5 rounded-2xl border ${
-                  isDifferent
+                  isOverridden
                     ? diff > 0
                       ? 'bg-sage-50/60 border-sage-200'
                       : 'bg-red-50/60 border-red-200'
@@ -305,13 +314,13 @@ export const WeeklyCheckInView: React.FC = () => {
                   </div>
 
                   <span className="text-xs font-black text-dark-green-900 shrink-0">
-                    {formatCurrency(cat.currentWeeklyBudget)}/wk
+                    {formatCurrency(displayBudget)}/wk
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-dark-grey-600 mt-2 pt-1.5 border-t border-beige-200/60">
-                  <span>Baseline: {formatCurrency(cat.baselineBudget)}</span>
-                  {isDifferent && (
+                  <span>Baseline: {formatCurrency(baselineBudget)}</span>
+                  {isOverridden && (
                     <span
                       className={`font-bold ${
                         diff > 0 ? 'text-sage-800' : 'text-red-600'

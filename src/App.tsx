@@ -26,8 +26,6 @@ import {
   CheckCircle,
   Activity,
   Settings,
-  Users,
-  Shield,
   Plus,
   AlertCircle,
   CheckCircle2,
@@ -181,27 +179,6 @@ const MainLayout: React.FC = () => {
                 </button>
               );
             })}
-          </div>
-
-          {/* Household Info Card */}
-          <div className="bg-white border border-beige-200/90 rounded-2xl p-4 shadow-xs space-y-2">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-dark-green-900">
-              <Shield className="w-3.5 h-3.5 text-sage-600" />
-              <span className="truncate">{household.name || 'Household'}</span>
-            </div>
-            <p className="text-[11px] text-brown-700">
-              Sync Code:{' '}
-              <span className="font-mono font-bold text-dark-green-900">
-                {household.syncCode}
-              </span>
-            </p>
-            <button
-              onClick={() => setIsProfileModalOpen(true)}
-              className="w-full mt-2 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-beige-200 text-dark-green-900 text-[11px] font-bold rounded-xl transition cursor-pointer"
-            >
-              <Users className="w-3.5 h-3.5 text-brown-700" />
-              <span>Manage Roster</span>
-            </button>
           </div>
         </aside>
 

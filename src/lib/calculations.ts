@@ -1,4 +1,4 @@
-import { DayOfWeek, PaySchedule, HouseholdMember, Category, TimeframeMode, DateRange, Expense } from '../types';
+import { DayOfWeek, PaySchedule, HouseholdMember, Category, TimeframeMode, DateRange, Expense, Household } from '../types';
 import { is53WeekFiscalYear, getFiscalMonthForDate } from './fiscal445';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
@@ -84,13 +84,20 @@ export function formatCurrency(amount: number): string {
  * Bills: Subscriptions, Mortgage/Rent, Utilities, Fixed Spending
  * Savings: Downpayment, Daycare Fund, Investing
  */
+export const RECOMMENDED_CATEGORY_PERCENTAGES: Record<string, number> = {
+  Bills: 0.35,
+  Essentials: 0.30,
+  'Fun Money': 0.20,
+  Savings: 0.15,
+};
+
 /**
  * Returns default Top-Level Budget Buckets (Essentials, Fun Money, Bills, Savings).
  * Subcategories are listed as examples for the transaction ledger.
  */
 export function getDefaultCategories(
   weeklyIncomePool: number,
-  incomeType?: 'predictable' | 'variable',
+  incomeType?: 'predictable' | 'scheduled' | 'variable',
   initialBufferAmount?: number
 ): Category[] {
   const pool = weeklyIncomePool > 0 ? weeklyIncomePool : 1500;
@@ -103,6 +110,7 @@ export function getDefaultCategories(
         id: 'cat_income_buffer',
         name: 'Income Buffer',
         group: 'Savings',
+        type: 'savings',
         icon: 'shield',
         color: 'dark-green',
         baselineBudget: 0, // holding tank, not weekly spend
@@ -116,6 +124,7 @@ export function getDefaultCategories(
         id: 'cat_essentials',
         name: 'Essentials',
         group: 'Essentials',
+        type: 'expense',
         icon: 'shopping-bag',
         color: 'sage',
         baselineBudget: Math.round(pool * 0.50),
@@ -129,6 +138,7 @@ export function getDefaultCategories(
         id: 'cat_bills',
         name: 'Bills',
         group: 'Bills',
+        type: 'expense',
         icon: 'file-text',
         color: 'brown',
         baselineBudget: Math.round(pool * 0.35),
@@ -142,6 +152,7 @@ export function getDefaultCategories(
         id: 'cat_fun_money',
         name: 'Fun Money',
         group: 'Fun Money',
+        type: 'expense',
         icon: 'sparkles',
         color: 'sky-blue',
         baselineBudget: Math.round(pool * 0.15),
@@ -155,11 +166,13 @@ export function getDefaultCategories(
     return categories;
   }
 
-  // Standard predictable income distribution across top-level buckets
+  // Standard scheduled/predictable income distribution across top-level buckets:
+  // Bills (35%), Essentials (30%), Fun Money (20%), and Savings (15%)
   const buckets: Array<{
     id: string;
     name: string;
     group: string;
+    type: 'expense' | 'savings';
     icon: string;
     color: string;
     weight: number;
@@ -167,12 +180,24 @@ export function getDefaultCategories(
     description: string;
   }> = [
     {
+      id: 'cat_bills',
+      name: 'Bills',
+      group: 'Bills',
+      type: 'expense',
+      icon: 'file-text',
+      color: 'brown',
+      weight: 0.35,
+      subcategories: ['Mortgage / Rent', 'Utilities & Electric', 'Subscriptions & Phone', 'Insurance & Services'],
+      description: 'Recurring monthly housing, utilities, digital subscriptions, and fixed payments.',
+    },
+    {
       id: 'cat_essentials',
       name: 'Essentials',
       group: 'Essentials',
+      type: 'expense',
       icon: 'shopping-bag',
       color: 'sage',
-      weight: 0.40,
+      weight: 0.30,
       subcategories: ['Groceries', 'Gas & Transit', 'Personal Goods', 'Home Goods', 'Health & Pharmacy'],
       description: 'Groceries, transportation, household supplies, and health necessities.',
     },
@@ -180,6 +205,7 @@ export function getDefaultCategories(
       id: 'cat_fun_money',
       name: 'Fun Money',
       group: 'Fun Money',
+      type: 'expense',
       icon: 'sparkles',
       color: 'sky-blue',
       weight: 0.20,
@@ -187,19 +213,10 @@ export function getDefaultCategories(
       description: 'Dining out, coffee runs, entertainment, hobbies, and personal treats.',
     },
     {
-      id: 'cat_bills',
-      name: 'Bills',
-      group: 'Bills',
-      icon: 'file-text',
-      color: 'brown',
-      weight: 0.25,
-      subcategories: ['Mortgage / Rent', 'Utilities & Electric', 'Subscriptions & Phone', 'Insurance & Services'],
-      description: 'Recurring monthly housing, utilities, digital subscriptions, and fixed payments.',
-    },
-    {
       id: 'cat_savings',
       name: 'Savings',
       group: 'Savings',
+      type: 'savings',
       icon: 'piggy-bank',
       color: 'dark-green',
       weight: 0.15,
@@ -219,6 +236,7 @@ export function getDefaultCategories(
       id: b.id,
       name: b.name,
       group: b.group,
+      type: b.type,
       baselineBudget: finalAlloc,
       currentWeeklyBudget: finalAlloc,
       subcategories: b.subcategories,
@@ -291,12 +309,45 @@ export function getMonthRange(refDate: Date, monthOffset: number = 0): DateRange
 }
 
 /**
+ * Formats a Date as YYYY-MM-DD in local time, preventing UTC offsets from shifting dates.
+ */
+export function formatLocalDate(date: Date): string {
+  if (!date || isNaN(date.getTime())) {
+    date = new Date();
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Returns today's date in local time as YYYY-MM-DD.
+ */
+export function getTodayLocalDateString(): string {
+  return formatLocalDate(new Date());
+}
+
+/**
  * Extracts a normalized numeric epoch millisecond timestamp from an expense object.
- * Robustly parses Firestore Timestamp objects (with toMillis, toDate, or seconds),
- * numeric timestamps, ISO date strings, and local YYYY-MM-DD date strings.
+ * Robustly parses Firestore Timestamp objects, numeric timestamps, ISO date strings,
+ * and local YYYY-MM-DD date strings with strict local timezone anchoring.
  */
 export function parseExpenseTimestamp(expense: { timestamp?: any; date?: string; createdAt?: any }): number {
-  const ts = expense.timestamp || expense.createdAt;
+  if (expense.date && typeof expense.date === 'string') {
+    const trimmed = expense.date.trim();
+    // Strict local calendar date handling for YYYY-MM-DD: anchor to local midday (12:00:00)
+    // so UTC offsets and DST shifts never pull Monday into Sunday night or vice versa.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+      const parts = trimmed.split('-');
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const day = parseInt(parts[2], 10);
+      return new Date(year, month, day, 12, 0, 0, 0).getTime();
+    }
+  }
+
+  const ts = expense.timestamp ?? expense.createdAt;
   if (ts !== undefined && ts !== null) {
     if (typeof ts === 'number' && !isNaN(ts)) {
       return ts;
@@ -319,14 +370,6 @@ export function parseExpenseTimestamp(expense: { timestamp?: any; date?: string;
   }
 
   if (expense.date) {
-    // If expense.date is YYYY-MM-DD, parse as local midday to avoid timezone offset shifts
-    const parts = expense.date.split('-');
-    if (parts.length === 3) {
-      const year = parseInt(parts[0], 10);
-      const month = parseInt(parts[1], 10) - 1;
-      const day = parseInt(parts[2], 10);
-      return new Date(year, month, day, 12, 0, 0).getTime();
-    }
     const parsed = new Date(expense.date).getTime();
     if (!isNaN(parsed)) return parsed;
   }
@@ -345,10 +388,19 @@ export function isExpenseInDateRange(expense: Expense, start: Date, end: Date): 
 }
 
 /**
- * Normalizes a weekly budget to monthly equivalent when in Month view
+ * Normalizes a weekly budget to monthly equivalent when in Month view.
+ * The total Monthly Budget is a statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month).
+ * It must NEVER be dynamically calculated by summing up post-check-in adjusted weekly budgets.
  */
-export function getCategoryBudgetForTimeframe(weeklyBudget: number, mode: TimeframeMode): number {
+export function getCategoryBudgetForTimeframe(
+  weeklyBudget: number,
+  mode: TimeframeMode,
+  weeksInFiscalMonth?: number
+): number {
   if (mode === 'month') {
+    if (weeksInFiscalMonth && weeksInFiscalMonth > 0) {
+      return Math.round(weeklyBudget * weeksInFiscalMonth);
+    }
     return Math.round((weeklyBudget * 52) / 12);
   }
   return weeklyBudget;
@@ -523,4 +575,95 @@ export function calculateRolloverImpact(
     };
   }
 }
+
+/**
+ * Returns a standardized weekId for a date or DateRange (YYYY-MM-DD of the week's start date in local time).
+ */
+export function getWeekId(dateOrRange: Date | DateRange, firstDayOfWeek: DayOfWeek = 'Monday'): string {
+  if (!dateOrRange) {
+    return getTodayLocalDateString();
+  }
+  if ('startDate' in dateOrRange) {
+    return formatLocalDate(dateOrRange.startDate);
+  }
+  const range = getWeekRange(dateOrRange, firstDayOfWeek, 0);
+  return formatLocalDate(range.startDate);
+}
+
+/**
+ * Returns the future weeks (DateRange[]) in the current fiscal month strictly AFTER the current week.
+ * Guaranteed: Does NOT include currentWeekRange, and does NOT include any past weeks.
+ */
+export function getFutureWeeksInFiscalMonth(
+  currentWeekRange: DateRange,
+  household: Household | null
+): DateRange[] {
+  const firstDay = household?.firstDayOfWeek || 'Monday';
+  const fiscalMonth = getFiscalMonthForDate(currentWeekRange.startDate, household?.fiscalYearEndMonth || 12);
+
+  const futureWeeks: DateRange[] = [];
+  // Next week starts exactly 7 days after currentWeekRange.startDate
+  let nextWeekStart = new Date(currentWeekRange.startDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+
+  // While next week starts before or on the end of this fiscal month
+  while (nextWeekStart.getTime() <= fiscalMonth.endDate.getTime()) {
+    const nextWeekRange = getWeekRange(nextWeekStart, firstDay, 0);
+    futureWeeks.push(nextWeekRange);
+    nextWeekStart = new Date(nextWeekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+
+  return futureWeeks;
+}
+
+/**
+ * Resolves a category's effective weekly budget for a specific week:
+ * 1. Global baseline budget is the primary source of truth.
+ * 2. Checks if household.weeklyOverrides[activeWeekId] contains an override for this category.
+ */
+export function getCategoryEffectiveWeeklyBudget(
+  category: Category,
+  activeWeekId: string | null | undefined,
+  household: Household | null | undefined
+): {
+  budget: number;
+  baseline: number;
+  isOverridden: boolean;
+  overrideAmount?: number;
+} {
+  const baseline = Number(category.baselineBudget) || 0;
+  if (!activeWeekId || !household?.weeklyOverrides || !household.weeklyOverrides[activeWeekId]) {
+    return {
+      budget: baseline,
+      baseline,
+      isOverridden: false,
+    };
+  }
+
+  const weekOverrides = household.weeklyOverrides[activeWeekId];
+  const nameSlug = category.name ? category.name.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+  const altSlug = category.name ? category.name.toLowerCase().replace(/\s+/g, '') : '';
+  
+  const overrideVal =
+    weekOverrides[category.id] ??
+    (altSlug ? weekOverrides[altSlug] : undefined) ??
+    (nameSlug ? weekOverrides[nameSlug] : undefined) ??
+    (category.name ? weekOverrides[category.name] : undefined);
+
+  if (overrideVal !== undefined && overrideVal !== null && !isNaN(Number(overrideVal))) {
+    const numOverride = Number(overrideVal);
+    return {
+      budget: numOverride,
+      baseline,
+      isOverridden: numOverride !== baseline,
+      overrideAmount: numOverride,
+    };
+  }
+
+  return {
+    budget: baseline,
+    baseline,
+    isOverridden: false,
+  };
+}
+
 

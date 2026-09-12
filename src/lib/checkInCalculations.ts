@@ -8,7 +8,14 @@ import {
   DateRange,
   DayOfWeek,
 } from '../types';
-import { getWeekRange, isExpenseInDateRange, calculateCategorySpending } from './calculations';
+import {
+  getWeekRange,
+  isExpenseInDateRange,
+  calculateCategorySpending,
+  formatLocalDate,
+  getCategoryEffectiveWeeklyBudget,
+  getWeekId,
+} from './calculations';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Sunday',
@@ -91,21 +98,25 @@ export function calculateCheckInStatus(
   }
 
   // 3. Find check-in records for current and previous weeks
-  const currentWeekKey = `${currentWeekRange.startDate.toISOString().split('T')[0]}_${currentWeekRange.endDate.toISOString().split('T')[0]}`;
-  const prevWeekKey = `${prevWeekRange.startDate.toISOString().split('T')[0]}_${prevWeekRange.endDate.toISOString().split('T')[0]}`;
+  const currentWeekStartStr = formatLocalDate(currentWeekRange.startDate);
+  const currentWeekEndStr = formatLocalDate(currentWeekRange.endDate);
+  const prevWeekStartStr = formatLocalDate(prevWeekRange.startDate);
+  const prevWeekEndStr = formatLocalDate(prevWeekRange.endDate);
 
   const currentWeekCheckIn = checkIns.find(
     (c) =>
       c.status === 'completed' &&
-      (c.weekEndDate === currentWeekRange.endDate.toISOString().split('T')[0] ||
-        c.id.includes(currentWeekRange.startDate.toISOString().split('T')[0]))
+      (c.weekEndDate === currentWeekEndStr ||
+        c.weekStartDate === currentWeekStartStr ||
+        c.id.includes(currentWeekStartStr))
   );
 
   const prevWeekCheckIn = checkIns.find(
     (c) =>
       c.status === 'completed' &&
-      (c.weekEndDate === prevWeekRange.endDate.toISOString().split('T')[0] ||
-        c.id.includes(prevWeekRange.startDate.toISOString().split('T')[0]))
+      (c.weekEndDate === prevWeekEndStr ||
+        c.weekStartDate === prevWeekStartStr ||
+        c.id.includes(prevWeekStartStr))
   );
 
   const lastCompletedCheckIn =
@@ -166,124 +177,392 @@ export function calculateCheckInStatus(
 }
 
 /**
- * Calculates pacing, surplus, deficit, and next-week adjusted budgets for each category.
+ * Calculates pacing, surplus, deficit, and next-week adjusted budgets for each category,
+ * strictly isolating Bills to the monthly retrospective and enforcing the Weekly Savings Goal objective.
  */
 export function calculateCategoryDecisions(
   categories: Category[],
   expenses: Expense[],
   weekRange: DateRange,
   remainingWeeksInMonth: number,
-  userChoices: Record<string, 'savings' | 'rollover'>
+  userChoices: Record<string, 'savings' | 'rollover' | 'deduct_savings' | 'reduce_future'> = {},
+  household?: Household | null
 ): {
   decisions: CategoryRolloverDecision[];
+  baselineSavingsGoal: number;
+  effectiveSavingsGoal: number;
+  isSavingsGoalMet: boolean;
   totalSaved: number;
   totalSurplus: number;
   totalDeficit: number;
   totalSpent: number;
   totalBudget: number;
+  totalSavingsDeducted: number;
+  billsTotalBudget: number;
+  billsTotalSpent: number;
 } {
-  const decisions: CategoryRolloverDecision[] = [];
-  let totalSaved = 0;
-  let totalSurplus = 0;
-  let totalDeficit = 0;
-  let totalSpent = 0;
-  let totalBudget = 0;
-
   const weeksDivider = Math.max(1, remainingWeeksInMonth);
+  const weekId = household ? getWeekId(weekRange, household.firstDayOfWeek || 'Monday') : null;
 
-  for (const cat of categories) {
-    const budget = Number(cat.currentWeeklyBudget) || 0;
+  // 1. BILLS CATEGORY ISOLATION:
+  // Filter out all "Bills" categories from weekly check-in proration, surplus transfers, and deficit penalty options.
+  const isBillsCategory = (c: Category) =>
+    c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+
+  const isSavingsCategory = (c: Category) =>
+    c.type === 'savings' || c.group?.toLowerCase() === 'savings';
+
+  // Active weekly expense categories (Essentials, Fun Money, and any custom non-Bills expense categories)
+  const weeklyExpenseCategories = categories.filter(
+    (c) => !isBillsCategory(c) && !isSavingsCategory(c)
+  );
+
+  // Savings categories for establishing the Weekly Savings Goal
+  const savingsCategories = categories.filter(isSavingsCategory);
+  const baselineSavingsGoal = savingsCategories.reduce(
+    (sum, c) => sum + (Number(c.baselineBudget) || 0),
+    0
+  );
+
+  // Calculate Bills totals strictly for informational/monthly context
+  const billsCategories = categories.filter(isBillsCategory);
+  let billsTotalBudget = 0;
+  let billsTotalSpent = 0;
+  billsCategories.forEach((cat) => {
+    const effective = getCategoryEffectiveWeeklyBudget(cat, weekId, household);
+    billsTotalBudget += effective.budget;
     const { totalSpent: spent } = calculateCategorySpending(
       expenses,
       cat.id,
       weekRange.startDate,
       weekRange.endDate
     );
+    billsTotalSpent += spent;
+  });
 
-    totalBudget += budget;
-    totalSpent += spent;
+  // Calculate spending for each weekly expense category
+  interface CategoryPacing {
+    category: Category;
+    budget: number;
+    baselineBudget: number;
+    isOverridden: boolean;
+    spent: number;
+    diff: number; // positive = surplus, negative = deficit
+  }
 
-    const diff = budget - spent; // positive = underspent, negative = overspent
+  const pacings: CategoryPacing[] = weeklyExpenseCategories.map((cat) => {
+    const effective = getCategoryEffectiveWeeklyBudget(cat, weekId, household);
+    const budget = effective.budget;
+    const baselineBudget = effective.baseline;
+    const isOverridden = effective.isOverridden || (baselineBudget > 0 && budget !== baselineBudget);
 
-    if (diff > 0) {
-      // Underspent / Surplus
-      totalSurplus += diff;
-      const choice = userChoices[cat.id] || 'savings'; // Default recommended choice is savings
+    const { totalSpent: spent } = calculateCategorySpending(
+      expenses,
+      cat.id,
+      weekRange.startDate,
+      weekRange.endDate
+    );
+    return {
+      category: cat,
+      budget,
+      baselineBudget,
+      isOverridden,
+      spent,
+      diff: budget - spent,
+    };
+  });
 
-      if (choice === 'savings') {
-        totalSaved += diff;
-        decisions.push({
+  let totalBudget = pacings.reduce((sum, p) => sum + p.budget, 0);
+  let totalSpent = pacings.reduce((sum, p) => sum + p.spent, 0);
+  let totalSurplus = pacings.filter((p) => p.diff > 0).reduce((sum, p) => sum + p.diff, 0);
+  let totalDeficit = pacings.filter((p) => p.diff < 0).reduce((sum, p) => sum + Math.abs(p.diff), 0);
+
+  // 2. OVERSPENDING RESOLUTION (OPTION A: Deduct from Savings Goal vs OPTION B: Reduce Future Weeks)
+  let availableSavingsGoal = baselineSavingsGoal;
+  let totalSavingsDeducted = 0;
+  const overspentDecisionsMap = new Map<string, CategoryRolloverDecision>();
+
+  // Process overspent categories first to determine if Savings Goal is impacted
+  for (const p of pacings.filter((p) => p.diff < 0)) {
+    const cat = p.category;
+    const deficit = Math.abs(p.diff);
+    const chosenResolution = (userChoices[cat.id] as 'deduct_savings' | 'reduce_future') || 'deduct_savings';
+
+    if (chosenResolution === 'deduct_savings') {
+      if (availableSavingsGoal >= deficit) {
+        // Covered in full by Savings Goal
+        availableSavingsGoal -= deficit;
+        totalSavingsDeducted += deficit;
+
+        overspentDecisionsMap.set(cat.id, {
           categoryId: cat.id,
           categoryName: cat.name,
-          spent,
-          budget,
-          difference: diff,
-          choice: 'savings',
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'deduct_savings',
+          overspendChoice: 'deduct_savings',
+          savingsDeduction: deficit,
+          futureWeeklyReduction: 0,
+          forcedFallbackApplied: false,
+          effectiveSavingsReduced: deficit,
           adjustmentPerWeek: 0,
-          previousWeeklyBudget: budget,
-          newWeeklyBudget: budget,
-          savingsContribution: diff,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget: p.budget, // Next week budget is not reduced
+          savingsContribution: 0,
+        });
+      } else if (availableSavingsGoal > 0) {
+        // Partially covered: Forced Fallback (Depleted Savings)
+        const coveredBySavings = availableSavingsGoal;
+        const uncoveredDeficit = deficit - coveredBySavings;
+        totalSavingsDeducted += coveredBySavings;
+        availableSavingsGoal = 0;
+
+        const reductionPerWeek = Math.round(uncoveredDeficit / weeksDivider);
+        const newWeeklyBudget = Math.max(0, p.budget - reductionPerWeek);
+
+        overspentDecisionsMap.set(cat.id, {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'deduct_savings',
+          overspendChoice: 'deduct_savings',
+          savingsDeduction: coveredBySavings,
+          futureWeeklyReduction: reductionPerWeek,
+          forcedFallbackApplied: true,
+          effectiveSavingsReduced: coveredBySavings,
+          adjustmentPerWeek: -reductionPerWeek,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget,
+          savingsContribution: 0,
         });
       } else {
-        // Rollover / Prorate surplus evenly across remaining weeks of the month
-        const extraPerWeek = Math.round(diff / weeksDivider);
-        decisions.push({
+        // Savings completely depleted: Forced Fallback to Option B
+        const reductionPerWeek = Math.round(deficit / weeksDivider);
+        const newWeeklyBudget = Math.max(0, p.budget - reductionPerWeek);
+
+        overspentDecisionsMap.set(cat.id, {
           categoryId: cat.id,
           categoryName: cat.name,
-          spent,
-          budget,
-          difference: diff,
-          choice: 'rollover',
-          adjustmentPerWeek: extraPerWeek,
-          previousWeeklyBudget: budget,
-          newWeeklyBudget: budget + extraPerWeek,
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'reduce_future',
+          overspendChoice: 'reduce_future',
+          savingsDeduction: 0,
+          futureWeeklyReduction: reductionPerWeek,
+          forcedFallbackApplied: true,
+          effectiveSavingsReduced: 0,
+          adjustmentPerWeek: -reductionPerWeek,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget,
           savingsContribution: 0,
         });
       }
-    } else if (diff < 0) {
-      // Overspent / Deficit
-      const deficitAmount = Math.abs(diff);
-      totalDeficit += deficitAmount;
-
-      // Automatically adjust future weekly budgets downward across remaining weeks of month
-      const reductionPerWeek = Math.round(deficitAmount / weeksDivider);
-      const newWeeklyBudget = Math.max(0, budget - reductionPerWeek);
-
-      decisions.push({
-        categoryId: cat.id,
-        categoryName: cat.name,
-        spent,
-        budget,
-        difference: diff,
-        choice: 'deficit_absorbed',
-        adjustmentPerWeek: -reductionPerWeek,
-        previousWeeklyBudget: budget,
-        newWeeklyBudget,
-        savingsContribution: 0,
-      });
     } else {
-      // Exactly on budget
-      decisions.push({
+      // Option B: Reduce Future Weeks
+      const reductionPerWeek = Math.round(deficit / weeksDivider);
+      const newWeeklyBudget = Math.max(0, p.budget - reductionPerWeek);
+
+      overspentDecisionsMap.set(cat.id, {
         categoryId: cat.id,
         categoryName: cat.name,
-        spent,
-        budget,
-        difference: 0,
-        choice: 'savings',
-        adjustmentPerWeek: 0,
-        previousWeeklyBudget: budget,
-        newWeeklyBudget: budget,
+        spent: p.spent,
+        budget: p.budget,
+        baselineBudget: p.baselineBudget,
+        isOverridden: p.isOverridden,
+        difference: p.diff,
+        choice: 'reduce_future',
+        overspendChoice: 'reduce_future',
+        savingsDeduction: 0,
+        futureWeeklyReduction: reductionPerWeek,
+        forcedFallbackApplied: false,
+        effectiveSavingsReduced: 0,
+        adjustmentPerWeek: -reductionPerWeek,
+        previousWeeklyBudget: p.budget,
+        newWeeklyBudget,
         savingsContribution: 0,
       });
     }
   }
 
+  // 3. UNDERSPENDING RESOLUTION & SAVINGS PRIORITY GATE:
+  // Check if baseline Weekly Savings Goal has been met (no net savings deficit)
+  let currentSavingsDeficit = baselineSavingsGoal - availableSavingsGoal;
+  const initialSavingsGoalMet = currentSavingsDeficit <= 0;
+  let totalSavedFromSurplus = 0;
+
+  const underspentDecisionsMap = new Map<string, CategoryRolloverDecision>();
+
+  for (const p of pacings.filter((p) => p.diff > 0)) {
+    const cat = p.category;
+    const surplus = p.diff;
+    const userPref = (userChoices[cat.id] as 'savings' | 'rollover') || 'savings';
+
+    if (currentSavingsDeficit > 0) {
+      // Savings Goal is NOT Met -> Proration is disabled.
+      // Unspent funds must automatically route to fill the savings deficit.
+      if (surplus <= currentSavingsDeficit) {
+        currentSavingsDeficit -= surplus;
+        availableSavingsGoal += surplus;
+        totalSavedFromSurplus += surplus;
+
+        underspentDecisionsMap.set(cat.id, {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'savings_deficit_fill',
+          underspendChoice: 'savings',
+          isProrationDisabled: true,
+          adjustmentPerWeek: 0,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget: p.budget,
+          savingsContribution: surplus,
+        });
+      } else {
+        // Surplus exceeds what is needed to restore the Savings Goal!
+        const fillAmount = currentSavingsDeficit;
+        const excessSurplus = surplus - fillAmount;
+        currentSavingsDeficit = 0;
+        availableSavingsGoal += fillAmount;
+        totalSavedFromSurplus += fillAmount;
+
+        if (userPref === 'rollover') {
+          // Excess can be prorated across future weeks
+          const extraPerWeek = Math.round(excessSurplus / weeksDivider);
+          underspentDecisionsMap.set(cat.id, {
+            categoryId: cat.id,
+            categoryName: cat.name,
+            spent: p.spent,
+            budget: p.budget,
+            baselineBudget: p.baselineBudget,
+            isOverridden: p.isOverridden,
+            difference: p.diff,
+            choice: 'rollover',
+            underspendChoice: 'rollover',
+            isProrationDisabled: false,
+            adjustmentPerWeek: extraPerWeek,
+            previousWeeklyBudget: p.budget,
+            newWeeklyBudget: p.budget + extraPerWeek,
+            savingsContribution: fillAmount,
+          });
+        } else {
+          // Entire surplus boosts savings
+          totalSavedFromSurplus += excessSurplus;
+          underspentDecisionsMap.set(cat.id, {
+            categoryId: cat.id,
+            categoryName: cat.name,
+            spent: p.spent,
+            budget: p.budget,
+            baselineBudget: p.baselineBudget,
+            isOverridden: p.isOverridden,
+            difference: p.diff,
+            choice: 'savings',
+            underspendChoice: 'savings',
+            isProrationDisabled: false,
+            adjustmentPerWeek: 0,
+            previousWeeklyBudget: p.budget,
+            newWeeklyBudget: p.budget,
+            savingsContribution: surplus,
+          });
+        }
+      }
+    } else {
+      // Savings Goal IS Met: Present Option A (Boost Savings) or Option B (Prorate Future Budget)
+      if (userPref === 'savings') {
+        totalSavedFromSurplus += surplus;
+        underspentDecisionsMap.set(cat.id, {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'savings',
+          underspendChoice: 'savings',
+          isProrationDisabled: false,
+          adjustmentPerWeek: 0,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget: p.budget,
+          savingsContribution: surplus,
+        });
+      } else {
+        const extraPerWeek = Math.round(surplus / weeksDivider);
+        underspentDecisionsMap.set(cat.id, {
+          categoryId: cat.id,
+          categoryName: cat.name,
+          spent: p.spent,
+          budget: p.budget,
+          baselineBudget: p.baselineBudget,
+          isOverridden: p.isOverridden,
+          difference: p.diff,
+          choice: 'rollover',
+          underspendChoice: 'rollover',
+          isProrationDisabled: false,
+          adjustmentPerWeek: extraPerWeek,
+          previousWeeklyBudget: p.budget,
+          newWeeklyBudget: p.budget + extraPerWeek,
+          savingsContribution: 0,
+        });
+      }
+    }
+  }
+
+  // Combine all decisions in order of pacings
+  const decisions: CategoryRolloverDecision[] = pacings.map((p) => {
+    if (p.diff > 0) {
+      return underspentDecisionsMap.get(p.category.id)!;
+    }
+    if (p.diff < 0) {
+      return overspentDecisionsMap.get(p.category.id)!;
+    }
+    // Exactly on budget
+    return {
+      categoryId: p.category.id,
+      categoryName: p.category.name,
+      spent: p.spent,
+      budget: p.budget,
+      baselineBudget: p.baselineBudget,
+      isOverridden: p.isOverridden,
+      difference: 0,
+      choice: 'savings',
+      underspendChoice: 'savings',
+      isProrationDisabled: false,
+      adjustmentPerWeek: 0,
+      previousWeeklyBudget: p.budget,
+      newWeeklyBudget: p.budget,
+      savingsContribution: 0,
+    };
+  });
+
+  const finalSavingsGoalMet = currentSavingsDeficit <= 0;
+  const totalSaved = totalSavedFromSurplus;
+
   return {
     decisions,
+    baselineSavingsGoal,
+    effectiveSavingsGoal: availableSavingsGoal + totalSavedFromSurplus,
+    isSavingsGoalMet: finalSavingsGoalMet,
     totalSaved,
     totalSurplus,
     totalDeficit,
     totalSpent,
     totalBudget,
+    totalSavingsDeducted,
+    billsTotalBudget,
+    billsTotalSpent,
   };
 }

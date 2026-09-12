@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { AccountType, CalendarMode, DayOfWeek, HouseholdMember, OnboardingData, Category, IncomeType } from '../../types';
+import { AccountType, CalendarMode, DayOfWeek, HouseholdMember, OnboardingData, Category, IncomeType, VariableIncomeState, OneOffDeposit } from '../../types';
 import { AccountTypeStep } from './AccountTypeStep';
 import { IncomeStep } from './IncomeStep';
 import { CalendarStep } from './CalendarStep';
@@ -16,6 +16,14 @@ export const SetupWizard: React.FC = () => {
   const [incomeType, setIncomeType] = useState<IncomeType>('predictable');
   const [baselineWeeklyBurnRate, setBaselineWeeklyBurnRate] = useState<number>(0);
   const [initialBufferAmount, setInitialBufferAmount] = useState<number>(0);
+  const [variableIncomeState, setVariableIncomeState] = useState<VariableIncomeState>({
+    activeSubOption: 'context',
+    scenarioContext: '',
+    projects: [],
+    hourlyConfigs: [],
+    manualEntries: [],
+  });
+  const [oneOffDeposits, setOneOffDeposits] = useState<OneOffDeposit[]>([]);
   const [roommateCount, setRoommateCount] = useState<number>(3);
   const [calendarMode, setCalendarMode] = useState<CalendarMode>('weekly');
   const [firstDayOfWeek, setFirstDayOfWeek] = useState<DayOfWeek>('Monday');
@@ -93,6 +101,8 @@ export const SetupWizard: React.FC = () => {
     incomeType,
     baselineWeeklyBurnRate,
     initialBufferAmount,
+    variableIncomeState,
+    oneOffDeposits,
     roommateCount,
     members,
     categories,
@@ -174,6 +184,10 @@ export const SetupWizard: React.FC = () => {
               setBaselineWeeklyBurnRate={setBaselineWeeklyBurnRate}
               initialBufferAmount={initialBufferAmount}
               setInitialBufferAmount={setInitialBufferAmount}
+              variableIncomeState={variableIncomeState}
+              setVariableIncomeState={setVariableIncomeState}
+              oneOffDeposits={oneOffDeposits}
+              setOneOffDeposits={setOneOffDeposits}
               onNext={() => setStep(3)}
               onBack={() => setStep(1)}
             />
@@ -186,6 +200,7 @@ export const SetupWizard: React.FC = () => {
               firstDayOfWeek={firstDayOfWeek}
               setFirstDayOfWeek={setFirstDayOfWeek}
               fiscalYearEndMonth={fiscalYearEndMonth}
+              setFiscalYearEndMonth={setFiscalYearEndMonth}
               onNext={() => setStep(4)}
               onBack={() => setStep(2)}
             />

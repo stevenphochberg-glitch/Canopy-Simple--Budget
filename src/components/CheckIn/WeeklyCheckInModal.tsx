@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { Category, Expense, DateRange } from '../../types';
-import { formatCurrency, getWeekRange, isExpenseInDateRange } from '../../lib/calculations';
+import { formatCurrency, getWeekRange, isExpenseInDateRange, formatLocalDate, getTodayLocalDateString } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   calculateCheckInStatus,
@@ -26,6 +26,7 @@ import {
   Calendar,
   Layers,
   Check,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface WeeklyCheckInModalProps {
@@ -51,7 +52,9 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
 
   // Active step in the check-in wizard (1: Review expenses, 2: Rollovers/Deficits, 3: Confirm)
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [userChoices, setUserChoices] = useState<Record<string, 'savings' | 'rollover'>>({});
+  const [userChoices, setUserChoices] = useState<
+    Record<string, 'savings' | 'rollover' | 'deduct_savings' | 'reduce_future'>
+  >({});
   const [intentionsNote, setIntentionsNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [forceEarlyCheckIn, setForceEarlyCheckIn] = useState<boolean>(false);
@@ -61,7 +64,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const [inlineAmount, setInlineAmount] = useState<string>('');
   const [inlineDescription, setInlineDescription] = useState<string>('');
   const [inlineCategoryId, setInlineCategoryId] = useState<string>('');
-  const [inlineDate, setInlineDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [inlineDate, setInlineDate] = useState<string>(getTodayLocalDateString());
   const [inlineLoggedBy, setInlineLoggedBy] = useState<string>(user?.userId || 'usr_self');
   const [isSavingInline, setIsSavingInline] = useState<boolean>(false);
 
@@ -107,8 +110,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
 
   // Check if a completed check-in already exists for this selected week
   const existingCheckInForWeek = useMemo(() => {
-    const startStr = selectedWeekRange.startDate.toISOString().split('T')[0];
-    const endStr = selectedWeekRange.endDate.toISOString().split('T')[0];
+    const startStr = formatLocalDate(selectedWeekRange.startDate);
+    const endStr = formatLocalDate(selectedWeekRange.endDate);
     return checkIns.find(
       (c) =>
         c.status === 'completed' &&
@@ -139,27 +142,37 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const remainingWeeksInMonth = targetRemainingWeeks;
   const { isPastDue, isLastDayOfWeek, isFirstWeekGracePeriod } = statusInfo;
 
-  // Calculate pacing decisions for each category
+  // Calculate pacing decisions for each category with Savings Goal priority gating and Bills isolation
   const {
     decisions,
+    baselineSavingsGoal,
+    effectiveSavingsGoal,
+    isSavingsGoalMet,
     totalSaved,
     totalSurplus,
     totalDeficit,
     totalSpent,
     totalBudget,
+    totalSavingsDeducted,
+    billsTotalBudget,
+    billsTotalSpent,
   } = useMemo(() => {
     return calculateCategoryDecisions(
       categories,
       expenses,
       selectedWeekRange,
       targetRemainingWeeks,
-      userChoices
+      userChoices,
+      household
     );
-  }, [categories, expenses, selectedWeekRange, targetRemainingWeeks, userChoices]);
+  }, [categories, expenses, selectedWeekRange, targetRemainingWeeks, userChoices, household]);
 
   if (!isOpen) return null;
 
-  const handleChoiceChange = (categoryId: string, choice: 'savings' | 'rollover') => {
+  const handleChoiceChange = (
+    categoryId: string,
+    choice: 'savings' | 'rollover' | 'deduct_savings' | 'reduce_future'
+  ) => {
     setUserChoices((prev) => ({
       ...prev,
       [categoryId]: choice,
@@ -185,7 +198,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         amount: numAmount,
         description: inlineDescription.trim() || 'Logged Expense',
         categoryId: resolvedCategoryId,
-        date: inlineDate || selectedWeekRange.endDate.toISOString().split('T')[0],
+        date: inlineDate || formatLocalDate(selectedWeekRange.endDate),
         loggedByUserId: inlineLoggedBy || user?.userId || 'usr_self',
       });
       // Reset inline form
@@ -207,8 +220,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     setIsSubmitting(true);
     try {
       await completeWeeklyCheckIn({
-        weekStartDate: selectedWeekRange.startDate.toISOString().split('T')[0],
-        weekEndDate: selectedWeekRange.endDate.toISOString().split('T')[0],
+        weekStartDate: formatLocalDate(selectedWeekRange.startDate),
+        weekEndDate: formatLocalDate(selectedWeekRange.endDate),
         notes: intentionsNote.trim() || undefined,
         decisions,
         totalSaved,
@@ -672,15 +685,63 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               {/* STEP 2: CATEGORY PACING & ROLLOVER / DEFICIT RESOLUTION */}
               {step === 2 && (
                 <div className="space-y-4">
-                  <div className="p-4 bg-beige-50 border border-beige-200 rounded-2xl space-y-1">
-                    <h4 className="text-sm font-bold text-dark-green-900">
-                      Behavioral Rollover & Deficit Resolution
-                    </h4>
-                    <p className="text-xs text-brown-700">
-                      For underspent categories, choose between moving surplus to <strong>Savings</strong> (Recommended) or <strong>Prorating across remaining {remainingWeeksInMonth} weeks</strong> of this month. Overspent deficits are automatically absorbed across remaining weeks.
-                    </p>
+                  {/* SAVINGS PRIORITY GATE HEADER */}
+                  <div
+                    className={`p-4 rounded-2xl border transition-all space-y-2.5 ${
+                      isSavingsGoalMet
+                        ? 'bg-gradient-to-br from-sage-50 to-beige-50 border-sage-200'
+                        : 'bg-gradient-to-br from-amber-50 to-orange-50 border-amber-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center ${
+                            isSavingsGoalMet
+                              ? 'bg-sage-200 text-dark-green-900'
+                              : 'bg-amber-200 text-amber-900'
+                          }`}
+                        >
+                          <PiggyBank className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <h4 className="text-xs font-black text-dark-green-900">
+                            Savings Priority Gate
+                          </h4>
+                          <span className="text-[11px] text-dark-grey-600">
+                            Baseline Weekly Savings Target:{' '}
+                            <strong className="text-dark-green-900">{formatCurrency(baselineSavingsGoal)}</strong>
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        {isSavingsGoalMet ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-black text-sage-900 bg-sage-200/90 px-2.5 py-1 rounded-full">
+                            <Check className="w-3.5 h-3.5 text-sage-700" />
+                            <span>Goal Met ({formatCurrency(effectiveSavingsGoal)})</span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-black text-amber-900 bg-amber-200/90 px-2.5 py-1 rounded-full">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
+                            <span>Deficit Active ({formatCurrency(effectiveSavingsGoal)})</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {!isSavingsGoalMet ? (
+                      <p className="text-xs text-amber-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-amber-200/70">
+                        <strong>Savings Priority Active:</strong> Because your weekly savings target has not been met (or was reduced to cover deficits), category proration is restricted. Any underspent surplus will automatically fill your savings goal deficit first.
+                      </p>
+                    ) : (
+                      <p className="text-xs text-dark-green-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-sage-200/70">
+                        <strong>Savings Target Achieved:</strong> Your weekly savings goal of {formatCurrency(baselineSavingsGoal)} is fully secured. You may choose to boost savings further or prorate surplus across remaining weeks of the month.
+                      </p>
+                    )}
                   </div>
 
+                  {/* Active Categories List (Essentials & Fun Money) */}
                   <div className="space-y-3">
                     {decisions.map((dec) => {
                       const cat = categories.find((c) => c.id === dec.categoryId);
@@ -709,7 +770,11 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   {dec.categoryName}
                                 </span>
                                 <div className="flex items-center gap-2 text-[10px] text-dark-grey-600">
-                                  <span>Budget: {formatCurrency(dec.budget)}</span>
+                                  <span>
+                                    {dec.isOverridden && dec.baselineBudget && dec.baselineBudget !== dec.budget
+                                      ? `Weekly Budget: ${formatCurrency(dec.budget)} (Baseline: ${formatCurrency(dec.baselineBudget)})`
+                                      : `Weekly Budget: ${formatCurrency(dec.budget)}`}
+                                  </span>
                                   <span>&bull;</span>
                                   <span>Spent: {formatCurrency(dec.spent)}</span>
                                 </div>
@@ -738,19 +803,162 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                             </div>
                           </div>
 
+                          {/* Visual Check-in Split Progress Bar */}
+                          <div className="py-2 space-y-1">
+                            <div className="flex items-center justify-between text-[10px] font-bold">
+                              <span className="text-dark-grey-600">Progress Breakdown</span>
+                              <span className="text-dark-green-900">
+                                {Math.round((dec.spent / Math.max(1, dec.budget)) * 100)}% of {formatCurrency(dec.budget)}
+                              </span>
+                            </div>
+                            <div className="h-4 w-full bg-beige-200 rounded-lg overflow-hidden flex relative">
+                              {/* Spent Portion */}
+                              <div
+                                className={`h-full transition-all flex items-center justify-center text-[9px] font-black text-white ${
+                                  isOverspent ? 'bg-red-600 w-full' : 'bg-sage-600'
+                                }`}
+                                style={{
+                                  width: isOverspent ? '100%' : `${Math.min(100, Math.max(5, (dec.spent / Math.max(1, dec.budget)) * 100))}%`,
+                                }}
+                              >
+                                {dec.spent > 0 && <span className="px-1 truncate">{formatCurrency(dec.spent)}</span>}
+                              </div>
+
+                              {/* Surplus Portion with Decision Treatment */}
+                              {isUnderspent && (
+                                <div
+                                  className={`h-full transition-all flex items-center justify-center text-[9px] font-black text-white ${
+                                    dec.isProrationDisabled
+                                      ? 'bg-amber-600'
+                                      : (userChoices[dec.categoryId] || 'savings') === 'rollover'
+                                      ? 'bg-blue-600'
+                                      : 'bg-dark-green-900'
+                                  }`}
+                                  style={{
+                                    width: `${Math.max(0, 100 - (dec.spent / Math.max(1, dec.budget)) * 100)}%`,
+                                  }}
+                                >
+                                  <span className="px-1 truncate">
+                                    {dec.isProrationDisabled
+                                      ? `Deficit Fill (+${formatCurrency(dec.difference)})`
+                                      : (userChoices[dec.categoryId] || 'savings') === 'rollover'
+                                      ? `Prorated (+${formatCurrency(dec.difference)})`
+                                      : `Boosted Savings (+${formatCurrency(dec.difference)})`}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
                           {/* Decision Options for Underspent */}
                           {isUnderspent && (
-                            <div className="pt-3 space-y-2">
-                              <span className="text-[11px] font-extrabold text-dark-green-900 block">
-                                Choose Surplus Strategy for {formatCurrency(dec.difference)}:
+                            <div className="pt-2.5 space-y-2">
+                              {dec.isProrationDisabled ? (
+                                <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-1">
+                                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
+                                    <PiggyBank className="w-4 h-4 text-amber-700" />
+                                    <span>Savings Priority: Routed to Fill Savings Deficit</span>
+                                  </div>
+                                  <p className="text-[11px] text-amber-900 leading-relaxed">
+                                    Because the baseline Weekly Savings Goal is currently below target, this +{formatCurrency(dec.difference)} surplus is automatically directed to replenish your Savings Goal. Next week’s budget remains at {formatCurrency(dec.previousWeeklyBudget)}/wk.
+                                  </p>
+                                </div>
+                              ) : (
+                                <>
+                                  <span className="text-[11px] font-extrabold text-dark-green-900 block">
+                                    Choose Surplus Strategy for +{formatCurrency(dec.difference)}:
+                                  </span>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    {/* Option A: Boost Current Savings */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleChoiceChange(dec.categoryId, 'savings')}
+                                      className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                                        (userChoices[dec.categoryId] || 'savings') === 'savings'
+                                          ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                                          : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-black flex items-center gap-1.5">
+                                          <PiggyBank className="w-4 h-4" />
+                                          Boost Savings (Option A)
+                                        </span>
+                                        <span
+                                          className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded ${
+                                            (userChoices[dec.categoryId] || 'savings') === 'savings'
+                                              ? 'bg-white/20 text-white'
+                                              : 'bg-sage-100 text-sage-800'
+                                          }`}
+                                        >
+                                          Recommended
+                                        </span>
+                                      </div>
+                                      <p
+                                        className={`text-[10px] mt-1 ${
+                                          (userChoices[dec.categoryId] || 'savings') === 'savings'
+                                            ? 'text-sage-100'
+                                            : 'text-dark-grey-600'
+                                        }`}
+                                      >
+                                        Bank +{formatCurrency(dec.difference)} directly into savings pot. Next week budget stays at baseline ({formatCurrency(dec.previousWeeklyBudget)}/wk).
+                                      </p>
+                                    </button>
+
+                                    {/* Option B: Rollover & Prorate */}
+                                    <button
+                                      type="button"
+                                      onClick={() => handleChoiceChange(dec.categoryId, 'rollover')}
+                                      className={`p-3 rounded-xl border text-left transition cursor-pointer ${
+                                        userChoices[dec.categoryId] === 'rollover'
+                                          ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                                          : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
+                                      }`}
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-xs font-black flex items-center gap-1.5">
+                                          <TrendingUp className="w-4 h-4" />
+                                          Prorate Budget (Option B)
+                                        </span>
+                                        <span
+                                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
+                                            userChoices[dec.categoryId] === 'rollover'
+                                              ? 'bg-white/20 text-white'
+                                              : 'bg-beige-200 text-brown-800'
+                                          }`}
+                                        >
+                                          +{formatCurrency(Math.round(dec.difference / Math.max(1, remainingWeeksInMonth)))}/wk
+                                        </span>
+                                      </div>
+                                      <p
+                                        className={`text-[10px] mt-1 ${
+                                          userChoices[dec.categoryId] === 'rollover'
+                                            ? 'text-sage-100'
+                                            : 'text-dark-grey-600'
+                                        }`}
+                                      >
+                                        Distribute +{formatCurrency(dec.difference)} evenly across remaining {remainingWeeksInMonth} weeks. Next week budget becomes {formatCurrency(dec.newWeeklyBudget)}/wk.
+                                      </p>
+                                    </button>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Resolution Options for Overspent */}
+                          {isOverspent && (
+                            <div className="pt-2.5 space-y-2">
+                              <span className="text-[11px] font-extrabold text-red-900 block">
+                                Choose Deficit Resolution for -{formatCurrency(Math.abs(dec.difference))}:
                               </span>
                               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                {/* Option 1: Move to Savings */}
+                                {/* Option A: Deduct from Savings */}
                                 <button
                                   type="button"
-                                  onClick={() => handleChoiceChange(dec.categoryId, 'savings')}
+                                  onClick={() => handleChoiceChange(dec.categoryId, 'deduct_savings')}
                                   className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                    (userChoices[dec.categoryId] || 'savings') === 'savings'
+                                    (userChoices[dec.categoryId] || 'deduct_savings') === 'deduct_savings'
                                       ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
                                       : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
                                   }`}
@@ -758,84 +966,66 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   <div className="flex items-center justify-between">
                                     <span className="text-xs font-black flex items-center gap-1.5">
                                       <PiggyBank className="w-4 h-4" />
-                                      Move to Savings
-                                    </span>
-                                    <span
-                                      className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded ${
-                                        (userChoices[dec.categoryId] || 'savings') === 'savings'
-                                          ? 'bg-white/20 text-white'
-                                          : 'bg-sage-100 text-sage-800'
-                                      }`}
-                                    >
-                                      Recommended
+                                      Deduct from Savings Goal
                                     </span>
                                   </div>
                                   <p
                                     className={`text-[10px] mt-1 ${
-                                      (userChoices[dec.categoryId] || 'savings') === 'savings'
+                                      (userChoices[dec.categoryId] || 'deduct_savings') === 'deduct_savings'
                                         ? 'text-sage-100'
                                         : 'text-dark-grey-600'
                                     }`}
                                   >
-                                    Bank +{formatCurrency(dec.difference)} directly into your savings pot. Next week budget stays at {formatCurrency(dec.previousWeeklyBudget)}/wk.
+                                    Cover overage from this week’s savings pot. Next week budget stays protected at {formatCurrency(dec.previousWeeklyBudget)}/wk.
                                   </p>
                                 </button>
 
-                                {/* Option 2: Rollover / Prorate */}
+                                {/* Option B: Reduce Future Weeks */}
                                 <button
                                   type="button"
-                                  onClick={() => handleChoiceChange(dec.categoryId, 'rollover')}
+                                  onClick={() => handleChoiceChange(dec.categoryId, 'reduce_future')}
                                   className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                    userChoices[dec.categoryId] === 'rollover'
+                                    userChoices[dec.categoryId] === 'reduce_future'
                                       ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
                                       : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
                                   }`}
                                 >
                                   <div className="flex items-center justify-between">
                                     <span className="text-xs font-black flex items-center gap-1.5">
-                                      <TrendingUp className="w-4 h-4" />
-                                      Rollover & Prorate
+                                      <TrendingDown className="w-4 h-4" />
+                                      Reduce Future Weeks
                                     </span>
                                     <span
                                       className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                        userChoices[dec.categoryId] === 'rollover'
+                                        userChoices[dec.categoryId] === 'reduce_future'
                                           ? 'bg-white/20 text-white'
-                                          : 'bg-beige-200 text-brown-800'
+                                          : 'bg-red-100 text-red-800'
                                       }`}
                                     >
-                                      +{formatCurrency(Math.round(dec.difference / Math.max(1, remainingWeeksInMonth)))}/wk
+                                      -{formatCurrency(Math.round(Math.abs(dec.difference) / Math.max(1, remainingWeeksInMonth)))}/wk
                                     </span>
                                   </div>
                                   <p
                                     className={`text-[10px] mt-1 ${
-                                      userChoices[dec.categoryId] === 'rollover'
+                                      userChoices[dec.categoryId] === 'reduce_future'
                                         ? 'text-sage-100'
                                         : 'text-dark-grey-600'
                                     }`}
                                   >
-                                    Spread evenly across remaining {remainingWeeksInMonth} weeks of the month. Next week budget increases to {formatCurrency(dec.previousWeeklyBudget + Math.round(dec.difference / Math.max(1, remainingWeeksInMonth)))}/wk.
+                                    Absorb deficit evenly across remaining {remainingWeeksInMonth} weeks. Next week budget drops to {formatCurrency(dec.newWeeklyBudget)}/wk.
                                   </p>
                                 </button>
                               </div>
-                            </div>
-                          )}
 
-                          {/* Automatic Resolution for Overspent */}
-                          {isOverspent && (
-                            <div className="pt-2 text-xs space-y-1">
-                              <div className="flex items-center justify-between text-dark-green-900">
-                                <span className="text-[11px] font-bold text-red-700">
-                                  Deficit Adjustment (Auto-absorbed across {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}):
-                                </span>
-                                <span className="font-extrabold text-red-700">
-                                  -{formatCurrency(Math.round(Math.abs(dec.difference) / Math.max(1, remainingWeeksInMonth)))}/wk
-                                </span>
-                              </div>
-                              <p className="text-[10px] text-brown-700 leading-relaxed">
-                                To stay on track for the month, next week’s weekly budget is adjusted down to{' '}
-                                <strong className="text-dark-green-900 font-extrabold">{formatCurrency(dec.newWeeklyBudget)}</strong>{' '}
-                                (previously {formatCurrency(dec.previousWeeklyBudget)}).
-                              </p>
+                              {/* Forced Fallback Warning if Savings Depleted */}
+                              {dec.forcedFallbackApplied && (
+                                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-xs text-amber-900">
+                                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                                  <span>
+                                    <strong>Savings Depleted:</strong> Available weekly savings reached $0. The remaining deficit of {formatCurrency(Math.abs(dec.difference) - (dec.savingsDeduction || 0))} was automatically reduced across future weekly budgets.
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -857,10 +1047,18 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       Confirm your new category budgets for the coming week and record any notes or intentions.
                     </p>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
                       <div className="p-3 bg-white rounded-xl border border-beige-200">
                         <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                          Total Saved to Pot
+                          Savings Baseline
+                        </span>
+                        <span className="text-base font-black text-dark-green-900">
+                          {formatCurrency(baselineSavingsGoal)}
+                        </span>
+                      </div>
+                      <div className="p-3 bg-white rounded-xl border border-beige-200">
+                        <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
+                          Effective Saved
                         </span>
                         <span className="text-base font-black text-sage-800">
                           +{formatCurrency(totalSaved)}
@@ -874,7 +1072,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                           {formatCurrency(totalSpent)}
                         </span>
                       </div>
-                      <div className="p-3 bg-white rounded-xl border border-beige-200 col-span-2 sm:col-span-1">
+                      <div className="p-3 bg-white rounded-xl border border-beige-200">
                         <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
                           Net Month Pace
                         </span>

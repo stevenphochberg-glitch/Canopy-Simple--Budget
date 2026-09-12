@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { CalendarMode, DayOfWeek } from '../../types';
 import { DAYS_OF_WEEK, getCheckInDay } from '../../lib/calculations';
-import { getFiscalYearMonths } from '../../lib/fiscal445';
+import { getFiscalYearMonths, FISCAL_MONTH_NAMES } from '../../lib/fiscal445';
 import { ArrowLeft, ArrowRight, Calendar, Info, Clock, CheckCircle2 } from 'lucide-react';
 
 interface CalendarStepProps {
@@ -10,6 +10,7 @@ interface CalendarStepProps {
   firstDayOfWeek: DayOfWeek;
   setFirstDayOfWeek: (day: DayOfWeek) => void;
   fiscalYearEndMonth?: number;
+  setFiscalYearEndMonth?: (month: number) => void;
   onNext: () => void;
   onBack: () => void;
 }
@@ -20,6 +21,7 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
   firstDayOfWeek,
   setFirstDayOfWeek,
   fiscalYearEndMonth = 12,
+  setFiscalYearEndMonth,
   onNext,
   onBack,
 }) => {
@@ -210,6 +212,31 @@ export const CalendarStep: React.FC<CalendarStepProps> = ({
           </div>
         </div>
       )}
+
+      {/* Household Fiscal Year-End Configuration */}
+      <div className="p-4 sm:p-5 bg-white border border-beige-200 rounded-2xl space-y-2 shadow-xs">
+        <div className="flex items-center gap-2 text-dark-green-900 font-extrabold text-sm">
+          <Calendar className="w-4 h-4 text-sage-700" />
+          <span>Household Fiscal Year-End Month</span>
+        </div>
+        <p className="text-xs text-brown-700">
+          Used to calculate the 4-4-5 accounting calendar (four 13-week quarters: 4-4-5 weeks per quarter).
+        </p>
+        <div className="pt-1 max-w-sm">
+          <select
+            id="fiscal-year-end-month-select"
+            value={fiscalYearEndMonth}
+            onChange={(e) => setFiscalYearEndMonth?.(parseInt(e.target.value, 10))}
+            className="w-full px-3.5 py-2.5 bg-beige-50/70 border border-beige-300 rounded-xl text-dark-green-900 font-bold text-sm focus:bg-white focus:outline-none focus:border-dark-green-700 cursor-pointer"
+          >
+            {FISCAL_MONTH_NAMES.map((name, idx) => (
+              <option key={name} value={idx + 1}>
+                {name} (Month {idx + 1}) {idx === 11 ? '— Standard (Default)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
 
       {/* Navigation Actions */}
       <div className="pt-4 flex items-center justify-between">

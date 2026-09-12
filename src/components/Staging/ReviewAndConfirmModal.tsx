@@ -61,7 +61,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
           <div className="space-y-1">
             <div className="flex items-center gap-2">
               <span className="text-[10px] font-bold uppercase tracking-wider text-sage-800 bg-sage-100 px-2.5 py-0.5 rounded-full">
-                Universal Staging Flow
+                Review & Confirm
               </span>
               <span className="text-xs text-dark-grey-600">
                 Review & Confirm Before Database Submission

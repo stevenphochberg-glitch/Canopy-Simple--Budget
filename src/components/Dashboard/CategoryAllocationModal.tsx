@@ -50,43 +50,71 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   const [isAddingNew, setIsAddingNew] = useState(false);
   const [newName, setNewName] = useState('');
   const [newIcon, setNewIcon] = useState('shopping-bag');
+  const [newType, setNewType] = useState<'expense' | 'savings'>('expense');
   const [newSubcategories, setNewSubcategories] = useState('');
   const [newAllocation, setNewAllocation] = useState<number>(50);
+
+  // Explicit approval prompt state for permanent baseline changes
+  const [showApprovalPrompt, setShowApprovalPrompt] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   // Keep draft in sync if categories change while closed
   React.useEffect(() => {
     setDraftCategories(categories);
+    setShowApprovalPrompt(false);
   }, [categories, isOpen]);
 
   if (!isOpen) return null;
 
   const weeklyIncomePool = household?.weeklyIncomePool || 0;
   const totalAllocated = draftCategories.reduce(
-    (sum, cat) => sum + (Number(cat.currentWeeklyBudget) || 0),
+    (sum, cat) => sum + (Number(cat.baselineBudget) || 0),
     0
   );
   const unallocated = weeklyIncomePool - totalAllocated;
   const isOverAllocated = unallocated < 0;
+
+  // Identify categories with actual baseline modifications
+  const modifiedCategories = draftCategories.filter((draft) => {
+    const original = categories.find((c) => c.id === draft.id);
+    if (!original) return true;
+    return Number(draft.baselineBudget) !== Number(original.baselineBudget);
+  });
 
   const handleBudgetChange = (catId: string, value: number) => {
     const safeVal = Math.max(0, isNaN(value) ? 0 : value);
     setDraftCategories((prev) =>
       prev.map((c) =>
         c.id === catId
-          ? { ...c, currentWeeklyBudget: safeVal, baselineBudget: safeVal }
+          ? { ...c, baselineBudget: safeVal, currentWeeklyBudget: safeVal }
           : c
       )
     );
   };
 
-  const handleSaveAll = async () => {
+  const handleInitiateSave = () => {
     if (isOverAllocated) {
       showToast('Total allocations exceed your weekly income pool. Please adjust category amounts.');
       return;
     }
 
-    await saveCategoryAllocations(draftCategories);
-    onClose();
+    if (modifiedCategories.length === 0) {
+      onClose();
+      return;
+    }
+
+    setShowApprovalPrompt(true);
+  };
+
+  const handleConfirmSaveAll = async () => {
+    setIsSaving(true);
+    try {
+      await saveCategoryAllocations(draftCategories);
+      setShowApprovalPrompt(false);
+      onClose();
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleCreateCategory = async (e: React.FormEvent) => {
@@ -105,6 +133,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
     await createCategory({
       name: newName.trim(),
       group: newName.trim(),
+      type: newType,
       icon: newIcon,
       color: 'sage',
       baselineBudget: newAllocation,
@@ -114,6 +143,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
     });
 
     setNewName('');
+    setNewType('expense');
     setNewSubcategories('');
     setNewAllocation(50);
     setIsAddingNew(false);
@@ -244,7 +274,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                         </span>
                       ) : (
                         <span className="text-[11px] text-dark-grey-600 block">
-                          Monthly equivalent: {formatCurrency((cat.currentWeeklyBudget * 52) / 12)}/mo
+                          Monthly equivalent: {formatCurrency(((cat.baselineBudget || 0) * 52) / 12)}/mo
                         </span>
                       )}
                     </div>
@@ -258,7 +288,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                         type="number"
                         min="0"
                         step="5"
-                        value={cat.currentWeeklyBudget || ''}
+                        value={cat.baselineBudget !== undefined ? cat.baselineBudget : ''}
                         onChange={(e) => handleBudgetChange(cat.id, parseFloat(e.target.value))}
                         className="w-24 sm:w-28 pl-6 pr-2.5 py-1.5 bg-white border border-beige-300 rounded-xl text-sm font-bold text-dark-green-900 text-right focus:outline-none focus:border-dark-green-800"
                       />
@@ -329,6 +359,44 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                 </div>
               </div>
 
+              {/* Category Classification: Expense vs Savings */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
+                  Category Classification *
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setNewType('expense')}
+                    className={`p-2.5 rounded-xl border text-left transition cursor-pointer flex flex-col gap-0.5 ${
+                      newType === 'expense'
+                        ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                        : 'bg-beige-50 border-beige-300 text-dark-green-900 hover:bg-beige-100'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">Expense Bucket</span>
+                    <span className={`text-[10px] ${newType === 'expense' ? 'text-sage-200' : 'text-dark-grey-600'}`}>
+                      Tracks weekly spending against baseline cap
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setNewType('savings')}
+                    className={`p-2.5 rounded-xl border text-left transition cursor-pointer flex flex-col gap-0.5 ${
+                      newType === 'savings'
+                        ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
+                        : 'bg-beige-50 border-beige-300 text-dark-green-900 hover:bg-beige-100'
+                    }`}
+                  >
+                    <span className="text-xs font-bold">Savings Bucket</span>
+                    <span className={`text-[10px] ${newType === 'savings' ? 'text-sage-200' : 'text-dark-grey-600'}`}>
+                      Tracks progressive savings accumulations & goals
+                    </span>
+                  </button>
+                </div>
+              </div>
+
               {/* Subcategories comma separated */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
@@ -394,7 +462,7 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
           </button>
 
           <button
-            onClick={handleSaveAll}
+            onClick={handleInitiateSave}
             disabled={isOverAllocated}
             className={`px-6 py-2.5 rounded-xl text-xs font-bold shadow-sm transition flex items-center gap-2 cursor-pointer ${
               isOverAllocated
@@ -406,6 +474,95 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
             <span>Save Category Allocations</span>
           </button>
         </div>
+
+        {/* Explicit Approval Prompt Modal */}
+        {showApprovalPrompt && (
+          <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-dark-green-950/70 backdrop-blur-xs animate-in fade-in">
+            <div className="bg-white rounded-3xl border border-beige-300 shadow-2xl max-w-lg w-full p-6 space-y-4 animate-in zoom-in-95">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-dark-green-800" />
+                </div>
+                <div>
+                  <h4 className="text-base font-black text-dark-green-900">
+                    Confirm Baseline Budget Change
+                  </h4>
+                  <p className="text-xs text-dark-grey-600">
+                    Are you sure you want to permanently alter your weekly budget allocations?
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-beige-50 border border-beige-200 rounded-2xl p-3.5 space-y-2 max-h-56 overflow-y-auto">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-brown-800 pb-1 border-b border-beige-200">
+                  Updated Baseline Allocations:
+                </div>
+                {modifiedCategories.map((cat) => {
+                  const orig = categories.find((c) => c.id === cat.id);
+                  const oldVal = orig?.baselineBudget ?? 0;
+                  const newVal = cat.currentWeeklyBudget;
+                  const diff = newVal - oldVal;
+
+                  return (
+                    <div
+                      key={cat.id}
+                      className="flex items-center justify-between text-xs py-1 px-1.5"
+                    >
+                      <span className="font-semibold text-dark-green-900 truncate">
+                        {cat.name}
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0 font-mono">
+                        <span className="line-through text-dark-grey-600 text-[11px]">
+                          {formatCurrency(oldVal)}
+                        </span>
+                        <span className="font-bold text-dark-green-900">
+                          &rarr; {formatCurrency(newVal)}/wk
+                        </span>
+                        <span
+                          className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded ${
+                            diff >= 0 ? 'bg-sage-100 text-sage-900' : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          {diff >= 0 ? `+${formatCurrency(diff)}` : `-${formatCurrency(Math.abs(diff))}`}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="text-[11px] text-brown-700 bg-sage-50/70 border border-sage-200/80 rounded-xl p-3 leading-relaxed">
+                This will permanently change the baseline weekly targets used for your weekly planning and monthly fiscal anchors.
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowApprovalPrompt(false)}
+                  disabled={isSaving}
+                  className="px-4 py-2.5 rounded-xl border border-beige-300 text-brown-800 hover:bg-beige-100 text-xs font-bold transition cursor-pointer"
+                >
+                  Cancel / Keep Editing
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmSaveAll}
+                  disabled={isSaving}
+                  className="px-5 py-2.5 rounded-xl bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold transition flex items-center gap-2 cursor-pointer shadow-sm"
+                >
+                  {isSaving ? (
+                    <span>Saving Changes...</span>
+                  ) : (
+                    <>
+                      <CheckCircle className="w-4 h-4" />
+                      <span>Confirm & Apply Baseline Changes</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

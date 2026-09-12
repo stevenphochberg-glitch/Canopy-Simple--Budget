@@ -182,16 +182,66 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
     if (r.authorName && !acc[key].names.includes(r.authorName)) {
       acc[key].names.push(r.authorName);
     }
-    if (r.authorId === currentUserId) {
+    if (currentUserId && (r.authorId === currentUserId || r.authorId === 'usr_self')) {
       acc[key].userReacted = true;
     }
     return acc;
   }, {});
 
+  // Extra non-standard reactions if any exist
+  const standardIds = new Set(EARTH_TONE_REACTIONS.map((r) => r.id));
+  const extraReactions = Object.entries(reactionMap).filter(([k]) => !standardIds.has(k));
+
   return (
     <div className={`flex flex-wrap items-center gap-1.5 ${className}`}>
-      {/* Active Reaction Pills */}
-      {Object.entries(reactionMap).map(([key, data]) => {
+      {/* All 6 Earth-Tone Reactions with Dynamic Highlighting & Numerical Badges */}
+      {EARTH_TONE_REACTIONS.map((def) => {
+        const IconComponent = def.icon;
+        const data = reactionMap[def.id];
+        const count = data?.count || 0;
+        const userReacted = Boolean(data?.userReacted);
+        const names = data?.names || [];
+
+        return (
+          <button
+            key={def.id}
+            id={`reaction-btn-${def.id}`}
+            type="button"
+            onClick={() => onReact(def.id)}
+            title={
+              count > 0
+                ? `${def.label} (${count}) by: ${names.join(', ')}`
+                : `React with ${def.label}`
+            }
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-2xs active:scale-95 ${
+              userReacted
+                ? `${def.activeBgClass} ${def.activeBorderClass} ${def.activeTextClass} ring-2 ring-dark-green-800/20 shadow-xs`
+                : count > 0
+                ? `${def.bgClass} ${def.borderClass} ${def.textClass}`
+                : `bg-beige-50/70 hover:bg-beige-100/90 border-beige-200 text-dark-green-900/80 hover:border-beige-300`
+            }`}
+          >
+            <IconComponent className={`w-3.5 h-3.5 ${def.iconColor} shrink-0 transition-transform ${userReacted ? 'scale-110' : ''}`} />
+            <span className="text-[11px] hidden sm:inline">{def.shortLabel}</span>
+
+            {/* Numerical Badge / Count */}
+            {count > 0 && (
+              <span
+                className={`inline-flex items-center justify-center min-w-[18px] px-1.5 py-0.2 rounded-full text-[10px] font-black font-mono transition-all ${
+                  userReacted
+                    ? 'bg-dark-green-900 text-white'
+                    : 'bg-beige-200/80 text-dark-green-900'
+                }`}
+              >
+                {count}
+              </span>
+            )}
+          </button>
+        );
+      })}
+
+      {/* Extra or Legacy Reactions if present */}
+      {extraReactions.map(([key, data]) => {
         const { def, count, userReacted, names } = data;
         const IconComponent = def.icon;
 
@@ -200,37 +250,21 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
             key={key}
             type="button"
             onClick={() => onReact(def.id)}
-            title={`Reacted with ${def.label} by: ${names.join(', ')}`}
+            title={`Reacted with ${def.label} (${count}) by: ${names.join(', ')}`}
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-2xs ${
               userReacted
-                ? `${def.activeBgClass} ${def.activeBorderClass} ${def.activeTextClass} ring-1 ring-dark-green-800/10`
+                ? `${def.activeBgClass} ${def.activeBorderClass} ${def.activeTextClass} ring-2 ring-dark-green-800/20`
                 : `${def.bgClass} ${def.borderClass} ${def.textClass}`
             }`}
           >
             <IconComponent className={`w-3.5 h-3.5 ${def.iconColor} shrink-0`} />
-            <span className="text-[11px] hidden sm:inline">{def.shortLabel}</span>
-            <span className="font-mono text-[11px] font-black">{count}</span>
+            <span className="text-[11px]">{def.shortLabel}</span>
+            <span className="font-mono text-[10px] font-black px-1.5 py-0.2 rounded-full bg-dark-green-900 text-white">
+              {count}
+            </span>
           </button>
         );
       })}
-
-      {/* Quick Reaction Earth-Tone SVG Pickers */}
-      <div className="flex items-center gap-1 ml-1 bg-beige-50/80 p-0.5 rounded-xl border border-beige-200">
-        {EARTH_TONE_REACTIONS.map((def) => {
-          const IconComponent = def.icon;
-          return (
-            <button
-              key={def.id}
-              type="button"
-              onClick={() => onReact(def.id)}
-              className={`p-1.5 rounded-lg border border-transparent hover:border-beige-300 ${def.bgClass} transition-all hover:scale-110 cursor-pointer`}
-              title={def.label}
-            >
-              <IconComponent className={`w-3.5 h-3.5 ${def.iconColor}`} />
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 };

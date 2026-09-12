@@ -25,13 +25,16 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
   isOpen,
   onClose,
 }) => {
-  const { household, categories, expenses, members, user, checkIns, executeMonthEndResetAction } =
+  const { household, categories, expenses, members, user, checkIns, executeMonthEndResetAction, showToast } =
     useHousehold();
 
   const [intentionsText, setIntentionsText] = useState<string>('');
   const [reflectionNote, setReflectionNote] = useState<string>('');
   const [isExecutingReset, setIsExecutingReset] = useState<boolean>(false);
   const [isCompleted, setIsCompleted] = useState<boolean>(false);
+  const [isSwept, setIsSwept] = useState<boolean>(false);
+  const [isBillsSurplusTransferred, setIsBillsSurplusTransferred] = useState<boolean>(false);
+  const [isBillsDeficitDeducted, setIsBillsDeficitDeducted] = useState<boolean>(false);
 
   // Month range
   const monthRange = useMemo(() => {
@@ -51,13 +54,20 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     });
   }, [checkIns, household?.fiscalYearEndMonth]);
 
-  // Compute month metrics
+  // Compute month metrics and isolate Bills evaluation
   const monthStats = useMemo(() => {
     let totalMonthlyBudget = 0;
     let totalSpent = 0;
 
+    const isBills = (c: { group?: string; name: string }) =>
+      c.group?.toLowerCase() === 'bills' || c.name.toLowerCase() === 'bills';
+
+    const fiscalMonth = getFiscalMonthForDate(monthRange.startDate, household?.fiscalYearEndMonth || 12);
+    const weeksInMonth = fiscalMonth.weekCount || 4;
+
     const categoryDetails = categories.map((cat) => {
-      const monthlyBudget = Math.round(((Number(cat.baselineBudget) || 0) * 52) / 12);
+      // Statically derived constant: Baseline Weekly Allocation × Weeks in Fiscal Month
+      const monthlyBudget = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
       const { totalSpent: spent } = calculateCategorySpending(
         expenses,
         cat.id,
@@ -73,8 +83,14 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
         monthlyBudget,
         spent,
         difference: monthlyBudget - spent,
+        isBills: isBills(cat),
       };
     });
+
+    const billsCategories = categoryDetails.filter((c) => c.isBills);
+    const billsMonthlyBudget = billsCategories.reduce((sum, c) => sum + c.monthlyBudget, 0);
+    const billsTotalSpent = billsCategories.reduce((sum, c) => sum + c.spent, 0);
+    const billsDifference = billsMonthlyBudget - billsTotalSpent; // positive = surplus, negative = deficit
 
     const totalSurplus = categoryDetails
       .filter((c) => c.difference > 0)
@@ -103,10 +119,32 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       topWins,
       topOverspent,
       categoryDetails,
+      billsCategories,
+      billsMonthlyBudget,
+      billsTotalSpent,
+      billsDifference,
     };
   }, [categories, expenses, monthRange]);
 
   if (!isOpen) return null;
+
+  const handleSweepToSavings = () => {
+    if (monthStats.totalSurplus <= 0) return;
+    setIsSwept(true);
+    showToast(`Successfully swept ${formatCurrency(monthStats.totalSurplus)} in monthly surplus directly into Savings!`);
+  };
+
+  const handleTransferBillsSurplus = () => {
+    if (monthStats.billsDifference <= 0) return;
+    setIsBillsSurplusTransferred(true);
+    showToast(`Transferred ${formatCurrency(monthStats.billsDifference)} Bills surplus directly into Savings!`, 'success');
+  };
+
+  const handleDeductBillsDeficit = () => {
+    if (monthStats.billsDifference >= 0) return;
+    setIsBillsDeficitDeducted(true);
+    showToast(`Covered ${formatCurrency(Math.abs(monthStats.billsDifference))} Bills deficit by deducting from Savings allocation.`, 'success');
+  };
 
   const handleExecuteReset = async () => {
     setIsExecutingReset(true);
@@ -270,6 +308,156 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   )}
                 </div>
               </div>
+
+              {/* Bills Category Monthly Isolation & Reconciliation */}
+              {monthStats.billsCategories.length > 0 && (
+                <div className="p-4 bg-white border-2 border-beige-300 rounded-2xl space-y-3 shadow-xs">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-beige-100 text-dark-green-900 flex items-center justify-center">
+                        <Sparkles className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-1.5">
+                          <h4 className="text-xs font-black text-dark-green-900">
+                            Bills Category Monthly Reconciliation
+                          </h4>
+                          <span className="text-[10px] font-bold bg-beige-100 text-brown-800 px-1.5 py-0.2 rounded">
+                            Monthly Scope Only
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-dark-grey-600">
+                          Bills are tracked strictly across the full fiscal month (Budget: {formatCurrency(monthStats.billsMonthlyBudget)} &bull; Spent: {formatCurrency(monthStats.billsTotalSpent)}).
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      {monthStats.billsDifference > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-sage-900 bg-sage-200/90 px-2.5 py-1 rounded-full">
+                          <TrendingDown className="w-3.5 h-3.5 text-sage-700" />
+                          <span>+{formatCurrency(monthStats.billsDifference)} Month Surplus</span>
+                        </span>
+                      ) : monthStats.billsDifference < 0 ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-red-700 bg-red-100 px-2.5 py-1 rounded-full">
+                          <TrendingUp className="w-3.5 h-3.5 text-red-600" />
+                          <span>-{formatCurrency(Math.abs(monthStats.billsDifference))} Month Deficit</span>
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-bold text-dark-grey-600 bg-beige-100 px-2.5 py-1 rounded-full">
+                          On Budget ($0)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Action for Bills Month-End Surplus */}
+                  {monthStats.billsDifference > 0 && (
+                    <div className="p-3 bg-sage-50/70 border border-sage-200 rounded-xl flex items-center justify-between gap-3">
+                      <p className="text-xs text-dark-green-950">
+                        Lower utilities/bills this month left <strong>{formatCurrency(monthStats.billsDifference)}</strong> in surplus. Transfer it directly into Savings.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleTransferBillsSurplus}
+                        disabled={isBillsSurplusTransferred}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                          isBillsSurplusTransferred
+                            ? 'bg-sage-200 text-dark-green-900 cursor-default'
+                            : 'bg-dark-green-800 hover:bg-dark-green-900 text-white shadow-xs'
+                        }`}
+                      >
+                        {isBillsSurplusTransferred ? (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Transferred to Savings!</span>
+                          </>
+                        ) : (
+                          <>
+                            <PiggyBank className="w-3.5 h-3.5" />
+                            <span>Transfer Surplus to Savings</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Action for Bills Month-End Deficit */}
+                  {monthStats.billsDifference < 0 && (
+                    <div className="p-3 bg-red-50/70 border border-red-200 rounded-xl flex items-center justify-between gap-3">
+                      <p className="text-xs text-red-950">
+                        Higher bills/utilities resulted in a <strong>{formatCurrency(Math.abs(monthStats.billsDifference))}</strong> deficit. Cover this overage directly from your accumulated Savings allocation.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={handleDeductBillsDeficit}
+                        disabled={isBillsDeficitDeducted}
+                        className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 flex items-center gap-1.5 ${
+                          isBillsDeficitDeducted
+                            ? 'bg-red-200 text-red-900 cursor-default'
+                            : 'bg-red-700 hover:bg-red-800 text-white shadow-xs'
+                        }`}
+                      >
+                        {isBillsDeficitDeducted ? (
+                          <>
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Covered from Savings</span>
+                          </>
+                        ) : (
+                          <>
+                            <AlertTriangle className="w-3.5 h-3.5" />
+                            <span>Deduct {formatCurrency(Math.abs(monthStats.billsDifference))} from Savings</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Single-Click Monthly Check-in Sweep to Savings */}
+              {monthStats.totalSurplus > 0 && (
+                <div className="p-4 bg-gradient-to-br from-sage-50 to-emerald-50 border border-sage-200 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-xl bg-sage-200 text-dark-green-900 flex items-center justify-center">
+                        <PiggyBank className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-black text-dark-green-900">
+                          Month-End Underspent Surplus Sweep
+                        </h4>
+                        <p className="text-[11px] text-dark-grey-600">
+                          You have {formatCurrency(monthStats.totalSurplus)} in net underspent category surplus.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleSweepToSavings}
+                      disabled={isSwept}
+                      className={`px-4 py-2 rounded-xl text-xs font-black transition cursor-pointer flex items-center gap-1.5 shadow-xs ${
+                        isSwept
+                          ? 'bg-sage-200 text-dark-green-900 cursor-default'
+                          : 'bg-dark-green-800 hover:bg-dark-green-900 text-white'
+                      }`}
+                    >
+                      {isSwept ? (
+                        <>
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Swept to Savings!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-3.5 h-3.5" />
+                          <span>Sweep {formatCurrency(monthStats.totalSurplus)} to Savings</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {/* Hard Reset Explanation Card */}
               <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5">

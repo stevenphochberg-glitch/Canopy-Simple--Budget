@@ -24,7 +24,59 @@ export interface UserProfile {
   createdAt?: string;
 }
 
-export type IncomeType = 'predictable' | 'variable';
+export type IncomeType = 'scheduled' | 'variable' | 'predictable';
+
+export type VariableIncomeSubOption = 'context' | 'project' | 'projects' | 'hourly' | 'manual';
+
+export interface ActiveProjectIncome {
+  id: string;
+  projectName: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  totalScheduledIncome: number;
+  payerMemberId?: string;
+  memberId?: string;
+  notes?: string;
+}
+
+export interface HourlyIncomeConfig {
+  id: string;
+  title?: string;
+  hourlyRate: number;
+  estimatedHoursPerWeek: number;
+  paySchedule?: PaySchedule;
+  payFrequency?: PaySchedule;
+  payerMemberId?: string;
+  memberId?: string;
+}
+
+export interface ManualIncomeEntry {
+  id: string;
+  description: string;
+  amount: number;
+  date: string; // YYYY-MM-DD
+  payerMemberId?: string;
+  destination?: 'Income Buffer';
+  category?: string;
+  notes?: string;
+}
+
+export interface OneOffDeposit {
+  id: string;
+  description: string;
+  amount: number;
+  date: string; // YYYY-MM-DD
+  payerMemberId?: string;
+  notes?: string;
+}
+
+export interface VariableIncomeState {
+  activeSubOption: VariableIncomeSubOption;
+  scenarioContext?: string;
+  projects?: ActiveProjectIncome[];
+  hourlyConfigs?: HourlyIncomeConfig[];
+  manualEntries?: ManualIncomeEntry[];
+}
 
 export interface HouseholdMember {
   userId: string;
@@ -46,6 +98,8 @@ export interface Household {
   incomeType?: IncomeType;
   baselineWeeklyBurnRate?: number;
   initialBufferAmount?: number;
+  variableIncomeState?: VariableIncomeState;
+  oneOffDeposits?: OneOffDeposit[];
   roommateCount?: number | null;
   weeklyIncomePool: number;
   calendarMode: CalendarMode;
@@ -57,6 +111,7 @@ export interface Household {
   createdAt: string;
   name?: string;
   lastAutomatedDrawdownWeek?: string;
+  weeklyOverrides?: Record<string, Record<string, number>>; // [weekId]: { [categoryIdOrSlug: string]: number }
 }
 
 export interface FiscalMonth {
@@ -99,20 +154,37 @@ export interface ExtraPaycheckDecision {
 }
 
 export type CategoryGroup = 'Essentials' | 'Fun Money' | 'Bills' | 'Savings' | string;
+export type CategoryType = 'expense' | 'savings';
 export type TimeframeMode = 'week' | 'month';
+
+export interface SavingsGoal {
+  id: string;
+  name: string; // e.g. Down Payment, Student Debt, Emergency Fund, Vacation, Appliance
+  targetAmount: number; // $ Target Goal Amount
+  currentAmount: number; // $ Current Allocated Amount
+  categoryId?: string; // Linked Savings Category ID
+  targetDate?: string; // Optional target completion date
+  isAchieved?: boolean;
+  achievedAt?: string; // YYYY-MM-DD
+  notes?: string;
+}
 
 export interface Category {
   id: string;
   name: string;
   group: CategoryGroup;
+  type: CategoryType; // Required field: 'expense' | 'savings'
   baselineBudget: number;
   currentWeeklyBudget: number;
+  prorationOverride?: number; // Forward-only proration adjustment for the current month
   subcategories?: string[];
   description?: string;
   totalLogged?: number;
   transactionCount?: number;
   icon?: string;
   color?: string;
+  savingsGoals?: SavingsGoal[];
+  rolloverPreference?: string;
 }
 
 export interface TransactionComment {
@@ -168,17 +240,30 @@ export interface DateRange {
   label: string;
 }
 
+export type OverspendResolutionChoice = 'deduct_savings' | 'reduce_future';
+export type UnderspendResolutionChoice = 'savings' | 'rollover';
+
 export interface CategoryRolloverDecision {
   categoryId: string;
   categoryName: string;
   spent: number;
   budget: number;
+  baselineBudget?: number;
+  isOverridden?: boolean;
   difference: number; // positive = surplus (underspent), negative = deficit (overspent)
-  choice: 'savings' | 'rollover' | 'deficit_absorbed';
+  choice: 'savings' | 'rollover' | 'deficit_absorbed' | 'deduct_savings' | 'reduce_future' | 'savings_deficit_fill';
+  overspendChoice?: OverspendResolutionChoice;
+  underspendChoice?: UnderspendResolutionChoice;
+  isProrationDisabled?: boolean;
+  savingsDeduction?: number;
+  futureWeeklyReduction?: number;
+  forcedFallbackApplied?: boolean;
+  effectiveSavingsReduced?: number;
   adjustmentPerWeek: number; // amount added or subtracted to weekly budget for remainder of month
   previousWeeklyBudget: number;
   newWeeklyBudget: number;
   savingsContribution: number;
+  savingsGoalId?: string; // Optional target savings goal for the contribution
 }
 
 export interface CheckIn {
@@ -224,7 +309,7 @@ export interface MonthlyRetrospectiveData {
 
 export interface FeedItem {
   id: string;
-  type: 'transaction' | 'comment' | 'reaction' | 'checkin' | 'freshStart' | 'monthEndReset' | 'message';
+  type: 'transaction' | 'comment' | 'reaction' | 'checkin' | 'freshStart' | 'monthEndReset' | 'message' | 'savingsGoalAchieved' | 'milestone';
   content: string;
   authorId: string;
   authorName: string;
@@ -241,6 +326,12 @@ export interface FeedItem {
     date: string;
     payerName?: string;
   };
+  savingsGoal?: {
+    id: string;
+    name: string;
+    targetAmount: number;
+    currentAmount: number;
+  };
   emoji?: string;
   metadata?: {
     totalSaved?: number;
@@ -255,6 +346,8 @@ export interface OnboardingData {
   incomeType?: IncomeType;
   baselineWeeklyBurnRate?: number;
   initialBufferAmount?: number;
+  variableIncomeState?: VariableIncomeState;
+  oneOffDeposits?: OneOffDeposit[];
   roommateCount: number;
   members: HouseholdMember[];
   categories?: Category[];

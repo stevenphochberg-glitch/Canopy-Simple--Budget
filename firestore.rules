@@ -29,7 +29,7 @@ service cloud.firestore {
       allow read: if isSignedIn();
       allow create: if isOwner(userId) && isValidId(userId) &&
         incoming().userId == request.auth.uid;
-      allow update: if isOwner(userId) && isValidId(userId) &&
+      allow update: if isSignedIn() && isValidId(userId) &&
         incoming().userId == existing().userId;
       allow delete: if false;
     }

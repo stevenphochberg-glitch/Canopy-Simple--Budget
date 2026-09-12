@@ -1,6 +1,5 @@
 import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { formatCurrency, formatDateDisplay, getCategoryBudgetForTimeframe, calculateCategorySpending } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   Search,
@@ -23,11 +22,23 @@ import {
   Tag,
   Layers,
 } from 'lucide-react';
-import { Category, Expense } from '../../types';
+import { Category, Expense, BillFrequency } from '../../types';
+import { parseExpenseTimestamp } from '../../lib/calculations';
 import { EarthToneReaction } from '../Common/EarthToneReaction';
+import { BudgetProgressBar } from '../Common/BudgetProgressBar';
+import { SavingsGoalsLedgerSection } from './SavingsGoalsLedgerSection';
+import {
+  formatCurrency,
+  formatDateDisplay,
+  getCategoryBudgetForTimeframe,
+  calculateCategorySpending,
+  getProratedExpenseAmount,
+} from '../../lib/calculations';
+import { getFiscalMonthForDate } from '../../lib/fiscal445';
 
 export const CategoryLedgerView: React.FC = () => {
   const {
+    household,
     categories,
     expenses,
     members,
@@ -51,12 +62,14 @@ export const CategoryLedgerView: React.FC = () => {
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(null);
 
-  // Edit Expense modal/inline state
-  const [editingExpenseId, setEditingExpenseId] = useState<string | null>(null);
+  // Edit Expense modal state
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [editDesc, setEditDesc] = useState('');
   const [editAmount, setEditAmount] = useState<number>(0);
   const [editCategoryId, setEditCategoryId] = useState('');
   const [editDate, setEditDate] = useState('');
+  const [editPayerId, setEditPayerId] = useState('');
+  const [editBillFrequency, setEditBillFrequency] = useState<'none' | 'weekly' | 'monthly' | 'annually'>('none');
 
   // Find currently active category object (if any)
   const activeCategory = useMemo(() => {
@@ -113,12 +126,22 @@ export const CategoryLedgerView: React.FC = () => {
     return filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
   }, [filteredExpenses]);
 
-  // Category specific budget stats
+  // Category specific budget stats:
+  // - Month View: Statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month)
+  // - Week View: Active weekly allocation (with active overrides/adjustments)
   const categoryBudgetStats = useMemo(() => {
     if (!activeCategory) return null;
+    const isMonthView = timeframeMode === 'month';
+    const baseWeekly = isMonthView
+      ? (activeCategory.baselineBudget || activeCategory.currentWeeklyBudget)
+      : (activeCategory.currentWeeklyBudget || activeCategory.baselineBudget);
+    const fiscalMonth = getFiscalMonthForDate(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
+    const weeksInMonth = fiscalMonth.weekCount || 4;
+
     const budgetForTimeframe = getCategoryBudgetForTimeframe(
-      activeCategory.currentWeeklyBudget || activeCategory.baselineBudget,
-      timeframeMode
+      baseWeekly,
+      timeframeMode,
+      weeksInMonth
     );
     const { totalSpent, count } = calculateCategorySpending(
       expenses,
@@ -129,7 +152,7 @@ export const CategoryLedgerView: React.FC = () => {
     const remaining = budgetForTimeframe - totalSpent;
     const percentage = budgetForTimeframe > 0 ? Math.round((totalSpent / budgetForTimeframe) * 100) : 0;
     return { budgetForTimeframe, totalSpent, count, remaining, percentage };
-  }, [activeCategory, expenses, timeframeMode, activeDateRange]);
+  }, [activeCategory, expenses, timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
 
   const toggleComments = (expenseId: string) => {
     setExpandedComments((prev) => ({ ...prev, [expenseId]: !prev[expenseId] }));
@@ -144,23 +167,28 @@ export const CategoryLedgerView: React.FC = () => {
   };
 
   const startEditExpense = (exp: Expense) => {
-    setEditingExpenseId(exp.id);
+    setEditingExpense(exp);
     setEditDesc(exp.description);
     setEditAmount(exp.amount);
     setEditCategoryId(exp.categoryId);
     setEditDate(exp.date);
+    setEditPayerId(exp.loggedByUserId || user?.userId || 'usr_self');
+    setEditBillFrequency(exp.billFrequency || 'none');
   };
 
-  const saveEditExpense = (expenseId: string) => {
-    if (!editDesc.trim() || editAmount <= 0) return;
-    updateExpense(expenseId, {
+  const saveEditExpense = () => {
+    if (!editingExpense || !editDesc.trim() || editAmount <= 0) return;
+    const frequency = editBillFrequency === 'none' ? undefined : (editBillFrequency as BillFrequency);
+    updateExpense(editingExpense.id, {
       description: editDesc.trim(),
       amount: Number(editAmount),
       categoryId: editCategoryId,
       date: editDate,
-      timestamp: new Date(editDate).getTime(),
+      timestamp: parseExpenseTimestamp({ date: editDate }),
+      loggedByUserId: editPayerId,
+      billFrequency: frequency,
     });
-    setEditingExpenseId(null);
+    setEditingExpense(null);
   };
 
   return (
@@ -330,46 +358,54 @@ export const CategoryLedgerView: React.FC = () => {
           </div>
 
           {/* Subcategories Tags (Only displayed in Category Drill-Down / History view) */}
-          {activeCategory.subcategories && activeCategory.subcategories.length > 0 && (
-            <div className="bg-beige-50/70 border border-beige-200 rounded-2xl p-3 space-y-1.5">
-              <div className="flex items-center gap-1.5 text-[11px] font-bold text-dark-green-900 uppercase tracking-wider">
-                <Layers className="w-3.5 h-3.5 text-sage-700" />
-                <span>Included Subcategories & Examples:</span>
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {activeCategory.subcategories.map((sub, idx) => (
-                  <span
-                    key={idx}
-                    className="text-xs px-2.5 py-0.5 bg-white border border-beige-300 rounded-lg text-brown-900 font-medium shadow-2xs"
-                  >
-                    {sub}
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
+          {(() => {
+            const subList = (activeCategory.subcategories && activeCategory.subcategories.length > 0)
+              ? activeCategory.subcategories
+              : (activeCategory.description ? activeCategory.description.split(',').map((s) => s.trim()).filter(Boolean) : []);
 
-          {/* Progress bar */}
+            if (subList.length === 0) return null;
+
+            return (
+              <div className="bg-beige-50/70 border border-beige-200 rounded-2xl p-3 space-y-1.5">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-dark-green-900 uppercase tracking-wider">
+                  <Layers className="w-3.5 h-3.5 text-sage-700" />
+                  <span>Included Subcategories & Examples:</span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {subList.map((sub, idx) => (
+                    <span
+                      key={idx}
+                      className="text-xs px-2.5 py-0.5 bg-white border border-beige-300 rounded-lg text-brown-900 font-medium shadow-2xs"
+                    >
+                      {sub}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Progress bar with Category Classification Color Logic */}
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-xs font-bold text-dark-green-900">
               <span>Timeframe Consumption</span>
               <span>{categoryBudgetStats.percentage}%</span>
             </div>
-            <div className="w-full h-2.5 bg-beige-100 rounded-full overflow-hidden border border-beige-200">
-              <div
-                className={`h-full ${
-                  categoryBudgetStats.percentage >= 100
-                    ? 'bg-red-600'
-                    : categoryBudgetStats.percentage >= 75
-                    ? 'bg-amber-600'
-                    : 'bg-sage-600'
-                } transition-all duration-500 rounded-full`}
-                style={{ width: `${Math.min(100, Math.max(0, categoryBudgetStats.percentage))}%` }}
-              />
-            </div>
+            <BudgetProgressBar
+              spent={categoryBudgetStats.totalSpent}
+              budget={categoryBudgetStats.budgetForTimeframe}
+              categoryType={activeCategory.type || (activeCategory.group?.toLowerCase() === 'savings' ? 'savings' : 'expense')}
+              height="h-3"
+            />
           </div>
         </div>
       )}
+
+      {/* SAVINGS GOALS SECTION (Only in Ledger Tab for Savings Categories) */}
+      {activeCategory &&
+        (activeCategory.type === 'savings' || activeCategory.group?.toLowerCase() === 'savings') && (
+          <SavingsGoalsLedgerSection category={activeCategory} />
+        )}
 
       {/* FILTER & SEARCH TOOLBAR */}
       <div className="bg-white border border-beige-200/90 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3.5">
@@ -477,7 +513,6 @@ export const CategoryLedgerView: React.FC = () => {
           {filteredExpenses.map((exp) => {
             const cat = categories.find((c) => c.id === exp.categoryId);
             const member = members.find((m) => m.userId === exp.loggedByUserId);
-            const isEditing = editingExpenseId === exp.id;
             const comments = exp.comments || [];
             const reactions = exp.reactions || [];
             const isCommentsOpen = !!expandedComments[exp.id];
@@ -503,180 +538,128 @@ export const CategoryLedgerView: React.FC = () => {
                 id={`expense-card-${exp.id}`}
                 className="bg-white border border-beige-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-beige-300 transition-all space-y-3"
               >
-                {isEditing ? (
-                  /* INLINE EDIT MODE */
-                  <div className="space-y-3 p-2 bg-beige-50/80 rounded-xl border border-beige-200">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-extrabold text-dark-green-900">
-                        Edit Transaction
-                      </span>
-                      <button
-                        onClick={() => setEditingExpenseId(null)}
-                        className="text-brown-700 hover:text-dark-green-900 text-xs"
-                      >
-                        Cancel
-                      </button>
+                {/* TRANSACTION DISPLAY ROW */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  {/* Left: Category Icon, Description, Date, Payer */}
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div
+                      onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
+                      title={`Filter by ${cat?.name || 'Category'}`}
+                      className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                    >
+                      <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-5 h-5" />
                     </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5 text-xs">
-                      <div>
-                        <label className="block font-bold text-dark-green-900 mb-1">Description</label>
-                        <input
-                          type="text"
-                          value={editDesc}
-                          onChange={(e) => setEditDesc(e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-beige-300 rounded-lg text-dark-green-900"
-                        />
+
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
+                          {exp.description}
+                        </h4>
+                        {cat && (
+                          <span
+                            onClick={() => setSelectedLedgerCategoryId(cat.id)}
+                            className="text-[10px] font-bold uppercase tracking-wider bg-beige-100 hover:bg-beige-200 text-dark-green-900 border border-beige-300 px-2 py-0.5 rounded-full cursor-pointer transition"
+                          >
+                            {cat.name}
+                          </span>
+                        )}
+                        {exp.billFrequency && exp.billFrequency !== 'weekly' && (
+                          <span className="text-[10px] font-bold text-sage-800 bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-full capitalize flex items-center gap-1">
+                            <Tag className="w-2.5 h-2.5" />
+                            {exp.billFrequency} (Prorated)
+                          </span>
+                        )}
+                        {exp.receiptImgUrl && (
+                          <button
+                            onClick={() => setSelectedReceiptUrl(exp.receiptImgUrl || null)}
+                            className="text-[10px] font-bold text-sage-800 bg-sage-50 hover:bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1 cursor-pointer"
+                          >
+                            <Receipt className="w-3 h-3" />
+                            <span>Receipt</span>
+                          </button>
+                        )}
                       </div>
-                      <div>
-                        <label className="block font-bold text-dark-green-900 mb-1">Amount ($)</label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          value={editAmount}
-                          onChange={(e) => setEditAmount(parseFloat(e.target.value) || 0)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-beige-300 rounded-lg text-dark-green-900 font-mono"
-                        />
+
+                      <div className="flex items-center gap-3 text-xs text-brown-700">
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          {formatDateDisplay(exp.date)}
+                        </span>
+                        <span>&bull;</span>
+                        <div className="flex items-center gap-1.5">
+                          {member?.avatarUrl ? (
+                            <img
+                              src={member.avatarUrl}
+                              alt={member.name}
+                              className="w-4 h-4 rounded-full object-cover border border-beige-300"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <User className="w-3.5 h-3.5 text-brown-700" />
+                          )}
+                          <span className="font-medium">{member?.name || 'Household Member'}</span>
+                        </div>
                       </div>
-                      <div>
-                        <label className="block font-bold text-dark-green-900 mb-1">Category</label>
-                        <select
-                          value={editCategoryId}
-                          onChange={(e) => setEditCategoryId(e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-beige-300 rounded-lg text-dark-green-900"
-                        >
-                          {categories.map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name} ({c.group})
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block font-bold text-dark-green-900 mb-1">Date</label>
-                        <input
-                          type="date"
-                          value={editDate}
-                          onChange={(e) => setEditDate(e.target.value)}
-                          className="w-full px-2.5 py-1.5 bg-white border border-beige-300 rounded-lg text-dark-green-900"
-                        />
-                      </div>
-                    </div>
-                    <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        onClick={() => saveEditExpense(exp.id)}
-                        className="px-3 py-1 bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer"
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>Save Changes</span>
-                      </button>
                     </div>
                   </div>
-                ) : (
-                  /* NORMAL DISPLAY MODE */
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    {/* Left: Category Icon, Description, Date, Payer */}
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div
-                        onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
-                        title={`Filter by ${cat?.name || 'Category'}`}
-                        className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0 cursor-pointer hover:scale-105 transition-transform"
-                      >
-                        <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-5 h-5" />
-                      </div>
 
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
-                            {exp.description}
-                          </h4>
-                          {cat && (
-                            <span
-                              onClick={() => setSelectedLedgerCategoryId(cat.id)}
-                              className="text-[10px] font-bold uppercase tracking-wider bg-beige-100 hover:bg-beige-200 text-dark-green-900 border border-beige-300 px-2 py-0.5 rounded-full cursor-pointer transition"
-                            >
-                              {cat.name}
-                            </span>
-                          )}
-                          {exp.receiptImgUrl && (
-                            <button
-                              onClick={() => setSelectedReceiptUrl(exp.receiptImgUrl || null)}
-                              className="text-[10px] font-bold text-sage-800 bg-sage-50 hover:bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1 cursor-pointer"
-                            >
-                              <Receipt className="w-3 h-3" />
-                              <span>Receipt</span>
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-brown-700">
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDateDisplay(exp.date)}
-                          </span>
-                          <span>&bull;</span>
-                          <div className="flex items-center gap-1.5">
-                            {member?.avatarUrl ? (
-                              <img
-                                src={member.avatarUrl}
-                                alt={member.name}
-                                className="w-4 h-4 rounded-full object-cover border border-beige-300"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <User className="w-3.5 h-3.5 text-brown-700" />
-                            )}
-                            <span className="font-medium">{member?.name || 'Household Member'}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Right: Amount & Actions */}
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
+                  {/* Right: Amount & Actions */}
+                  <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
+                    <div className="text-right">
                       <div className="text-lg sm:text-xl font-black text-dark-green-900 tracking-tight font-mono">
                         {formatCurrency(exp.amount)}
                       </div>
+                      {exp.billFrequency && exp.billFrequency !== 'weekly' && (
+                        <div className="text-[10px] font-bold text-sage-800 tracking-tight">
+                          Prorated: {formatCurrency(getProratedExpenseAmount(exp, activeDateRange.startDate, activeDateRange.endDate, household?.fiscalYearEndMonth || 12))}
+                        </div>
+                      )}
+                    </div>
 
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={() => toggleComments(exp.id)}
-                          id={`comment-toggle-${exp.id}`}
-                          className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
-                            comments.length > 0 || isCommentsOpen
-                              ? 'bg-sage-100 text-dark-green-900 border-sage-300'
-                              : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
-                          }`}
-                          title="View or add comments"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          <span className="font-bold text-[11px]">{comments.length}</span>
-                        </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleComments(exp.id);
+                        }}
+                        id={`comment-toggle-${exp.id}`}
+                        className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
+                          comments.length > 0 || isCommentsOpen
+                            ? 'bg-sage-100 text-dark-green-900 border-sage-300'
+                            : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
+                        }`}
+                        title="View or add comments"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span className="font-bold text-[11px]">{comments.length}</span>
+                      </button>
 
-                        <button
-                          onClick={() => startEditExpense(exp)}
-                          id={`edit-exp-${exp.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
-                          title="Edit transaction"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditExpense(exp);
+                        }}
+                        id={`edit-exp-${exp.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
+                        title="Edit transaction"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
 
-                        <button
-                          onClick={() => {
-                            if (window.confirm(`Delete expense "${exp.description}"?`)) {
-                              deleteExpense(exp.id);
-                            }
-                          }}
-                          id={`del-exp-${exp.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-brown-700 hover:text-red-700 border border-beige-300 transition cursor-pointer"
-                          title="Delete transaction"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await deleteExpense(exp.id);
+                        }}
+                        id={`del-exp-${exp.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-brown-700 hover:text-red-700 border border-beige-300 transition cursor-pointer"
+                        title="Delete transaction"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
-                )}
+                </div>
 
                 {/* SOCIAL REACTIONS BAR (CUSTOM EARTH-TONE SVG ICONS) */}
                 <div className="pt-1.5 border-t border-beige-100">
@@ -790,10 +773,199 @@ export const CategoryLedgerView: React.FC = () => {
             <div className="flex justify-end">
               <button
                 onClick={() => setSelectedReceiptUrl(null)}
-                className="px-4 py-2 bg-dark-green-800 text-white rounded-xl text-xs font-bold"
+                className="px-4 py-2 bg-dark-green-800 text-white rounded-xl text-xs font-bold cursor-pointer"
               >
                 Close Preview
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COMPREHENSIVE EDIT TRANSACTION MODAL */}
+      {editingExpense && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/40 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white border border-beige-200 rounded-3xl p-6 shadow-2xl max-w-lg w-full space-y-5 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-beige-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-extrabold text-dark-green-900">
+                    Edit Transaction
+                  </h3>
+                  <p className="text-xs text-brown-700">
+                    Update all transaction fields, payer, and bill proration.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingExpense(null)}
+                className="p-1.5 text-brown-700 hover:text-dark-green-900 rounded-lg hover:bg-beige-100 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* Description */}
+              <div className="space-y-1">
+                <label className="block font-bold uppercase tracking-wider text-[10px] text-dark-green-900">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  value={editDesc}
+                  onChange={(e) => setEditDesc(e.target.value)}
+                  placeholder="e.g. Electric bill, Grocery run"
+                  className="w-full px-3.5 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 focus:bg-white"
+                />
+              </div>
+
+              {/* Amount & Date Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block font-bold uppercase tracking-wider text-[10px] text-dark-green-900">
+                    Amount ($)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(parseFloat(e.target.value) || 0)}
+                    className="w-full px-3.5 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-bold text-dark-green-900 font-mono focus:outline-hidden focus:border-dark-green-800 focus:bg-white"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block font-bold uppercase tracking-wider text-[10px] text-dark-green-900">
+                    Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editDate}
+                    onChange={(e) => setEditDate(e.target.value)}
+                    className="w-full px-3.5 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 focus:bg-white"
+                  />
+                </div>
+              </div>
+
+              {/* Category & Payer Grid */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block font-bold uppercase tracking-wider text-[10px] text-dark-green-900">
+                    Category
+                  </label>
+                  <select
+                    value={editCategoryId}
+                    onChange={(e) => setEditCategoryId(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 focus:bg-white"
+                  >
+                    {categories.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.group})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="block font-bold uppercase tracking-wider text-[10px] text-dark-green-900">
+                    Paid By
+                  </label>
+                  <select
+                    value={editPayerId}
+                    onChange={(e) => setEditPayerId(e.target.value)}
+                    className="w-full px-3 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 focus:bg-white"
+                  >
+                    {members.map((m) => (
+                      <option key={m.userId} value={m.userId}>
+                        {m.name} {m.userId === user?.userId ? '(You)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Bill Frequency & Proration Model Box */}
+              <div className="p-4 bg-sage-50/80 border border-sage-200 rounded-2xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                    <Tag className="w-3.5 h-3.5 text-sage-700" />
+                    Bill Frequency & Proration Model
+                  </label>
+                  <span className="text-[9px] font-extrabold text-sage-800 bg-sage-200/70 px-2 py-0.5 rounded-full">
+                    Paid-Only Proration
+                  </span>
+                </div>
+
+                <select
+                  value={editBillFrequency}
+                  onChange={(e) => setEditBillFrequency(e.target.value as any)}
+                  className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-bold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800"
+                >
+                  <option value="none">One-Time Expense (No Proration - 100% charged to date)</option>
+                  <option value="weekly">Weekly Recurring (Charged fully to active week)</option>
+                  <option value="monthly">Monthly Recurring (Prorated across current 4-4-5 month weeks)</option>
+                  <option value="annually">Annual Recurring (Prorated evenly across 52 fiscal weeks)</option>
+                </select>
+
+                {/* Proration Calculation Preview */}
+                {editBillFrequency !== 'none' && editBillFrequency !== 'weekly' && (
+                  <div className="p-2.5 bg-white/90 border border-sage-200 rounded-xl space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-semibold text-dark-grey-600">
+                        Calculated Weekly Impact:
+                      </span>
+                      <span className="text-xs font-black text-dark-green-900 font-mono">
+                        {editBillFrequency === 'monthly'
+                          ? `~$${(editAmount / 4.333).toFixed(2)} / wk`
+                          : `~$${(editAmount / 52).toFixed(2)} / wk`}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-brown-700 leading-tight">
+                      Only this paid bill will be prorated into active budget timeframes. Future recurring bills are not forward-generated until paid.
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between gap-2.5 pt-2 border-t border-beige-100">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (editingExpense) {
+                    await deleteExpense(editingExpense.id);
+                    setEditingExpense(null);
+                  }
+                }}
+                className="px-3.5 py-2 text-red-700 hover:text-red-800 hover:bg-red-50 text-xs font-bold rounded-xl transition flex items-center gap-1.5 border border-red-200 cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setEditingExpense(null)}
+                  className="px-4 py-2 text-brown-700 hover:text-dark-green-900 text-xs font-bold hover:bg-beige-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={saveEditExpense}
+                  disabled={!editDesc.trim() || editAmount <= 0}
+                  className="px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Save Changes</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
