@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Category, Expense, TimeframeMode, DateRange } from '../../types';
 import {
   formatCurrency,
@@ -6,6 +6,8 @@ import {
   calculateCategorySpending,
   getWeekId,
   getCategoryEffectiveWeeklyBudget,
+  getWeekRange,
+  formatLocalDate,
 } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
 import { Plus, AlertCircle, CheckCircle2, ChevronRight, Sparkles } from 'lucide-react';
@@ -28,7 +30,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   dateRange,
   onQuickLog,
 }) => {
-  const { household, navigateToCategoryLedger } = useHousehold();
+  const { household, navigateToCategoryLedger, checkIns } = useHousehold();
 
   const isSavings = category.type === 'savings' || category.group === 'Savings';
   const categoryType = isSavings ? 'savings' : 'expense';
@@ -63,10 +65,44 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     dateRange.endDate
   );
 
-  const remaining = budgetForTimeframe - totalSpent;
+  // Check if previous week's check-in has been completed for Savings card instant fill
+  const prevWeekRange = useMemo(() => {
+    const targetDate = new Date(dateRange.startDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+    return getWeekRange(targetDate, household?.firstDayOfWeek || 'Monday', 0);
+  }, [dateRange.startDate, household?.firstDayOfWeek]);
+
+  const hasPrevWeekCheckIn = useMemo(() => {
+    const startStr = formatLocalDate(prevWeekRange.startDate);
+    const endStr = formatLocalDate(prevWeekRange.endDate);
+    return (checkIns || []).some(
+      (c) =>
+        c.status === 'completed' &&
+        (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+    );
+  }, [checkIns, prevWeekRange]);
+
+  const hasThisWeekCheckIn = useMemo(() => {
+    const startStr = formatLocalDate(dateRange.startDate);
+    const endStr = formatLocalDate(dateRange.endDate);
+    return (checkIns || []).some(
+      (c) =>
+        c.status === 'completed' &&
+        (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+    );
+  }, [checkIns, dateRange]);
+
+  // Requirement 7: The Savings category must instantly start with a filled budget/progress bar
+  // immediately after the previous week's check-in is complete.
+  // If the previous week's check-in has not yet been executed, the current week's Savings category remains at $0.
+  const isSavingsFunded = hasPrevWeekCheckIn || hasThisWeekCheckIn;
+  const effectiveSpent = isSavings
+    ? (!isMonthView ? (isSavingsFunded ? budgetForTimeframe : (totalSpent > 0 ? totalSpent : 0)) : totalSpent)
+    : totalSpent;
+
+  const remaining = budgetForTimeframe - effectiveSpent;
   const isOverBudget = !isSavings && remaining < 0;
-  const isSavingsAchieved = isSavings && totalSpent >= budgetForTimeframe && budgetForTimeframe > 0;
-  const percentage = budgetForTimeframe > 0 ? Math.round((totalSpent / budgetForTimeframe) * 100) : 0;
+  const isSavingsAchieved = isSavings && effectiveSpent >= budgetForTimeframe && budgetForTimeframe > 0;
+  const percentage = budgetForTimeframe > 0 ? Math.round((effectiveSpent / budgetForTimeframe) * 100) : 0;
 
   // Determine icon background style based on bucket color/group
   let iconBg = 'bg-sage-100 text-dark-green-900 border-sage-200';
@@ -145,7 +181,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
               {isSavings ? 'Deposited / Target' : 'Logged / Budget'}
             </span>
             <div className="text-lg sm:text-2xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1 flex-wrap">
-              <span>{formatCurrency(totalSpent)}</span>
+              <span>{formatCurrency(effectiveSpent)}</span>
               <span className="text-xs font-normal text-brown-700 ml-1">
                 /{' '}
                 {isProratedWeek && overrideAmount !== undefined ? (
@@ -173,7 +209,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
           {/* Remaining Difference */}
           <div className="text-right space-y-0.5">
             <span className="text-[10px] uppercase font-bold tracking-wider text-dark-grey-600 block">
-              {isSavings ? (totalSpent >= budgetForTimeframe ? 'Goal Met!' : 'To Goal') : isOverBudget ? 'Over Budget' : 'Remaining'}
+              {isSavings ? (effectiveSpent >= budgetForTimeframe ? 'Goal Met!' : 'To Goal') : isOverBudget ? 'Over Budget' : 'Remaining'}
             </span>
             <div
               className={`text-sm sm:text-base font-extrabold font-mono ${
@@ -185,9 +221,9 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
               }`}
             >
               {isSavings
-                ? totalSpent >= budgetForTimeframe
-                  ? `+${formatCurrency(totalSpent - budgetForTimeframe)} extra`
-                  : `${formatCurrency(budgetForTimeframe - totalSpent)} needed`
+                ? effectiveSpent >= budgetForTimeframe
+                  ? `+${formatCurrency(effectiveSpent - budgetForTimeframe)} extra`
+                  : `${formatCurrency(budgetForTimeframe - effectiveSpent)} needed`
                 : isOverBudget
                 ? `-${formatCurrency(Math.abs(remaining))}`
                 : `${formatCurrency(remaining)} left`}
@@ -199,7 +235,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
         <div className="space-y-1.5 pt-1">
           <BudgetProgressBar
             categoryType={categoryType}
-            spent={totalSpent}
+            spent={effectiveSpent}
             budget={budgetForTimeframe}
             heightClass="h-2.5"
           />
@@ -225,7 +261,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
         ) : isSavingsAchieved ? (
           <div className="flex items-center gap-1 text-emerald-800 font-semibold">
             <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
-            <span>Target Achieved ({formatCurrency(totalSpent)} saved)</span>
+            <span>Target Achieved ({formatCurrency(effectiveSpent)} saved)</span>
           </div>
         ) : (
           <div className="flex items-center gap-1 text-sage-800 font-semibold">

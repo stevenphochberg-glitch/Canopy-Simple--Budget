@@ -1,11 +1,19 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { Category, Expense, DateRange } from '../../types';
-import { formatCurrency, getWeekRange, isExpenseInDateRange, formatLocalDate, getTodayLocalDateString } from '../../lib/calculations';
+import { Category, Expense, DateRange, CategoryRolloverDecision } from '../../types';
+import {
+  formatCurrency,
+  getWeekRange,
+  isExpenseInDateRange,
+  formatLocalDate,
+  getTodayLocalDateString,
+  getWeekId,
+  getCategoryEffectiveWeeklyBudget,
+  calculateCategorySpending,
+} from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   calculateCheckInStatus,
-  calculateCategoryDecisions,
   getRemainingWeeksInMonth,
 } from '../../lib/checkInCalculations';
 import {
@@ -20,18 +28,27 @@ import {
   ChevronLeft,
   X,
   Plus,
-  Shield,
   Receipt,
   Sparkles,
   Calendar,
   Layers,
   Check,
   AlertTriangle,
+  Info,
+  DollarSign,
+  ArrowDownRight,
+  ArrowUpRight,
 } from 'lucide-react';
 
 interface WeeklyCheckInModalProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+interface OverspendInputState {
+  potPull: number;
+  savingsPull: number;
+  overrideMode: 'none' | 'accept_loss' | 'pull_future_savings';
 }
 
 export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, onClose }) => {
@@ -52,14 +69,18 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
 
   // Active step in the check-in wizard (1: Review expenses, 2: Rollovers/Deficits, 3: Confirm)
   const [step, setStep] = useState<1 | 2 | 3>(1);
-  const [userChoices, setUserChoices] = useState<
-    Record<string, 'savings' | 'rollover' | 'deduct_savings' | 'reduce_future'>
-  >({});
+
+  // Step 2 Underspend decisions: categoryId -> 'transfer_pot' | 'prorate'
+  const [underspendChoices, setUnderspendChoices] = useState<Record<string, 'transfer_pot' | 'prorate'>>({});
+
+  // Step 2 Overspend inputs: categoryId -> { potPull, savingsPull, overrideMode }
+  const [overspendInputs, setOverspendInputs] = useState<Record<string, OverspendInputState>>({});
+
   const [intentionsNote, setIntentionsNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [forceEarlyCheckIn, setForceEarlyCheckIn] = useState<boolean>(false);
 
-  // Inline Expense Logging State (Dynamic inline render, no overlapping modal)
+  // Inline Expense Logging State
   const [showInlineLogExpense, setShowInlineLogExpense] = useState<boolean>(false);
   const [inlineAmount, setInlineAmount] = useState<string>('');
   const [inlineDescription, setInlineDescription] = useState<string>('');
@@ -91,6 +112,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       }
       setStep(1);
       setForceEarlyCheckIn(false);
+      setUnderspendChoices({});
+      setOverspendInputs({});
     }
   }, [isOpen, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange]);
 
@@ -119,8 +142,6 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     );
   }, [selectedWeekRange, checkIns]);
 
-  // If this is a historical week, it has already passed!
-  // Therefore it is NEVER "too early" to check in, and is NEVER restricted to preview mode!
   const isTooEarly = !isHistoricalWeek && !statusInfo.isLastDayOfWeek && !statusInfo.isPastDue && !forceEarlyCheckIn;
   const isPreviewMode = !isHistoricalWeek && !statusInfo.isLastDayOfWeek && !statusInfo.isPastDue && !forceEarlyCheckIn;
 
@@ -134,48 +155,356 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   // Calculate remaining weeks in month relative to selected week
   const targetRemainingWeeks = useMemo(() => {
     if (isHistoricalWeek) {
-      return getRemainingWeeksInMonth(selectedWeekRange.endDate);
+      return Math.max(1, getRemainingWeeksInMonth(selectedWeekRange.endDate));
     }
-    return statusInfo.remainingWeeksInMonth;
+    return Math.max(1, statusInfo.remainingWeeksInMonth);
   }, [isHistoricalWeek, selectedWeekRange.endDate, statusInfo.remainingWeeksInMonth]);
 
   const remainingWeeksInMonth = targetRemainingWeeks;
-  const { isPastDue, isLastDayOfWeek, isFirstWeekGracePeriod } = statusInfo;
+  const activeWeekId = useMemo(() => {
+    return getWeekId(selectedWeekRange, household?.firstDayOfWeek || 'Monday');
+  }, [selectedWeekRange, household?.firstDayOfWeek]);
 
-  // Calculate pacing decisions for each category with Savings Goal priority gating and Bills isolation
+  // Isolate categories by group
+  const isBillsCategory = (c: Category) =>
+    c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+
+  const isSavingsCategory = (c: Category) =>
+    c.type === 'savings' || c.group?.toLowerCase() === 'savings';
+
+  const expenseCategories = useMemo(() => {
+    return categories.filter((c) => !isBillsCategory(c) && !isSavingsCategory(c));
+  }, [categories]);
+
+  const savingsCategories = useMemo(() => {
+    return categories.filter(isSavingsCategory);
+  }, [categories]);
+
+  const baselineSavingsTarget = useMemo(() => {
+    return savingsCategories.reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
+  }, [savingsCategories]);
+
+  // Dynamic Pacing Calculations for Step 2
+  const categoryPacings = useMemo(() => {
+    return expenseCategories.map((cat) => {
+      const effective = getCategoryEffectiveWeeklyBudget(cat, activeWeekId, household);
+      const budget = effective.budget;
+      const baseline = effective.baseline;
+      const { totalSpent: spent } = calculateCategorySpending(
+        expenses,
+        cat.id,
+        selectedWeekRange.startDate,
+        selectedWeekRange.endDate
+      );
+      const diff = budget - spent;
+      return {
+        category: cat,
+        budget,
+        baseline,
+        spent,
+        diff,
+        isUnderspent: diff > 0,
+        isOverspent: diff < 0,
+        isExact: diff === 0,
+        leftover: Math.max(0, diff),
+        deficit: Math.max(0, -diff),
+      };
+    });
+  }, [expenseCategories, activeWeekId, household, expenses, selectedWeekRange]);
+
+  // 1. Calculate Gross Transfer Pot generated from underspent categories that chose 'transfer_pot'
+  const totalTransferPotGenerated = useMemo(() => {
+    return categoryPacings
+      .filter((p) => p.isUnderspent)
+      .reduce((sum, p) => {
+        const choice = underspendChoices[p.category.id] || 'transfer_pot';
+        if (choice === 'transfer_pot') {
+          return sum + p.leftover;
+        }
+        return sum;
+      }, 0);
+  }, [categoryPacings, underspendChoices]);
+
+  // 2. Calculate Total Pot Pulled and Total Savings Pulled to cover deficits
+  const { totalPotPulledForDeficits, totalSavingsPulledForDeficits } = useMemo(() => {
+    let potSum = 0;
+    let savingsSum = 0;
+
+    categoryPacings
+      .filter((p) => p.isOverspent)
+      .forEach((p) => {
+        const input = overspendInputs[p.category.id];
+        if (input) {
+          potSum += Number(input.potPull) || 0;
+          savingsSum += Number(input.savingsPull) || 0;
+        }
+      });
+
+    return {
+      totalPotPulledForDeficits: potSum,
+      totalSavingsPulledForDeficits: savingsSum,
+    };
+  }, [categoryPacings, overspendInputs]);
+
+  // 3. Calculate Available Net Transfer Pot remaining
+  const availableTransferPot = useMemo(() => {
+    return Math.max(0, totalTransferPotGenerated - totalPotPulledForDeficits);
+  }, [totalTransferPotGenerated, totalPotPulledForDeficits]);
+
+  // 4. Calculate Dynamic Savings for This Week (Savings Expansion per Requirement 5)
+  // If funds remain in Transfer Pot, automatically route exact remaining amount into current week's Savings category,
+  // dynamically expanding the total savings budget for the week.
   const {
-    decisions,
-    baselineSavingsGoal,
-    effectiveSavingsGoal,
-    isSavingsGoalMet,
-    totalSaved,
-    totalSurplus,
-    totalDeficit,
-    totalSpent,
-    totalBudget,
-    totalSavingsDeducted,
-    billsTotalBudget,
-    billsTotalSpent,
+    savingsBudgetThisWeek,
+    savingsSavedThisWeek,
+    savingsExpandedBonus,
+    futureSavingsReductionTotal,
   } = useMemo(() => {
-    return calculateCategoryDecisions(
-      categories,
-      expenses,
-      selectedWeekRange,
-      targetRemainingWeeks,
-      userChoices,
-      household
-    );
-  }, [categories, expenses, selectedWeekRange, targetRemainingWeeks, userChoices, household]);
+    const bonus = availableTransferPot;
+    const baseTarget = baselineSavingsTarget;
+    const baseSaved = Math.max(0, baseTarget - totalSavingsPulledForDeficits);
+
+    const totalBudgetThisWeek = baseTarget + bonus;
+    const totalSavedThisWeek = baseSaved + bonus;
+
+    // Calculate any future savings reductions chosen via overspend overrides
+    let futureSavingsReduction = 0;
+    categoryPacings
+      .filter((p) => p.isOverspent)
+      .forEach((p) => {
+        const input = overspendInputs[p.category.id];
+        if (input?.overrideMode === 'pull_future_savings') {
+          const covered = (Number(input.potPull) || 0) + (Number(input.savingsPull) || 0);
+          const uncovered = Math.max(0, p.deficit - covered);
+          const monthlyCap = p.baseline * remainingWeeksInMonth;
+          const excess = Math.max(0, uncovered - monthlyCap);
+          futureSavingsReduction += Math.round(excess / remainingWeeksInMonth);
+        }
+      });
+
+    return {
+      savingsBudgetThisWeek: totalBudgetThisWeek,
+      savingsSavedThisWeek: totalSavedThisWeek,
+      savingsExpandedBonus: bonus,
+      futureSavingsReductionTotal: futureSavingsReduction,
+    };
+  }, [
+    availableTransferPot,
+    baselineSavingsTarget,
+    totalSavingsPulledForDeficits,
+    categoryPacings,
+    overspendInputs,
+    remainingWeeksInMonth,
+  ]);
+
+  // 5. Build dynamic category future budget projections
+  const categoryProjections = useMemo(() => {
+    return categoryPacings.map((p) => {
+      const cat = p.category;
+      let followingWeeksBudget = p.baseline;
+      let statusLabel = 'Unchanged';
+      let statusType: 'neutral' | 'prorated_up' | 'prorated_down' | 'loss_accepted' | 'future_savings_pulled' = 'neutral';
+      let deltaAmount = 0;
+
+      if (p.isUnderspent) {
+        const choice = underspendChoices[cat.id] || 'transfer_pot';
+        if (choice === 'prorate') {
+          const addPerWeek = Math.round(p.leftover / remainingWeeksInMonth);
+          followingWeeksBudget = p.baseline + addPerWeek;
+          deltaAmount = addPerWeek;
+          statusLabel = `+${formatCurrency(addPerWeek)}/wk prorated`;
+          statusType = 'prorated_up';
+        } else {
+          followingWeeksBudget = p.baseline;
+          statusLabel = 'Transferred to pot (baseline retained)';
+          statusType = 'neutral';
+        }
+      } else if (p.isOverspent) {
+        const input = overspendInputs[cat.id] || { potPull: 0, savingsPull: 0, overrideMode: 'none' };
+        const covered = (Number(input.potPull) || 0) + (Number(input.savingsPull) || 0);
+        const uncovered = Math.max(0, p.deficit - covered);
+        const monthlyCap = p.baseline * remainingWeeksInMonth;
+
+        if (uncovered === 0) {
+          followingWeeksBudget = p.baseline;
+          statusLabel = 'Covered via pot/savings';
+          statusType = 'neutral';
+        } else if (uncovered <= monthlyCap) {
+          const redPerWeek = Math.round(uncovered / remainingWeeksInMonth);
+          followingWeeksBudget = Math.max(0, p.baseline - redPerWeek);
+          deltaAmount = redPerWeek;
+          statusLabel = `-${formatCurrency(redPerWeek)}/wk auto-prorated`;
+          statusType = 'prorated_down';
+        } else {
+          // Exceeds monthly capacity
+          if (input.overrideMode === 'accept_loss') {
+            followingWeeksBudget = 0;
+            statusLabel = 'Loss accepted ($0/wk future budget)';
+            statusType = 'loss_accepted';
+          } else if (input.overrideMode === 'pull_future_savings') {
+            followingWeeksBudget = 0;
+            statusLabel = 'Covered from future savings ($0/wk)';
+            statusType = 'future_savings_pulled';
+          } else {
+            followingWeeksBudget = 0;
+            statusLabel = 'Deficit exceeds capacity (Action required)';
+            statusType = 'prorated_down';
+          }
+        }
+      }
+
+      return {
+        ...p,
+        followingWeeksBudget,
+        statusLabel,
+        statusType,
+        deltaAmount,
+      };
+    });
+  }, [categoryPacings, underspendChoices, overspendInputs, remainingWeeksInMonth]);
+
+  // Overall totals for Step 1, 2, 3
+  const totalSpent = useMemo(() => {
+    return categoryPacings.reduce((sum, p) => sum + p.spent, 0);
+  }, [categoryPacings]);
+
+  const totalBudget = useMemo(() => {
+    return categoryPacings.reduce((sum, p) => sum + p.budget, 0);
+  }, [categoryPacings]);
+
+  const totalDeficit = useMemo(() => {
+    return categoryPacings.filter((p) => p.isOverspent).reduce((sum, p) => sum + p.deficit, 0);
+  }, [categoryPacings]);
+
+  const totalSurplus = useMemo(() => {
+    return categoryPacings.filter((p) => p.isUnderspent).reduce((sum, p) => sum + p.leftover, 0);
+  }, [categoryPacings]);
+
+  // Check if any overspent category with excess deficit has not yet selected a valid resolution
+  const hasUnresolvedExcessDeficit = useMemo(() => {
+    return categoryPacings.some((p) => {
+      if (!p.isOverspent) return false;
+      const input = overspendInputs[p.category.id] || { potPull: 0, savingsPull: 0, overrideMode: 'none' };
+      const covered = (Number(input.potPull) || 0) + (Number(input.savingsPull) || 0);
+      const uncovered = Math.max(0, p.deficit - covered);
+      const monthlyCap = p.baseline * remainingWeeksInMonth;
+      if (uncovered > monthlyCap && input.overrideMode === 'none') {
+        return true;
+      }
+      return false;
+    });
+  }, [categoryPacings, overspendInputs, remainingWeeksInMonth]);
+
+  // Final Decisions compiled for completion
+  const decisions: CategoryRolloverDecision[] = useMemo(() => {
+    const list: CategoryRolloverDecision[] = [];
+
+    categoryProjections.forEach((proj) => {
+      const cat = proj.category;
+      let choice: CategoryRolloverDecision['choice'] = 'rollover';
+
+      if (proj.isUnderspent) {
+        const uChoice = underspendChoices[cat.id] || 'transfer_pot';
+        choice = uChoice === 'prorate' ? 'rollover' : 'savings';
+      } else if (proj.isOverspent) {
+        const input = overspendInputs[cat.id];
+        if (input?.savingsPull && input.savingsPull > 0) {
+          choice = 'deduct_savings';
+        } else {
+          choice = 'reduce_future';
+        }
+      }
+
+      list.push({
+        categoryId: cat.id,
+        categoryName: cat.name,
+        spent: proj.spent,
+        budget: proj.budget,
+        baselineBudget: proj.baseline,
+        isOverridden: proj.followingWeeksBudget !== proj.baseline,
+        difference: proj.diff,
+        choice,
+        adjustmentPerWeek: proj.followingWeeksBudget - proj.baseline,
+        previousWeeklyBudget: proj.budget,
+        newWeeklyBudget: proj.followingWeeksBudget,
+        savingsContribution: proj.isUnderspent && (underspendChoices[cat.id] || 'transfer_pot') === 'transfer_pot' ? proj.leftover : 0,
+      });
+    });
+
+    // Add Savings categories decisions
+    savingsCategories.forEach((cat) => {
+      const futureSavingsBudget = Math.max(0, Number(cat.baselineBudget) - futureSavingsReductionTotal);
+      list.push({
+        categoryId: cat.id,
+        categoryName: cat.name,
+        spent: savingsSavedThisWeek,
+        budget: savingsBudgetThisWeek,
+        baselineBudget: Number(cat.baselineBudget),
+        isOverridden: futureSavingsBudget !== Number(cat.baselineBudget),
+        difference: savingsSavedThisWeek - savingsBudgetThisWeek,
+        choice: 'savings',
+        adjustmentPerWeek: futureSavingsBudget - Number(cat.baselineBudget),
+        previousWeeklyBudget: Number(cat.baselineBudget),
+        newWeeklyBudget: futureSavingsBudget,
+        savingsContribution: savingsExpandedBonus,
+      });
+    });
+
+    return list;
+  }, [
+    categoryProjections,
+    savingsCategories,
+    underspendChoices,
+    overspendInputs,
+    savingsSavedThisWeek,
+    savingsBudgetThisWeek,
+    futureSavingsReductionTotal,
+    savingsExpandedBonus,
+  ]);
 
   if (!isOpen) return null;
 
-  const handleChoiceChange = (
-    categoryId: string,
-    choice: 'savings' | 'rollover' | 'deduct_savings' | 'reduce_future'
-  ) => {
-    setUserChoices((prev) => ({
+  // Handlers for Underspend choices
+  const handleUnderspendChoice = (categoryId: string, choice: 'transfer_pot' | 'prorate') => {
+    setUnderspendChoices((prev) => ({
       ...prev,
       [categoryId]: choice,
+    }));
+  };
+
+  // Handlers for Overspend inputs
+  const handleOverspendPotPull = (categoryId: string, val: number, maxAllowed: number) => {
+    const safeVal = Math.max(0, Math.min(val, maxAllowed));
+    setOverspendInputs((prev) => ({
+      ...prev,
+      [categoryId]: {
+        potPull: safeVal,
+        savingsPull: prev[categoryId]?.savingsPull || 0,
+        overrideMode: prev[categoryId]?.overrideMode || 'none',
+      },
+    }));
+  };
+
+  const handleOverspendSavingsPull = (categoryId: string, val: number, maxAllowed: number) => {
+    const safeVal = Math.max(0, Math.min(val, maxAllowed));
+    setOverspendInputs((prev) => ({
+      ...prev,
+      [categoryId]: {
+        potPull: prev[categoryId]?.potPull || 0,
+        savingsPull: safeVal,
+        overrideMode: prev[categoryId]?.overrideMode || 'none',
+      },
+    }));
+  };
+
+  const handleOverspendOverrideMode = (categoryId: string, mode: 'accept_loss' | 'pull_future_savings') => {
+    setOverspendInputs((prev) => ({
+      ...prev,
+      [categoryId]: {
+        potPull: prev[categoryId]?.potPull || 0,
+        savingsPull: prev[categoryId]?.savingsPull || 0,
+        overrideMode: mode,
+      },
     }));
   };
 
@@ -201,7 +530,6 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         date: inlineDate || formatLocalDate(selectedWeekRange.endDate),
         loggedByUserId: inlineLoggedBy || user?.userId || 'usr_self',
       });
-      // Reset inline form
       setInlineAmount('');
       setInlineDescription('');
       setShowInlineLogExpense(false);
@@ -217,6 +545,11 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       showToast('Check-in submission is disabled during Preview mode.', 'info');
       return;
     }
+    if (hasUnresolvedExcessDeficit) {
+      showToast('Please resolve overspent categories before confirming.', 'error');
+      return;
+    }
+
     setIsSubmitting(true);
     try {
       await completeWeeklyCheckIn({
@@ -224,7 +557,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         weekEndDate: formatLocalDate(selectedWeekRange.endDate),
         notes: intentionsNote.trim() || undefined,
         decisions,
-        totalSaved,
+        totalSaved: savingsSavedThisWeek,
         totalSpent,
         totalBudget,
       });
@@ -244,978 +577,1210 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
-      <div className="bg-white border border-beige-200 rounded-3xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
+      <div className="bg-white border border-beige-200 rounded-3xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-4 bg-gradient-to-r from-beige-50 to-sage-50 border-b border-beige-200 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shadow-xs">
-              <Clock className="w-5 h-5" />
+        <div className="px-5 sm:px-6 py-3.5 bg-gradient-to-r from-beige-50 to-sage-50 border-b border-beige-200 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shadow-xs shrink-0">
+              <Sparkles className="w-5 h-5 text-sage-300" />
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] font-black uppercase tracking-wider text-sage-800 bg-sage-100 px-2 py-0.5 rounded-full">
-                  {isHistoricalWeek ? 'Historical Check-In' : 'Weekly Alignment'}
-                </span>
-                {/* Week switcher controls */}
-                <div className="flex items-center gap-1 bg-white/90 border border-beige-300 rounded-xl px-1.5 py-0.5 shadow-2xs">
-                  <button
-                    type="button"
-                    onClick={() => navigateModalWeek(-1)}
-                    title="Previous week"
-                    className="p-0.5 hover:bg-beige-100 rounded text-dark-green-900 transition cursor-pointer"
-                  >
-                    <ChevronLeft className="w-3.5 h-3.5" />
-                  </button>
-                  <span className="text-[11px] font-extrabold text-dark-green-950 px-1 whitespace-nowrap">
-                    {selectedWeekRange.label}
+                <h3 className="text-base sm:text-lg font-black text-dark-green-950 truncate">
+                  Weekly Check-In & Budget Balancing
+                </h3>
+                {isHistoricalWeek ? (
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-brown-100 text-brown-900 border border-brown-300">
+                    Historical Week
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => navigateModalWeek(1)}
-                    title="Next week"
-                    className="p-0.5 hover:bg-beige-100 rounded text-dark-green-900 transition cursor-pointer"
-                  >
-                    <ChevronRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                ) : isPreviewMode ? (
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                    Preview Mode
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-sage-100 text-sage-900 border border-sage-300">
+                    Active Alignment
+                  </span>
+                )}
               </div>
-              <h2 className="text-lg sm:text-xl font-black text-dark-green-900 leading-tight">
-                {isHistoricalWeek ? 'Historical Weekly Check-In' : 'Household Weekly Check-In'}
-              </h2>
-              {existingCheckInForWeek && (
-                <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-800 mt-0.5">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>
-                    Check-in completed for this week (${formatCurrency(existingCheckInForWeek.totalSaved)} saved). Submitting will reconcile and update it.
-                  </span>
-                </div>
-              )}
+              <span className="text-xs text-brown-700 block truncate">
+                {selectedWeekRange.label} &bull; {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'} remaining in month
+              </span>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-2 rounded-xl text-brown-700 hover:text-dark-green-900 hover:bg-beige-200 transition cursor-pointer"
-            title="Close"
+            className="p-2 text-brown-700 hover:text-dark-green-900 hover:bg-beige-200/60 rounded-xl transition cursor-pointer shrink-0"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Informational screen if too early in the week */}
-        {isTooEarly ? (
-          <div className="p-6 sm:p-8 space-y-6 overflow-y-auto">
-            <div className="bg-gradient-to-br from-sage-50 to-beige-50 border border-sage-200 rounded-3xl p-6 text-center space-y-4">
-              <div className="w-14 h-14 mx-auto bg-sage-100 text-dark-green-800 rounded-2xl flex items-center justify-center">
-                <Calendar className="w-7 h-7" />
+        {/* Wizard Steps Indicator */}
+        <div className="px-6 py-2.5 bg-beige-50/50 border-b border-beige-200/80 flex items-center justify-between text-xs font-bold shrink-0">
+          <div className="flex items-center gap-2 sm:gap-6 w-full max-w-xl">
+            <div
+              className={`flex items-center gap-1.5 ${
+                step === 1 ? 'text-dark-green-900' : 'text-dark-grey-600'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black ${
+                  step === 1
+                    ? 'bg-dark-green-800 text-white'
+                    : step > 1
+                    ? 'bg-sage-600 text-white'
+                    : 'bg-beige-200 text-dark-grey-600'
+                }`}
+              >
+                1
+              </span>
+              <span className="hidden sm:inline">Review Transactions</span>
+            </div>
+
+            <ChevronRight className="w-3.5 h-3.5 text-beige-300 shrink-0" />
+
+            <div
+              className={`flex items-center gap-1.5 ${
+                step === 2 ? 'text-dark-green-900' : 'text-dark-grey-600'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black ${
+                  step === 2
+                    ? 'bg-dark-green-800 text-white'
+                    : step > 2
+                    ? 'bg-sage-600 text-white'
+                    : 'bg-beige-200 text-dark-grey-600'
+                }`}
+              >
+                2
+              </span>
+              <span className="hidden sm:inline">Rollover & Deficits</span>
+            </div>
+
+            <ChevronRight className="w-3.5 h-3.5 text-beige-300 shrink-0" />
+
+            <div
+              className={`flex items-center gap-1.5 ${
+                step === 3 ? 'text-dark-green-900' : 'text-dark-grey-600'
+              }`}
+            >
+              <span
+                className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-black ${
+                  step === 3 ? 'bg-dark-green-800 text-white' : 'bg-beige-200 text-dark-grey-600'
+                }`}
+              >
+                3
+              </span>
+              <span className="hidden sm:inline">Summary & Confirm</span>
+            </div>
+          </div>
+
+          {/* Week Switcher Buttons */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => navigateModalWeek(-1)}
+              title="Previous Week"
+              className="p-1.5 rounded-lg bg-white border border-beige-200 hover:bg-beige-100 text-dark-green-900 transition cursor-pointer"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => navigateModalWeek(1)}
+              title="Next Week"
+              className="p-1.5 rounded-lg bg-white border border-beige-200 hover:bg-beige-100 text-dark-green-900 transition cursor-pointer"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Modal Body Scroll Area */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {/* ========================================================================= */}
+          {/* STEP 1: REVIEW TRANSACTIONS                                               */}
+          {/* ========================================================================= */}
+          {step === 1 && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-black text-dark-green-900 flex items-center gap-1.5">
+                    <Receipt className="w-4 h-4 text-dark-green-700" />
+                    Transactions for {selectedWeekRange.label}
+                  </h4>
+                  <p className="text-xs text-brown-700">
+                    Verify all purchases are logged before balancing category rollovers and deficits.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowInlineLogExpense((prev) => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition cursor-pointer self-start sm:self-auto"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>{showInlineLogExpense ? 'Close Form' : 'Log Expense'}</span>
+                </button>
               </div>
-              <div className="space-y-1.5 max-w-md mx-auto">
-                <h3 className="text-xl font-black text-dark-green-900">
-                  Check-In Unlocks on {statusInfo.checkInDayName}
-                </h3>
-                <p className="text-xs text-brown-700 leading-relaxed">
-                  Your household check-in is scheduled for every{' '}
-                  <strong className="text-dark-green-900 font-bold">{statusInfo.checkInDayName}</strong>{' '}
-                  ({statusInfo.daysUntilCheckIn} {statusInfo.daysUntilCheckIn === 1 ? 'day' : 'days'} away).
-                  This gives you time to finish the week’s spending before calculating rollovers and surplus savings.
+
+              {/* Inline Log Expense Form */}
+              {showInlineLogExpense && (
+                <div className="p-4 bg-sage-50/60 border border-sage-200 rounded-2xl space-y-3 animate-in fade-in duration-150">
+                  <h5 className="text-xs font-black text-dark-green-900">
+                    Add Missing Expense to {selectedWeekRange.label}
+                  </h5>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-dark-grey-600 block mb-1">
+                        Amount ($) *
+                      </label>
+                      <input
+                        type="number"
+                        step="0.01"
+                        placeholder="0.00"
+                        value={inlineAmount}
+                        onChange={(e) => setInlineAmount(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-beige-300 rounded-xl text-xs font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-dark-grey-600 block mb-1">
+                        Description *
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="e.g. Trader Joe's Groceries"
+                        value={inlineDescription}
+                        onChange={(e) => setInlineDescription(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-dark-grey-600 block mb-1">
+                        Category
+                      </label>
+                      <select
+                        value={inlineCategoryId}
+                        onChange={(e) => setInlineCategoryId(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                      >
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.group})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[10px] font-bold uppercase text-dark-grey-600 block mb-1">
+                        Date
+                      </label>
+                      <input
+                        type="date"
+                        value={inlineDate}
+                        onChange={(e) => setInlineDate(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowInlineLogExpense(false)}
+                      className="px-3 py-1.5 text-xs text-brown-700 hover:text-dark-green-900 font-bold"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveInlineExpense}
+                      disabled={isSavingInline}
+                      className="px-4 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-black rounded-xl transition"
+                    >
+                      {isSavingInline ? 'Adding...' : 'Add Expense to Week'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Transactions List */}
+              {weekExpenses.length === 0 ? (
+                <div className="p-8 text-center bg-beige-50/50 border border-dashed border-beige-200 rounded-2xl space-y-2">
+                  <Receipt className="w-8 h-8 mx-auto text-brown-700" />
+                  <h4 className="text-sm font-bold text-dark-green-900">
+                    No transactions logged for this week
+                  </h4>
+                  <p className="text-xs text-brown-700 max-w-sm mx-auto">
+                    If you spent money on groceries, bills, or dining, log them now before calculating your rollover budgets.
+                  </p>
+                </div>
+              ) : (
+                <div className="border border-beige-200 rounded-2xl overflow-hidden divide-y divide-beige-100 max-h-72 overflow-y-auto">
+                  {weekExpenses.map((exp) => {
+                    const cat = categories.find((c) => c.id === exp.categoryId);
+                    const payer = members.find((m) => m.userId === exp.loggedByUserId);
+
+                    return (
+                      <div
+                        key={exp.id}
+                        className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-beige-50/50 transition"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
+                            <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-dark-green-900 truncate">
+                                {exp.description}
+                              </span>
+                              <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-1.5 py-0.2 rounded">
+                                {cat?.name || 'Uncategorized'}
+                              </span>
+                            </div>
+                            <span className="text-[10px] text-dark-grey-600 block">
+                              {exp.date} &bull; Paid by {payer?.name || 'Member'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <span className="text-xs font-black text-dark-green-900">
+                          {formatCurrency(exp.amount)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Total Logged Summary Bar */}
+              <div className="p-3.5 bg-beige-100/70 rounded-2xl flex items-center justify-between text-xs font-bold text-dark-green-900">
+                <span>Total Logged This Week ({weekExpenses.length} items):</span>
+                <span className="text-sm font-black">{formatCurrency(totalSpent)}</span>
+              </div>
+            </div>
+          )}
+
+          {/* ========================================================================= */}
+          {/* STEP 2: ROLLOVER & DEFICITS (REDESIGNED REVIEW & BALANCING)               */}
+          {/* ========================================================================= */}
+          {step === 2 && (
+            <div className="space-y-6">
+              {/* TOP SECTION: GLOBAL TRANSFER POT CARD */}
+              <div className="p-4 sm:p-5 bg-gradient-to-br from-dark-green-900 via-dark-green-800 to-sage-900 text-white rounded-3xl shadow-md border border-dark-green-950 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-xs border border-white/20 flex items-center justify-center text-sage-300 shrink-0">
+                      <Layers className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] uppercase font-extrabold tracking-wider text-sage-200">
+                          Global Transfer Pot
+                        </span>
+                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white/20 text-white">
+                          Real-Time Pool
+                        </span>
+                      </div>
+                      <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight text-white flex items-baseline gap-2">
+                        <span>{formatCurrency(availableTransferPot)}</span>
+                        <span className="text-xs font-medium text-sage-200">available to balance deficits or savings</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/15 text-[11px] font-bold text-sage-200">
+                      +{formatCurrency(totalTransferPotGenerated)} transferred
+                    </div>
+                    {totalPotPulledForDeficits > 0 && (
+                      <div className="px-2.5 py-1 rounded-xl bg-red-500/20 border border-red-300/30 text-[11px] font-bold text-red-200">
+                        -{formatCurrency(totalPotPulledForDeficits)} used for deficits
+                      </div>
+                    )}
+                    {availableTransferPot > 0 && (
+                      <div className="px-2.5 py-1 rounded-xl bg-emerald-500/20 border border-emerald-300/30 text-[11px] font-bold text-emerald-200 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-emerald-300" />
+                        <span>+{formatCurrency(availableTransferPot)} routing to Savings</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-sage-100/90 leading-relaxed border-t border-white/10 pt-2.5">
+                  Underspent envelope surpluses can be pooled into this Transfer Pot to absorb category overspends. Any remaining pot funds automatically expand your weekly Savings deposit!
                 </p>
               </div>
 
-              {/* Current pacing preview */}
-              <div className="grid grid-cols-2 gap-3 max-w-md mx-auto pt-2">
-                <div className="p-3 bg-white border border-beige-200 rounded-2xl text-left">
-                  <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
-                    Spent So Far
-                  </span>
-                  <span className="text-base font-black text-dark-green-900">
-                    {formatCurrency(totalSpent)}
-                  </span>
-                  <span className="text-[10px] text-brown-700 block">
-                    {weekExpenses.length} transactions
+              {/* REVIEW SECTION UI: SIDE-BY-SIDE (THIS WEEK vs FOLLOWING WEEKS) */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-black uppercase tracking-wider text-dark-grey-600">
+                    Category Overview & Projection Matrix
+                  </h4>
+                  <span className="text-[11px] text-brown-700 font-semibold">
+                    Dynamic updates in real-time
                   </span>
                 </div>
-                <div className="p-3 bg-white border border-beige-200 rounded-2xl text-left">
-                  <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
-                    Weekly Budget
-                  </span>
-                  <span className="text-base font-black text-dark-green-900">
-                    {formatCurrency(totalBudget)}
-                  </span>
-                  <span className="text-[10px] text-sage-800 font-bold block">
-                    {totalBudget - totalSpent >= 0 ? `${formatCurrency(totalBudget - totalSpent)} remaining` : `${formatCurrency(Math.abs(totalBudget - totalSpent))} over`}
-                  </span>
-                </div>
-              </div>
-            </div>
 
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="w-full sm:w-auto px-5 py-2.5 bg-beige-100 hover:bg-beige-200 text-dark-green-900 text-xs font-bold rounded-2xl transition cursor-pointer"
-              >
-                Wait for {statusInfo.checkInDayName}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setForceEarlyCheckIn(true)}
-                className="w-full sm:w-auto px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-2xl shadow-xs transition flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <span>Preview & Check In Early</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            {/* Step Wizard Stepper */}
-            <div className="px-6 py-3 bg-beige-50/70 border-b border-beige-200 flex items-center justify-between text-xs shrink-0">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setStep(1)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold transition cursor-pointer ${
-                    step === 1
-                      ? 'bg-dark-green-800 text-white'
-                      : 'text-dark-grey-600 hover:bg-beige-200'
-                  }`}
-                >
-                  <span className="w-4 h-4 rounded-full bg-white/20 text-[10px] flex items-center justify-center">
-                    1
-                  </span>
-                  <span>1. Review Transactions ({weekExpenses.length})</span>
-                </button>
-
-                <ChevronRight className="w-3.5 h-3.5 text-brown-700" />
-
-                <button
-                  onClick={() => setStep(2)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold transition cursor-pointer ${
-                    step === 2
-                      ? 'bg-dark-green-800 text-white'
-                      : 'text-dark-grey-600 hover:bg-beige-200'
-                  }`}
-                >
-                  <span className="w-4 h-4 rounded-full bg-white/20 text-[10px] flex items-center justify-center">
-                    2
-                  </span>
-                  <span>2. Rollover & Deficits</span>
-                </button>
-
-                <ChevronRight className="w-3.5 h-3.5 text-brown-700" />
-
-                <button
-                  onClick={() => setStep(3)}
-                  className={`flex items-center gap-1.5 px-3 py-1 rounded-xl font-bold transition cursor-pointer ${
-                    step === 3
-                      ? 'bg-dark-green-800 text-white'
-                      : 'text-dark-grey-600 hover:bg-beige-200'
-                  }`}
-                >
-                  <span className="w-4 h-4 rounded-full bg-white/20 text-[10px] flex items-center justify-center">
-                    3
-                  </span>
-                  <span>3. Summary & Confirm</span>
-                </button>
-              </div>
-
-              {isHistoricalWeek ? (
-                <span className="text-[10px] font-bold text-dark-green-900 bg-sage-200 px-2.5 py-0.5 rounded-full">
-                  Historical Week
-                </span>
-              ) : isPastDue ? (
-                <span className="text-[10px] font-bold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">
-                  Past-Due Cycle
-                </span>
-              ) : isPreviewMode ? (
-                <span className="text-[10px] font-bold text-amber-800 bg-amber-100 px-2 py-0.5 rounded-md">
-                  Preview Mode
-                </span>
-              ) : null}
-            </div>
-
-            {/* Modal Body Container */}
-            <div className="flex-1 p-6 overflow-y-auto space-y-6 max-h-[80vh]">
-              {/* STEP 1: REVIEW TRANSACTIONS */}
-              {step === 1 && (
-                <div className="space-y-4">
-                  <div className="p-4 bg-sage-50/80 border border-sage-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="space-y-0.5">
-                      <h4 className="text-sm font-bold text-dark-green-900">
-                        Household Accountability Review
-                      </h4>
-                      <p className="text-xs text-brown-700">
-                        Review all expenses logged this week. Confirm that neither partner missed any receipts.
-                      </p>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* LEFT COLUMN: THIS WEEK (CURRENT CATEGORY PROGRESS) */}
+                  <div className="bg-beige-50/60 border border-beige-200 rounded-3xl p-4 space-y-3.5">
+                    <div className="flex items-center justify-between border-b border-beige-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Calendar className="w-4 h-4 text-dark-green-800" />
+                        <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
+                          This Week Progress
+                        </h5>
+                      </div>
+                      <span className="text-[11px] font-bold text-brown-700">
+                        Total Spent: {formatCurrency(totalSpent)}
+                      </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setShowInlineLogExpense((prev) => !prev)}
-                      className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
-                        showInlineLogExpense
-                          ? 'bg-dark-green-800 text-white shadow-xs'
-                          : 'bg-white border border-beige-300 hover:bg-sage-100 text-dark-green-900'
-                      }`}
-                    >
-                      {showInlineLogExpense ? (
-                        <>
-                          <X className="w-3.5 h-3.5" />
-                          <span>Close Logger</span>
-                        </>
-                      ) : (
-                        <>
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>Log Missing Item</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Dynamic Inline Expense Logger */}
-                  {showInlineLogExpense && (
-                    <div className="p-4 sm:p-5 bg-white border-2 border-dark-green-700/40 rounded-2xl shadow-sm space-y-4 animate-in fade-in duration-150">
-                      <div className="flex items-center justify-between border-b border-beige-200 pb-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded-lg bg-dark-green-800 text-white flex items-center justify-center">
-                            <Plus className="w-4 h-4" />
-                          </div>
-                          <div>
-                            <h5 className="text-xs font-extrabold text-dark-green-900">
-                              Add Missing Expense Inline
-                            </h5>
-                            <span className="text-[10px] text-brown-700">
-                              Saves directly to your household week ledger
-                            </span>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setShowInlineLogExpense(false)}
-                          className="text-brown-700 hover:text-dark-green-900 p-1 rounded-lg hover:bg-beige-100 transition cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-                        {/* Amount */}
-                        <div className="sm:col-span-4 space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                            Amount ($) *
-                          </label>
-                          <div className="relative">
-                            <span className="absolute left-3 top-2.5 text-sm font-bold text-dark-green-900">$</span>
-                            <input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              placeholder="0.00"
-                              value={inlineAmount}
-                              onChange={(e) => setInlineAmount(e.target.value)}
-                              className="w-full pl-7 pr-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white"
-                              autoFocus
-                            />
-                          </div>
-                          <div className="flex gap-1 pt-1">
-                            {[10, 25, 50, 100].map((preset) => (
-                              <button
-                                key={preset}
-                                type="button"
-                                onClick={() => setInlineAmount(preset.toString())}
-                                className="px-2 py-0.5 rounded-md bg-beige-100 hover:bg-sage-100 text-[10px] font-bold text-dark-green-900 transition cursor-pointer"
-                              >
-                                +${preset}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        {/* Description */}
-                        <div className="sm:col-span-8 space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                            Merchant / Description *
-                          </label>
-                          <input
-                            type="text"
-                            placeholder="e.g. Trader Joe's, Shell Gas, Pharmacy"
-                            value={inlineDescription}
-                            onChange={(e) => setInlineDescription(e.target.value)}
-                            className="w-full px-3.5 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs sm:text-sm font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        {/* Category Dropdown (Strict text, no colorful emojis) */}
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                            Category *
-                          </label>
-                          <select
-                            value={inlineCategoryId || categories[0]?.id || ''}
-                            onChange={(e) => setInlineCategoryId(e.target.value)}
-                            className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                          >
-                            {categories.map((cat) => (
-                              <option key={cat.id} value={cat.id}>
-                                {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        {/* Date */}
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                            Date
-                          </label>
-                          <input
-                            type="date"
-                            value={inlineDate}
-                            onChange={(e) => setInlineDate(e.target.value)}
-                            className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                          />
-                        </div>
-
-                        {/* Paid By */}
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                            Paid By
-                          </label>
-                          <select
-                            value={inlineLoggedBy}
-                            onChange={(e) => setInlineLoggedBy(e.target.value)}
-                            className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                          >
-                            {members.map((m) => (
-                              <option key={m.userId} value={m.userId}>
-                                {m.name} {m.userId === user?.userId ? '(You)' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-beige-100">
-                        <button
-                          type="button"
-                          onClick={() => setShowInlineLogExpense(false)}
-                          className="px-3.5 py-1.5 text-brown-700 hover:text-dark-green-900 text-xs font-bold transition cursor-pointer"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleSaveInlineExpense}
-                          disabled={isSavingInline}
-                          className="px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                        >
-                          {isSavingInline ? (
-                            <span>Adding to Week...</span>
-                          ) : (
-                            <>
-                              <Plus className="w-3.5 h-3.5" />
-                              <span>Add Expense to Week</span>
-                            </>
-                          )}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {weekExpenses.length === 0 ? (
-                    <div className="p-8 text-center bg-beige-50/50 border border-dashed border-beige-200 rounded-2xl space-y-2">
-                      <Receipt className="w-8 h-8 mx-auto text-brown-700" />
-                      <h4 className="text-sm font-bold text-dark-green-900">
-                        No transactions logged for this week
-                      </h4>
-                      <p className="text-xs text-brown-700 max-w-sm mx-auto">
-                        If you spent money on groceries, bills, or dining, log them now before calculating your rollover budgets.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="border border-beige-200 rounded-2xl overflow-hidden divide-y divide-beige-100">
-                      {weekExpenses.map((exp) => {
-                        const cat = categories.find((c) => c.id === exp.categoryId);
-                        const payer = members.find((m) => m.userId === exp.loggedByUserId);
+                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                      {/* Expense Categories */}
+                      {categoryProjections.map((p) => {
+                        const cat = p.category;
+                        const spentPct = p.budget > 0 ? Math.min(100, Math.round((p.spent / p.budget) * 100)) : 0;
+                        const uChoice = underspendChoices[cat.id] || 'transfer_pot';
 
                         return (
                           <div
-                            key={exp.id}
-                            className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-beige-50/50 transition"
+                            key={cat.id}
+                            className="bg-white border border-beige-200/90 rounded-2xl p-3 space-y-2 shadow-2xs"
                           >
-                            <div className="flex items-center gap-3 min-w-0">
-                              <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
-                                <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
-                              </div>
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <span className="text-xs font-bold text-dark-green-900 truncate">
-                                    {exp.description}
-                                  </span>
-                                  <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-1.5 py-0.2 rounded">
-                                    {cat?.name || 'Uncategorized'}
-                                  </span>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-7 h-7 rounded-xl bg-beige-100 flex items-center justify-center shrink-0">
+                                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
                                 </div>
-                                <span className="text-[10px] text-dark-grey-600 block">
-                                  {exp.date} &bull; Paid by {payer?.name || 'Member'}
+                                <span className="text-xs font-extrabold text-dark-green-900 truncate">
+                                  {cat.name}
                                 </span>
                               </div>
+
+                              <span className="text-xs font-black font-mono text-dark-green-900">
+                                {formatCurrency(p.spent)}{' '}
+                                <span className="text-[10px] text-dark-grey-600 font-normal">
+                                  / {formatCurrency(p.budget)}
+                                </span>
+                              </span>
                             </div>
 
-                            <span className="text-xs font-black text-dark-green-900">
-                              {formatCurrency(exp.amount)}
-                            </span>
+                            {/* Dynamic Segmented Progress Bar */}
+                            <div className="space-y-1">
+                              <div className="w-full h-3 bg-beige-200 rounded-full overflow-hidden flex border border-beige-300/40 relative">
+                                {/* Base Spent Segment */}
+                                <div
+                                  className={`h-full transition-all duration-300 ${
+                                    p.isOverspent ? 'bg-red-500' : 'bg-sage-600'
+                                  }`}
+                                  style={{ width: `${Math.min(100, spentPct)}%` }}
+                                />
+
+                                {/* Unused Leftover Segment */}
+                                {p.isUnderspent && (
+                                  <div
+                                    className={`h-full transition-all duration-300 ${
+                                      uChoice === 'transfer_pot'
+                                        ? 'bg-dark-green-900'
+                                        : 'bg-sky-500'
+                                    }`}
+                                    style={{ width: `${100 - spentPct}%` }}
+                                  />
+                                )}
+                              </div>
+
+                              {/* Progress Sub-Labels */}
+                              <div className="flex items-center justify-between text-[10px]">
+                                {p.isUnderspent ? (
+                                  <>
+                                    <span className="text-sage-800 font-bold">
+                                      {formatCurrency(p.leftover)} leftover
+                                    </span>
+                                    <span
+                                      className={`font-black px-1.5 py-0.2 rounded text-[9px] ${
+                                        uChoice === 'transfer_pot'
+                                          ? 'bg-dark-green-900 text-white'
+                                          : 'bg-sky-100 text-sky-900 border border-sky-300'
+                                      }`}
+                                    >
+                                      {uChoice === 'transfer_pot'
+                                        ? `${formatCurrency(p.leftover)} transferred`
+                                        : `${formatCurrency(p.leftover)} prorated`}
+                                    </span>
+                                  </>
+                                ) : p.isOverspent ? (
+                                  <>
+                                    <span className="text-red-600 font-bold">
+                                      {formatCurrency(p.deficit)} overspent
+                                    </span>
+                                    <span className="text-red-700 font-black bg-red-100 px-1.5 py-0.2 rounded text-[9px]">
+                                      Deficit active
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="text-dark-grey-600 font-bold">Exact on budget</span>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         );
                       })}
-                    </div>
-                  )}
 
-                  {/* Summary bar for Step 1 */}
-                  <div className="p-3.5 bg-beige-100/70 rounded-2xl flex items-center justify-between text-xs font-bold text-dark-green-900">
-                    <span>Total Logged This Week ({weekExpenses.length} items):</span>
-                    <span className="text-sm font-black">{formatCurrency(totalSpent)}</span>
-                  </div>
-                </div>
-              )}
+                      {/* Savings Category Card (This Week) */}
+                      <div className="bg-gradient-to-br from-emerald-50 to-sage-50 border border-emerald-200 rounded-2xl p-3 space-y-2 shadow-2xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-7 h-7 rounded-xl bg-emerald-200 text-emerald-900 flex items-center justify-center shrink-0">
+                              <PiggyBank className="w-3.5 h-3.5" />
+                            </div>
+                            <div>
+                              <span className="text-xs font-extrabold text-emerald-950 block">
+                                Savings Pot Deposit
+                              </span>
+                              <span className="text-[10px] text-emerald-800 font-medium">
+                                Base Target: {formatCurrency(baselineSavingsTarget)}
+                              </span>
+                            </div>
+                          </div>
 
-              {/* STEP 2: CATEGORY PACING & ROLLOVER / DEFICIT RESOLUTION */}
-              {step === 2 && (
-                <div className="space-y-4">
-                  {/* SAVINGS PRIORITY GATE HEADER */}
-                  <div
-                    className={`p-4 rounded-2xl border transition-all space-y-2.5 ${
-                      isSavingsGoalMet
-                        ? 'bg-gradient-to-br from-sage-50 to-beige-50 border-sage-200'
-                        : 'bg-gradient-to-br from-amber-50 to-orange-50 border-amber-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div
-                          className={`w-8 h-8 rounded-xl flex items-center justify-center ${
-                            isSavingsGoalMet
-                              ? 'bg-sage-200 text-dark-green-900'
-                              : 'bg-amber-200 text-amber-900'
-                          }`}
-                        >
-                          <PiggyBank className="w-4 h-4" />
+                          <div className="text-right">
+                            <div className="text-xs font-black font-mono text-emerald-950">
+                              {formatCurrency(savingsSavedThisWeek)}{' '}
+                              <span className="text-[10px] text-emerald-800 font-normal">
+                                / {formatCurrency(savingsBudgetThisWeek)}
+                              </span>
+                            </div>
+                            <span className="text-[9px] font-bold text-emerald-700 block">
+                              {savingsSavedThisWeek >= savingsBudgetThisWeek ? 'Target Achieved' : 'Deficit Active'}
+                            </span>
+                          </div>
                         </div>
-                        <div>
-                          <h4 className="text-xs font-black text-dark-green-900">
-                            Savings Priority Gate
-                          </h4>
-                          <span className="text-[11px] text-dark-grey-600">
-                            Baseline Weekly Savings Target:{' '}
-                            <strong className="text-dark-green-900">{formatCurrency(baselineSavingsGoal)}</strong>
-                          </span>
-                        </div>
-                      </div>
 
-                      <div>
-                        {isSavingsGoalMet ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-black text-sage-900 bg-sage-200/90 px-2.5 py-1 rounded-full">
-                            <Check className="w-3.5 h-3.5 text-sage-700" />
-                            <span>Goal Met ({formatCurrency(effectiveSavingsGoal)})</span>
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-black text-amber-900 bg-amber-200/90 px-2.5 py-1 rounded-full">
-                            <AlertTriangle className="w-3.5 h-3.5 text-amber-700" />
-                            <span>Deficit Active ({formatCurrency(effectiveSavingsGoal)})</span>
-                          </span>
+                        {/* Progress Bar for Savings */}
+                        <div className="w-full h-3 bg-emerald-200/80 rounded-full overflow-hidden flex border border-emerald-300/60">
+                          <div
+                            className="h-full bg-emerald-600 transition-all duration-300 rounded-full"
+                            style={{
+                              width: `${
+                                savingsBudgetThisWeek > 0
+                                  ? Math.min(100, Math.round((savingsSavedThisWeek / savingsBudgetThisWeek) * 100))
+                                  : 0
+                              }%`,
+                            }}
+                          />
+                        </div>
+
+                        {savingsExpandedBonus > 0 && (
+                          <div className="text-[10px] text-emerald-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-emerald-200/80">
+                            <Sparkles className="w-3 h-3 text-emerald-600 shrink-0" />
+                            <span>
+                              Expanded budget: <strong>+{formatCurrency(savingsExpandedBonus)}</strong> bonus from Transfer Pot
+                            </span>
+                          </div>
                         )}
                       </div>
                     </div>
-
-                    {!isSavingsGoalMet ? (
-                      <p className="text-xs text-amber-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-amber-200/70">
-                        <strong>Savings Priority Active:</strong> Because your weekly savings target has not been met (or was reduced to cover deficits), category proration is restricted. Any underspent surplus will automatically fill your savings goal deficit first.
-                      </p>
-                    ) : (
-                      <p className="text-xs text-dark-green-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-sage-200/70">
-                        <strong>Savings Target Achieved:</strong> Your weekly savings goal of {formatCurrency(baselineSavingsGoal)} is fully secured. You may choose to boost savings further or prorate surplus across remaining weeks of the month.
-                      </p>
-                    )}
                   </div>
 
-                  {/* Active Categories List (Essentials & Fun Money) */}
-                  <div className="space-y-3">
-                    {decisions.map((dec) => {
-                      const cat = categories.find((c) => c.id === dec.categoryId);
-                      const isUnderspent = dec.difference > 0;
-                      const isOverspent = dec.difference < 0;
-                      const isExact = dec.difference === 0;
+                  {/* RIGHT COLUMN: AMOUNT BUDGETED FOR FOLLOWING WEEKS */}
+                  <div className="bg-sage-50/50 border border-sage-200 rounded-3xl p-4 space-y-3.5">
+                    <div className="flex items-center justify-between border-b border-sage-200 pb-2">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-4 h-4 text-sage-800" />
+                        <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
+                          Amount Budgeted For Following Weeks
+                        </h5>
+                      </div>
+                      <span className="text-[11px] font-bold text-sage-900">
+                        Next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'Week' : 'Weeks'}
+                      </span>
+                    </div>
 
-                      return (
-                        <div
-                          key={dec.categoryId}
-                          className={`p-4 rounded-2xl border transition-all ${
-                            isUnderspent
-                              ? 'bg-sage-50/40 border-sage-200'
-                              : isOverspent
-                              ? 'bg-red-50/40 border-red-200'
-                              : 'bg-white border-beige-200'
-                          }`}
-                        >
-                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-beige-200/80 pb-2.5">
-                            <div className="flex items-center gap-2.5">
-                              <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
-                                <CategoryIcon name={cat?.name || dec.categoryName} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
-                              </div>
-                              <div>
-                                <span className="text-xs font-bold text-dark-green-900">
-                                  {dec.categoryName}
-                                </span>
-                                <div className="flex items-center gap-2 text-[10px] text-dark-grey-600">
-                                  <span>
-                                    {dec.isOverridden && dec.baselineBudget && dec.baselineBudget !== dec.budget
-                                      ? `Weekly Budget: ${formatCurrency(dec.budget)} (Baseline: ${formatCurrency(dec.baselineBudget)})`
-                                      : `Weekly Budget: ${formatCurrency(dec.budget)}`}
+                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                      {/* Expense Categories Following Weeks */}
+                      {categoryProjections.map((p) => {
+                        const cat = p.category;
+                        const isHigher = p.followingWeeksBudget > p.baseline;
+                        const isLower = p.followingWeeksBudget < p.baseline;
+
+                        return (
+                          <div
+                            key={`future-${cat.id}`}
+                            className="bg-white border border-sage-200/80 rounded-2xl p-3 space-y-1.5 shadow-2xs"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div className="w-7 h-7 rounded-xl bg-sage-100 flex items-center justify-center shrink-0">
+                                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
+                                </div>
+                                <div className="min-w-0">
+                                  <span className="text-xs font-extrabold text-dark-green-900 block truncate">
+                                    {cat.name}
                                   </span>
-                                  <span>&bull;</span>
-                                  <span>Spent: {formatCurrency(dec.spent)}</span>
+                                  <span className="text-[10px] text-dark-grey-600">
+                                    Baseline: {formatCurrency(p.baseline)}/wk
+                                  </span>
                                 </div>
                               </div>
+
+                              <div className="text-right">
+                                <div className="text-xs sm:text-sm font-black font-mono text-dark-green-900">
+                                  {formatCurrency(p.followingWeeksBudget)}
+                                  <span className="text-[10px] font-normal text-brown-700">/wk</span>
+                                </div>
+                                <span className="text-[10px] text-dark-grey-600 font-medium block">
+                                  for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
+                                </span>
+                              </div>
                             </div>
 
-                            {/* Difference Status Badge */}
-                            <div>
-                              {isUnderspent && (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-black text-sage-900 bg-sage-200/80 px-2.5 py-0.5 rounded-full">
-                                  <TrendingDown className="w-3 h-3 text-sage-700" />
-                                  <span>+ {formatCurrency(dec.difference)} Surplus</span>
-                                </span>
-                              )}
-                              {isOverspent && (
-                                <span className="inline-flex items-center gap-1 text-[11px] font-black text-red-700 bg-red-100 px-2.5 py-0.5 rounded-full">
-                                  <TrendingUp className="w-3 h-3 text-red-600" />
-                                  <span>- {formatCurrency(Math.abs(dec.difference))} Deficit</span>
-                                </span>
-                              )}
-                              {isExact && (
-                                <span className="text-[11px] font-bold text-dark-grey-600 bg-beige-100 px-2.5 py-0.5 rounded-full">
-                                  Exact On Budget ($0)
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Visual Check-in Split Progress Bar */}
-                          <div className="py-2 space-y-1">
-                            <div className="flex items-center justify-between text-[10px] font-bold">
-                              <span className="text-dark-grey-600">Progress Breakdown</span>
-                              <span className="text-dark-green-900">
-                                {Math.round((dec.spent / Math.max(1, dec.budget)) * 100)}% of {formatCurrency(dec.budget)}
-                              </span>
-                            </div>
-                            <div className="h-4 w-full bg-beige-200 rounded-lg overflow-hidden flex relative">
-                              {/* Spent Portion */}
-                              <div
-                                className={`h-full transition-all flex items-center justify-center text-[9px] font-black text-white ${
-                                  isOverspent ? 'bg-red-600 w-full' : 'bg-sage-600'
+                            {/* Status Pill */}
+                            <div className="pt-1 flex items-center justify-between text-[10px] border-t border-beige-100">
+                              <span className="text-dark-grey-600 font-medium">Status:</span>
+                              <span
+                                className={`font-bold px-2 py-0.5 rounded-full ${
+                                  isHigher
+                                    ? 'bg-sage-100 text-sage-900 border border-sage-300'
+                                    : isLower
+                                    ? 'bg-red-50 text-red-700 border border-red-200'
+                                    : 'bg-beige-100 text-brown-800'
                                 }`}
-                                style={{
-                                  width: isOverspent ? '100%' : `${Math.min(100, Math.max(5, (dec.spent / Math.max(1, dec.budget)) * 100))}%`,
-                                }}
                               >
-                                {dec.spent > 0 && <span className="px-1 truncate">{formatCurrency(dec.spent)}</span>}
-                              </div>
+                                {p.statusLabel}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
 
-                              {/* Surplus Portion with Decision Treatment */}
-                              {isUnderspent && (
-                                <div
-                                  className={`h-full transition-all flex items-center justify-center text-[9px] font-black text-white ${
-                                    dec.isProrationDisabled
-                                      ? 'bg-amber-600'
-                                      : (userChoices[dec.categoryId] || 'savings') === 'rollover'
-                                      ? 'bg-blue-600'
-                                      : 'bg-dark-green-900'
-                                  }`}
-                                  style={{
-                                    width: `${Math.max(0, 100 - (dec.spent / Math.max(1, dec.budget)) * 100)}%`,
-                                  }}
-                                >
-                                  <span className="px-1 truncate">
-                                    {dec.isProrationDisabled
-                                      ? `Deficit Fill (+${formatCurrency(dec.difference)})`
-                                      : (userChoices[dec.categoryId] || 'savings') === 'rollover'
-                                      ? `Prorated (+${formatCurrency(dec.difference)})`
-                                      : `Boosted Savings (+${formatCurrency(dec.difference)})`}
-                                  </span>
-                                </div>
-                              )}
+                      {/* Savings Category Following Weeks */}
+                      <div className="bg-white border border-emerald-200 rounded-2xl p-3 space-y-1.5 shadow-2xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-7 h-7 rounded-xl bg-emerald-100 text-emerald-900 flex items-center justify-center shrink-0">
+                              <PiggyBank className="w-3.5 h-3.5" />
+                            </div>
+                            <div>
+                              <span className="text-xs font-extrabold text-emerald-950 block">
+                                Savings Target Projection
+                              </span>
+                              <span className="text-[10px] text-emerald-800">
+                                Global Baseline: {formatCurrency(baselineSavingsTarget)}/wk
+                              </span>
                             </div>
                           </div>
 
-                          {/* Decision Options for Underspent */}
-                          {isUnderspent && (
-                            <div className="pt-2.5 space-y-2">
-                              {dec.isProrationDisabled ? (
-                                <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl space-y-1">
-                                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-900">
-                                    <PiggyBank className="w-4 h-4 text-amber-700" />
-                                    <span>Savings Priority: Routed to Fill Savings Deficit</span>
-                                  </div>
-                                  <p className="text-[11px] text-amber-900 leading-relaxed">
-                                    Because the baseline Weekly Savings Goal is currently below target, this +{formatCurrency(dec.difference)} surplus is automatically directed to replenish your Savings Goal. Next week’s budget remains at {formatCurrency(dec.previousWeeklyBudget)}/wk.
-                                  </p>
-                                </div>
-                              ) : (
-                                <>
-                                  <span className="text-[11px] font-extrabold text-dark-green-900 block">
-                                    Choose Surplus Strategy for +{formatCurrency(dec.difference)}:
-                                  </span>
-                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                    {/* Option A: Boost Current Savings */}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleChoiceChange(dec.categoryId, 'savings')}
-                                      className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                        (userChoices[dec.categoryId] || 'savings') === 'savings'
-                                          ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
-                                          : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
-                                      }`}
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-xs font-black flex items-center gap-1.5">
-                                          <PiggyBank className="w-4 h-4" />
-                                          Boost Savings (Option A)
-                                        </span>
-                                        <span
-                                          className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded ${
-                                            (userChoices[dec.categoryId] || 'savings') === 'savings'
-                                              ? 'bg-white/20 text-white'
-                                              : 'bg-sage-100 text-sage-800'
-                                          }`}
-                                        >
-                                          Recommended
-                                        </span>
-                                      </div>
-                                      <p
-                                        className={`text-[10px] mt-1 ${
-                                          (userChoices[dec.categoryId] || 'savings') === 'savings'
-                                            ? 'text-sage-100'
-                                            : 'text-dark-grey-600'
-                                        }`}
-                                      >
-                                        Bank +{formatCurrency(dec.difference)} directly into savings pot. Next week budget stays at baseline ({formatCurrency(dec.previousWeeklyBudget)}/wk).
-                                      </p>
-                                    </button>
-
-                                    {/* Option B: Rollover & Prorate */}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleChoiceChange(dec.categoryId, 'rollover')}
-                                      className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                        userChoices[dec.categoryId] === 'rollover'
-                                          ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
-                                          : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
-                                      }`}
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <span className="text-xs font-black flex items-center gap-1.5">
-                                          <TrendingUp className="w-4 h-4" />
-                                          Prorate Budget (Option B)
-                                        </span>
-                                        <span
-                                          className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                            userChoices[dec.categoryId] === 'rollover'
-                                              ? 'bg-white/20 text-white'
-                                              : 'bg-beige-200 text-brown-800'
-                                          }`}
-                                        >
-                                          +{formatCurrency(Math.round(dec.difference / Math.max(1, remainingWeeksInMonth)))}/wk
-                                        </span>
-                                      </div>
-                                      <p
-                                        className={`text-[10px] mt-1 ${
-                                          userChoices[dec.categoryId] === 'rollover'
-                                            ? 'text-sage-100'
-                                            : 'text-dark-grey-600'
-                                        }`}
-                                      >
-                                        Distribute +{formatCurrency(dec.difference)} evenly across remaining {remainingWeeksInMonth} weeks. Next week budget becomes {formatCurrency(dec.newWeeklyBudget)}/wk.
-                                      </p>
-                                    </button>
-                                  </div>
-                                </>
-                              )}
+                          <div className="text-right">
+                            <div className="text-xs sm:text-sm font-black font-mono text-emerald-950">
+                              {formatCurrency(Math.max(0, baselineSavingsTarget - futureSavingsReductionTotal))}
+                              <span className="text-[10px] font-normal text-emerald-800">/wk</span>
                             </div>
-                          )}
-
-                          {/* Resolution Options for Overspent */}
-                          {isOverspent && (
-                            <div className="pt-2.5 space-y-2">
-                              <span className="text-[11px] font-extrabold text-red-900 block">
-                                Choose Deficit Resolution for -{formatCurrency(Math.abs(dec.difference))}:
-                              </span>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                {/* Option A: Deduct from Savings */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleChoiceChange(dec.categoryId, 'deduct_savings')}
-                                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                    (userChoices[dec.categoryId] || 'deduct_savings') === 'deduct_savings'
-                                      ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
-                                      : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs font-black flex items-center gap-1.5">
-                                      <PiggyBank className="w-4 h-4" />
-                                      Deduct from Savings Goal
-                                    </span>
-                                  </div>
-                                  <p
-                                    className={`text-[10px] mt-1 ${
-                                      (userChoices[dec.categoryId] || 'deduct_savings') === 'deduct_savings'
-                                        ? 'text-sage-100'
-                                        : 'text-dark-grey-600'
-                                    }`}
-                                  >
-                                    Cover overage from this week’s savings pot. Next week budget stays protected at {formatCurrency(dec.previousWeeklyBudget)}/wk.
-                                  </p>
-                                </button>
-
-                                {/* Option B: Reduce Future Weeks */}
-                                <button
-                                  type="button"
-                                  onClick={() => handleChoiceChange(dec.categoryId, 'reduce_future')}
-                                  className={`p-3 rounded-xl border text-left transition cursor-pointer ${
-                                    userChoices[dec.categoryId] === 'reduce_future'
-                                      ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-xs'
-                                      : 'bg-white hover:bg-beige-100 text-dark-green-900 border-beige-300'
-                                  }`}
-                                >
-                                  <div className="flex items-center justify-between">
-                                    <span className="text-xs font-black flex items-center gap-1.5">
-                                      <TrendingDown className="w-4 h-4" />
-                                      Reduce Future Weeks
-                                    </span>
-                                    <span
-                                      className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                        userChoices[dec.categoryId] === 'reduce_future'
-                                          ? 'bg-white/20 text-white'
-                                          : 'bg-red-100 text-red-800'
-                                      }`}
-                                    >
-                                      -{formatCurrency(Math.round(Math.abs(dec.difference) / Math.max(1, remainingWeeksInMonth)))}/wk
-                                    </span>
-                                  </div>
-                                  <p
-                                    className={`text-[10px] mt-1 ${
-                                      userChoices[dec.categoryId] === 'reduce_future'
-                                        ? 'text-sage-100'
-                                        : 'text-dark-grey-600'
-                                    }`}
-                                  >
-                                    Absorb deficit evenly across remaining {remainingWeeksInMonth} weeks. Next week budget drops to {formatCurrency(dec.newWeeklyBudget)}/wk.
-                                  </p>
-                                </button>
-                              </div>
-
-                              {/* Forced Fallback Warning if Savings Depleted */}
-                              {dec.forcedFallbackApplied && (
-                                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2 text-xs text-amber-900">
-                                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                                  <span>
-                                    <strong>Savings Depleted:</strong> Available weekly savings reached $0. The remaining deficit of {formatCurrency(Math.abs(dec.difference) - (dec.savingsDeduction || 0))} was automatically reduced across future weekly budgets.
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          )}
+                            <span className="text-[10px] text-emerald-700 font-medium block">
+                              for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
+                            </span>
+                          </div>
                         </div>
-                      );
-                    })}
+
+                        <div className="pt-1 flex items-center justify-between text-[10px] border-t border-emerald-100">
+                          <span className="text-emerald-800 font-medium">Following Weeks Target:</span>
+                          <span className="font-bold text-emerald-900">
+                            {futureSavingsReductionTotal > 0
+                              ? `-${formatCurrency(futureSavingsReductionTotal)}/wk from deficit override`
+                              : 'Baseline target maintained'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              )}
+              </div>
 
-              {/* STEP 3: SUMMARY & CONFIRMATION */}
-              {step === 3 && (
-                <div className="space-y-5">
-                  <div className="p-4 bg-gradient-to-br from-sage-50 to-beige-50 border border-sage-200 rounded-2xl space-y-2">
-                    <h4 className="text-sm font-black text-dark-green-900 flex items-center gap-2">
-                      <Sparkles className="w-4 h-4 text-sage-700" />
-                      Check-In Summary & Next Week Budgets
-                    </h4>
-                    <p className="text-xs text-brown-700">
-                      Confirm your new category budgets for the coming week and record any notes or intentions.
-                    </p>
+              {/* BUDGET BALANCING CHOICES (BOTTOM SECTION) */}
+              <div className="space-y-4 pt-2">
+                <div className="border-b border-beige-200 pb-2">
+                  <h4 className="text-sm font-black text-dark-green-950 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-sage-700" />
+                    Budget Balancing Choices
+                  </h4>
+                  <p className="text-xs text-brown-700">
+                    Choose how leftover funds and overspent deficits are balanced across your Transfer Pot, Savings, and remaining weeks.
+                  </p>
+                </div>
 
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-                      <div className="p-3 bg-white rounded-xl border border-beige-200">
-                        <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                          Savings Baseline
-                        </span>
-                        <span className="text-base font-black text-dark-green-900">
-                          {formatCurrency(baselineSavingsGoal)}
-                        </span>
-                      </div>
-                      <div className="p-3 bg-white rounded-xl border border-beige-200">
-                        <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                          Effective Saved
-                        </span>
-                        <span className="text-base font-black text-sage-800">
-                          +{formatCurrency(totalSaved)}
-                        </span>
-                      </div>
-                      <div className="p-3 bg-white rounded-xl border border-beige-200">
-                        <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                          Total Week Spend
-                        </span>
-                        <span className="text-base font-black text-dark-green-900">
-                          {formatCurrency(totalSpent)}
-                        </span>
-                      </div>
-                      <div className="p-3 bg-white rounded-xl border border-beige-200">
-                        <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                          Net Month Pace
-                        </span>
-                        <span
-                          className={`text-base font-black ${
-                            totalSurplus >= totalDeficit ? 'text-sage-800' : 'text-red-600'
-                          }`}
-                        >
-                          {totalSurplus >= totalDeficit
-                            ? `+${formatCurrency(totalSurplus - totalDeficit)} safe`
-                            : `-${formatCurrency(totalDeficit - totalSurplus)} deficit`}
-                        </span>
-                      </div>
+                <div className="space-y-4">
+                  {/* 1. Underspent Categories List */}
+                  {categoryPacings.filter((p) => p.isUnderspent).length > 0 && (
+                    <div className="space-y-3">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-sage-900 bg-sage-100 px-2.5 py-1 rounded-full inline-block">
+                        Underspent Categories ({categoryPacings.filter((p) => p.isUnderspent).length})
+                      </span>
+
+                      {categoryPacings
+                        .filter((p) => p.isUnderspent)
+                        .map((p) => {
+                          const cat = p.category;
+                          const currentChoice = underspendChoices[cat.id] || 'transfer_pot';
+
+                          return (
+                            <div
+                              key={`under-${cat.id}`}
+                              className="p-4 bg-white border border-beige-300 rounded-2xl shadow-xs space-y-3"
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-8 h-8 rounded-xl bg-sage-100 flex items-center justify-center shrink-0">
+                                    <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <h5 className="text-xs font-black text-dark-green-900">
+                                      {cat.name}
+                                    </h5>
+                                    <span className="text-[11px] text-dark-grey-600">
+                                      Spent {formatCurrency(p.spent)} of {formatCurrency(p.budget)} budget
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="px-3 py-1 bg-sage-100 border border-sage-300 rounded-xl text-xs font-black text-sage-900 self-start sm:self-auto">
+                                  +{formatCurrency(p.leftover)} Leftover
+                                </div>
+                              </div>
+
+                              {/* Interactive Choice Buttons */}
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1">
+                                {/* Choice 1: Transfer Pot */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleUnderspendChoice(cat.id, 'transfer_pot')}
+                                  className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                                    currentChoice === 'transfer_pot'
+                                      ? 'bg-dark-green-900 text-white border-dark-green-950 shadow-xs'
+                                      : 'bg-beige-50/50 hover:bg-beige-100 text-dark-green-900 border-beige-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2 mb-1">
+                                    <span className="text-xs font-black flex items-center gap-1.5">
+                                      <Layers className="w-3.5 h-3.5 text-sage-300" />
+                                      Choice 1: Transfer Pot
+                                    </span>
+                                    <span
+                                      className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
+                                        currentChoice === 'transfer_pot'
+                                          ? 'bg-white/20 text-white'
+                                          : 'bg-dark-green-100 text-dark-green-900'
+                                      }`}
+                                    >
+                                      +{formatCurrency(p.leftover)}
+                                    </span>
+                                  </div>
+                                  <p
+                                    className={`text-[10px] leading-relaxed ${
+                                      currentChoice === 'transfer_pot'
+                                        ? 'text-sage-100'
+                                        : 'text-dark-grey-600'
+                                    }`}
+                                  >
+                                    Adds leftover into global Transfer Pot to cover deficits or expand Savings. Following weeks keep baseline ({formatCurrency(p.baseline)}/wk).
+                                  </p>
+                                </button>
+
+                                {/* Choice 2: Prorate */}
+                                <button
+                                  type="button"
+                                  onClick={() => handleUnderspendChoice(cat.id, 'prorate')}
+                                  className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                                    currentChoice === 'prorate'
+                                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                                      : 'bg-beige-50/50 hover:bg-beige-100 text-dark-green-900 border-beige-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-2 mb-1">
+                                    <span className="text-xs font-black flex items-center gap-1.5">
+                                      <TrendingUp className="w-3.5 h-3.5 text-sky-200" />
+                                      Choice 2: Prorate
+                                    </span>
+                                    <span
+                                      className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
+                                        currentChoice === 'prorate'
+                                          ? 'bg-white/20 text-white'
+                                          : 'bg-sky-100 text-sky-900'
+                                      }`}
+                                    >
+                                      +{formatCurrency(Math.round(p.leftover / remainingWeeksInMonth))}/wk
+                                    </span>
+                                  </div>
+                                  <p
+                                    className={`text-[10px] leading-relaxed ${
+                                      currentChoice === 'prorate' ? 'text-sky-100' : 'text-dark-grey-600'
+                                    }`}
+                                  >
+                                    Divides leftover across next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget increases to {formatCurrency(p.baseline + Math.round(p.leftover / remainingWeeksInMonth))}/wk.
+                                  </p>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                     </div>
-                  </div>
+                  )}
 
-                  {/* New Budgets Comparison Table */}
-                  <div className="border border-beige-200 rounded-2xl overflow-hidden">
-                    <div className="px-4 py-2.5 bg-beige-100/80 border-b border-beige-200 flex items-center justify-between text-xs font-extrabold text-dark-green-900">
-                      <span>Category</span>
-                      <div className="flex items-center gap-6">
-                        <span className="w-20 text-right">Last Week</span>
-                        <span className="w-24 text-right text-dark-green-900">New Budget</span>
-                      </div>
-                    </div>
+                  {/* 2. Overspent Categories List */}
+                  {categoryPacings.filter((p) => p.isOverspent).length > 0 && (
+                    <div className="space-y-3">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-red-800 bg-red-100 px-2.5 py-1 rounded-full inline-block">
+                        Overspent Categories ({categoryPacings.filter((p) => p.isOverspent).length})
+                      </span>
 
-                    <div className="divide-y divide-beige-100 max-h-56 overflow-y-auto">
-                      {decisions.map((dec) => (
-                        <div
-                          key={dec.categoryId}
-                          className="px-4 py-2 flex items-center justify-between text-xs bg-white"
-                        >
-                          <span className="font-medium text-dark-green-900">
-                            {dec.categoryName}
-                          </span>
-                          <div className="flex items-center gap-6">
-                            <span className="w-20 text-right text-dark-grey-600">
-                              {formatCurrency(dec.previousWeeklyBudget)}
-                            </span>
-                            <span className="w-24 text-right font-black text-dark-green-900">
-                              {formatCurrency(dec.newWeeklyBudget)}
-                              {dec.newWeeklyBudget > dec.previousWeeklyBudget && (
-                                <span className="text-[10px] text-sage-800 font-bold ml-1">
-                                  (+{dec.newWeeklyBudget - dec.previousWeeklyBudget})
+                      {categoryPacings
+                        .filter((p) => p.isOverspent)
+                        .map((p) => {
+                          const cat = p.category;
+                          const inputState = overspendInputs[cat.id] || { potPull: 0, savingsPull: 0, overrideMode: 'none' };
+                          const covered = (Number(inputState.potPull) || 0) + (Number(inputState.savingsPull) || 0);
+                          const uncovered = Math.max(0, p.deficit - covered);
+                          const monthlyCap = p.baseline * remainingWeeksInMonth;
+                          const isOverMonthlyCap = uncovered > monthlyCap;
+
+                          // Maximum available pot this category can pull without exceeding available transfer pot
+                          const currentCatPotPull = Number(inputState.potPull) || 0;
+                          const potAvailableForThisCat = availableTransferPot + currentCatPotPull;
+
+                          return (
+                            <div
+                              key={`over-${cat.id}`}
+                              className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs space-y-3"
+                            >
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-100 pb-2.5">
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-8 h-8 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+                                    <AlertCircle className="w-4 h-4" />
+                                  </div>
+                                  <div>
+                                    <h5 className="text-xs font-black text-dark-green-900">
+                                      {cat.name}
+                                    </h5>
+                                    <span className="text-[11px] text-dark-grey-600">
+                                      Spent {formatCurrency(p.spent)} of {formatCurrency(p.budget)} budget
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="px-3 py-1 bg-red-100 border border-red-300 rounded-xl text-xs font-black text-red-800 self-start sm:self-auto">
+                                  -{formatCurrency(p.deficit)} Overspent
+                                </div>
+                              </div>
+
+                              {/* Manual Funding Inputs */}
+                              <div className="space-y-2">
+                                <span className="text-[11px] font-bold text-dark-green-950 block">
+                                  Cover Deficit from Transfer Pot or Savings:
                                 </span>
-                              )}
-                              {dec.newWeeklyBudget < dec.previousWeeklyBudget && (
-                                <span className="text-[10px] text-red-600 font-bold ml-1">
-                                  (-{dec.previousWeeklyBudget - dec.newWeeklyBudget})
-                                </span>
-                              )}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
+
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                  {/* Transfer Pot Input */}
+                                  <div className="p-3 bg-beige-50/70 border border-beige-300 rounded-xl space-y-1.5">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[10px] font-extrabold uppercase text-dark-grey-600">
+                                        Pull from Transfer Pot ($)
+                                      </label>
+                                      <span className="text-[10px] text-dark-grey-600 font-bold">
+                                        Max: {formatCurrency(potAvailableForThisCat)}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={Math.min(p.deficit, potAvailableForThisCat)}
+                                        value={inputState.potPull || ''}
+                                        disabled={potAvailableForThisCat <= 0}
+                                        onChange={(e) =>
+                                          handleOverspendPotPull(
+                                            cat.id,
+                                            parseFloat(e.target.value) || 0,
+                                            Math.min(p.deficit, potAvailableForThisCat)
+                                          )
+                                        }
+                                        placeholder="0.00"
+                                        className="w-full px-3 py-1.5 bg-white border border-beige-300 rounded-lg text-xs font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 disabled:opacity-50 disabled:bg-beige-100"
+                                      />
+                                      {potAvailableForThisCat > 0 && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            handleOverspendPotPull(
+                                              cat.id,
+                                              Math.min(p.deficit, potAvailableForThisCat),
+                                              Math.min(p.deficit, potAvailableForThisCat)
+                                            )
+                                          }
+                                          className="px-2 py-1.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-[10px] font-bold rounded-lg shrink-0"
+                                        >
+                                          Max
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Savings Input */}
+                                  <div className="p-3 bg-beige-50/70 border border-beige-300 rounded-xl space-y-1.5">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[10px] font-extrabold uppercase text-dark-grey-600">
+                                        Pull from Current Savings ($)
+                                      </label>
+                                      <span className="text-[10px] text-dark-grey-600 font-bold">
+                                        Max: {formatCurrency(baselineSavingsTarget)}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)}
+                                        value={inputState.savingsPull || ''}
+                                        onChange={(e) =>
+                                          handleOverspendSavingsPull(
+                                            cat.id,
+                                            parseFloat(e.target.value) || 0,
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)
+                                          )
+                                        }
+                                        placeholder="0.00"
+                                        className="w-full px-3 py-1.5 bg-white border border-beige-300 rounded-lg text-xs font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleOverspendSavingsPull(
+                                            cat.id,
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget),
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)
+                                          )
+                                        }
+                                        className="px-2 py-1.5 bg-sage-700 hover:bg-sage-800 text-white text-[10px] font-bold rounded-lg shrink-0"
+                                      >
+                                        Fill
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Deficit Resolution Status & Auto-Proration / Exception Logic */}
+                              <div className="pt-1">
+                                {uncovered === 0 ? (
+                                  <div className="p-2.5 bg-sage-50 border border-sage-200 rounded-xl flex items-center gap-2 text-xs text-sage-900 font-bold">
+                                    <CheckCircle2 className="w-4 h-4 text-sage-700 shrink-0" />
+                                    <span>Deficit fully covered! Next weeks budget remains at {formatCurrency(p.baseline)}/wk.</span>
+                                  </div>
+                                ) : !isOverMonthlyCap ? (
+                                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1 text-xs text-amber-950">
+                                    <div className="flex items-center gap-1.5 font-black text-amber-900">
+                                      <TrendingDown className="w-4 h-4 text-amber-700 shrink-0" />
+                                      <span>Auto-Prorating Remaining Deficit (-{formatCurrency(uncovered)})</span>
+                                    </div>
+                                    <p className="text-[11px] text-amber-900/90 leading-relaxed">
+                                      Reducing future weekly budgets by <strong>-{formatCurrency(Math.round(uncovered / remainingWeeksInMonth))}/wk</strong> across the remaining {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget: <strong>{formatCurrency(Math.max(0, p.baseline - Math.round(uncovered / remainingWeeksInMonth)))}/wk</strong>.
+                                    </p>
+                                  </div>
+                                ) : (
+                                  /* EXCEPTION RULE: Overspend exceeds total remaining monthly budget */
+                                  <div className="p-3.5 bg-red-50 border-2 border-red-300 rounded-xl space-y-2.5 text-xs text-red-950">
+                                    <div className="flex items-center gap-2 font-black text-red-900">
+                                      <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                                      <span>Standard Proration Strictly Disabled (Negative Future Budget Prevention)</span>
+                                    </div>
+                                    <p className="text-[11px] text-red-900 leading-relaxed">
+                                      The remaining uncovered overspend of <strong>{formatCurrency(uncovered)}</strong> exceeds the total remaining monthly budget for this category (<strong>{formatCurrency(monthlyCap)}</strong> across {remainingWeeksInMonth} weeks). You must allocate more from Transfer Pot / Savings above, or choose an override option below:
+                                    </p>
+
+                                    {/* Override Options */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOverspendOverrideMode(cat.id, 'accept_loss')}
+                                        className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                                          inputState.overrideMode === 'accept_loss'
+                                            ? 'bg-red-800 text-white border-red-900 shadow-xs'
+                                            : 'bg-white hover:bg-red-100 text-red-900 border-red-200'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between mb-0.5">
+                                          <span className="text-[11px] font-black">
+                                            1. Accept a Loss for the Week
+                                          </span>
+                                        </div>
+                                        <span className="text-[10px] text-red-800 opacity-90 block">
+                                          Sets future category budget to $0/wk and absorbs remaining deficit as a loss.
+                                        </span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOverspendOverrideMode(cat.id, 'pull_future_savings')}
+                                        className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
+                                          inputState.overrideMode === 'pull_future_savings'
+                                            ? 'bg-red-800 text-white border-red-900 shadow-xs'
+                                            : 'bg-white hover:bg-red-100 text-red-900 border-red-200'
+                                        }`}
+                                      >
+                                        <div className="flex items-center justify-between mb-0.5">
+                                          <span className="text-[11px] font-black">
+                                            2. Pull from Future Weeks' Savings
+                                          </span>
+                                        </div>
+                                        <span className="text-[10px] text-red-800 opacity-90 block">
+                                          Reduces future weekly savings budgets by -{formatCurrency(Math.round((uncovered - monthlyCap) / remainingWeeksInMonth))}/wk to balance math.
+                                        </span>
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                     </div>
-                  </div>
+                  )}
 
-                  {/* Partner / Intentions Note */}
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-bold text-dark-green-900 block">
-                      Intentions & Reflections for Upcoming Week (Optional):
-                    </label>
-                    <textarea
-                      value={intentionsNote}
-                      onChange={(e) => setIntentionsNote(e.target.value)}
-                      placeholder="e.g. Planning to cook dinner 5 nights; saving fun money for weekend concert tickets..."
-                      rows={2}
-                      className="w-full p-3 bg-beige-50 border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                    />
-                  </div>
-
-                  {isPreviewMode && (
-                    <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2.5 text-xs text-amber-900 font-medium">
-                      <Clock className="w-4 h-4 text-amber-700 shrink-0" />
-                      <span>
-                        * Check-ins can not be submitted until the last day of the week.
+                  {/* 3. On-Budget Categories */}
+                  {categoryPacings.filter((p) => p.isExact).length > 0 && (
+                    <div className="p-3 bg-beige-50/60 border border-beige-200 rounded-2xl flex items-center justify-between text-xs text-dark-green-900">
+                      <span className="font-bold">
+                        {categoryPacings.filter((p) => p.isExact).length} Categories Exactly on Budget:
+                      </span>
+                      <span className="text-dark-grey-600">
+                        {categoryPacings
+                          .filter((p) => p.isExact)
+                          .map((p) => p.category.name)
+                          .join(', ')}{' '}
+                        (baseline budgets maintained)
                       </span>
                     </div>
                   )}
                 </div>
-              )}
+              </div>
             </div>
+          )}
 
-            {/* Modal Footer Controls */}
-            <div className="px-6 py-4 bg-beige-50/80 border-t border-beige-200 flex items-center justify-between shrink-0">
-              {step > 1 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep((prev) => (prev - 1) as 1 | 2 | 3)}
-                  className="flex items-center gap-1.5 px-4 py-2 bg-white border border-beige-300 hover:bg-beige-100 text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                  <span>Back</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="px-4 py-2 text-brown-700 hover:text-dark-green-900 text-xs font-bold transition cursor-pointer"
-                >
-                  Cancel
-                </button>
-              )}
+          {/* ========================================================================= */}
+          {/* STEP 3: SUMMARY & CONFIRM                                                 */}
+          {/* ========================================================================= */}
+          {step === 3 && (
+            <div className="space-y-5">
+              {/* Savings Allocation Final Summary */}
+              <div className="p-4 sm:p-5 bg-gradient-to-br from-sage-50 via-emerald-50 to-beige-50 border border-sage-300 rounded-3xl space-y-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-9 h-9 rounded-xl bg-dark-green-800 text-white flex items-center justify-center shrink-0">
+                    <Sparkles className="w-5 h-5 text-sage-300" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-dark-green-950">
+                      Savings Allocation & Alignment Summary
+                    </h4>
+                    <span className="text-xs text-brown-700">
+                      Final financial reconciliation for {selectedWeekRange.label}
+                    </span>
+                  </div>
+                </div>
 
-              {step < 3 ? (
-                <button
-                  type="button"
-                  onClick={() => setStep((prev) => (prev + 1) as 1 | 2 | 3)}
-                  className="flex items-center gap-1.5 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
-                >
-                  <span>Continue</span>
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              ) : (
-                <div className="flex flex-col items-end gap-1">
-                  <button
-                    type="button"
-                    onClick={handleConfirmCheckIn}
-                    disabled={isSubmitting || isPreviewMode}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-sm transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isSubmitting ? (
-                      <span>Saving Check-In...</span>
-                    ) : isPreviewMode ? (
-                      <span>Preview Mode (Submission Locked)</span>
-                    ) : (
-                      <>
-                        <Check className="w-4 h-4" />
-                        <span>{isHistoricalWeek ? 'Confirm & Record Historical Check-In' : 'Confirm & Complete Check-In'}</span>
-                      </>
-                    )}
-                  </button>
-                  {isPreviewMode && (
-                    <span className="text-[11px] text-amber-800 font-semibold italic">
-                      * Check-ins can not be submitted until the last day of the week.
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
+                  <div className="p-3 bg-white rounded-2xl border border-beige-200 space-y-0.5">
+                    <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
+                      Baseline Savings Goal
+                    </span>
+                    <span className="text-base font-black text-dark-green-900">
+                      {formatCurrency(baselineSavingsTarget)}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-white rounded-2xl border border-beige-200 space-y-0.5">
+                    <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
+                      Transfer Pot Bonus
+                    </span>
+                    <span className="text-base font-black text-sage-800">
+                      +{formatCurrency(savingsExpandedBonus)}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-white rounded-2xl border border-beige-200 space-y-0.5">
+                    <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
+                      Total Week Spend
+                    </span>
+                    <span className="text-base font-black text-dark-green-900">
+                      {formatCurrency(totalSpent)}
+                    </span>
+                  </div>
+
+                  <div className="p-3 bg-white rounded-2xl border border-emerald-300 bg-emerald-50/40 space-y-0.5">
+                    <span className="text-[9px] uppercase font-bold text-emerald-900 block">
+                      Effective Saved This Week
+                    </span>
+                    <span className="text-base font-black text-emerald-900">
+                      {formatCurrency(savingsSavedThisWeek)}
+                    </span>
+                    <span className="text-[10px] text-emerald-800 block">
+                      out of {formatCurrency(savingsBudgetThisWeek)} total
+                    </span>
+                  </div>
+                </div>
+
+                <p className="text-xs text-dark-green-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-sage-200/80">
+                  {savingsSavedThisWeek >= savingsBudgetThisWeek ? (
+                    <span>
+                      🎉 <strong>Savings Goal Secured:</strong> You have banked{' '}
+                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into your savings pot this week (including a {formatCurrency(savingsExpandedBonus)} transfer pot surplus expansion).
+                    </span>
+                  ) : (
+                    <span>
+                      ⚠️ <strong>Savings Adjusted:</strong> You deposited{' '}
+                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into savings after covering {formatCurrency(totalSavingsPulledForDeficits)} in category overspends.
                     </span>
                   )}
+                </p>
+              </div>
+
+              {/* Following Weeks Category Budgets Table */}
+              <div className="border border-beige-200 rounded-2xl overflow-hidden shadow-xs">
+                <div className="px-4 py-2.5 bg-beige-100/80 border-b border-beige-200 flex items-center justify-between text-xs font-extrabold text-dark-green-900">
+                  <span>Category</span>
+                  <div className="flex items-center gap-6">
+                    <span className="w-20 text-right">This Week</span>
+                    <span className="w-28 text-right text-dark-green-950">Following Weeks</span>
+                  </div>
+                </div>
+
+                <div className="divide-y divide-beige-100 max-h-56 overflow-y-auto">
+                  {decisions.map((dec) => (
+                    <div
+                      key={dec.categoryId}
+                      className="px-4 py-2 flex items-center justify-between text-xs bg-white hover:bg-beige-50/40 transition"
+                    >
+                      <span className="font-medium text-dark-green-900">
+                        {dec.categoryName}
+                      </span>
+                      <div className="flex items-center gap-6">
+                        <span className="w-20 text-right text-dark-grey-600">
+                          {formatCurrency(dec.previousWeeklyBudget)}
+                        </span>
+                        <span className="w-28 text-right font-black text-dark-green-900">
+                          {formatCurrency(dec.newWeeklyBudget)}
+                          {dec.newWeeklyBudget > dec.previousWeeklyBudget && (
+                            <span className="text-[10px] text-sage-800 font-bold ml-1">
+                              (+{dec.newWeeklyBudget - dec.previousWeeklyBudget})
+                            </span>
+                          )}
+                          {dec.newWeeklyBudget < dec.previousWeeklyBudget && (
+                            <span className="text-[10px] text-red-600 font-bold ml-1">
+                              (-{dec.previousWeeklyBudget - dec.newWeeklyBudget})
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Reflections & Intentions Textarea Field */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold text-dark-green-900 block">
+                  Intentions & Reflections for Upcoming Weeks (Optional):
+                </label>
+                <textarea
+                  value={intentionsNote}
+                  onChange={(e) => setIntentionsNote(e.target.value)}
+                  placeholder="e.g. Cook at home 5 nights this week; saving extra fun money for weekend birthday celebration..."
+                  rows={2}
+                  className="w-full p-3 bg-beige-50 border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                />
+              </div>
+
+              {isPreviewMode && (
+                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2.5 text-xs text-amber-900 font-medium">
+                  <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>
+                    * Check-ins cannot be submitted until the last day of the week. You are in Preview Mode.
+                  </span>
                 </div>
               )}
             </div>
-          </>
-        )}
+          )}
+        </div>
+
+        {/* Modal Footer Controls */}
+        <div className="px-6 py-4 bg-beige-50/80 border-t border-beige-200 flex items-center justify-between shrink-0">
+          {step > 1 ? (
+            <button
+              type="button"
+              onClick={() => setStep((prev) => (prev - 1) as 1 | 2 | 3)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-white border border-beige-300 hover:bg-beige-100 text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Back</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-brown-700 hover:text-dark-green-900 text-xs font-bold transition cursor-pointer"
+            >
+              Cancel
+            </button>
+          )}
+
+          {step < 3 ? (
+            <button
+              type="button"
+              onClick={() => setStep((prev) => (prev + 1) as 1 | 2 | 3)}
+              className="flex items-center gap-1.5 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
+            >
+              <span>Continue</span>
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          ) : (
+            <div className="flex flex-col items-end gap-1">
+              <button
+                type="button"
+                onClick={handleConfirmCheckIn}
+                disabled={isSubmitting || isPreviewMode || hasUnresolvedExcessDeficit}
+                className="flex items-center gap-2 px-6 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-sm transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? (
+                  <span>Saving Check-In...</span>
+                ) : isPreviewMode ? (
+                  <span>Preview Mode (Submission Locked)</span>
+                ) : (
+                  <>
+                    <Check className="w-4 h-4" />
+                    <span>
+                      {isHistoricalWeek
+                        ? 'Confirm & Record Historical Check-In'
+                        : 'Confirm & Complete Check-In'}
+                    </span>
+                  </>
+                )}
+              </button>
+              {isPreviewMode && (
+                <span className="text-[11px] text-amber-800 font-semibold italic">
+                  * Check-ins cannot be submitted until the last day of the week.
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
