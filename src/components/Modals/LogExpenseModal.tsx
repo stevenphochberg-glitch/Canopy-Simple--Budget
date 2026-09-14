@@ -1,7 +1,12 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { Category, CategoryGroup, StagedExpense, BillFrequency } from '../../types';
-import { formatCurrency } from '../../lib/calculations';
+import {
+  formatCurrency,
+  getWeekRange,
+  getWeekId,
+  getCategoryEffectiveWeeklyBudget,
+} from '../../lib/calculations';
 import { parseQuickNoteWithGemini, scanReceiptWithGemini } from '../../lib/geminiApi';
 import {
   X,
@@ -81,6 +86,13 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   const isBillsCategory =
     selectedManualCat?.group === 'Bills' ||
     selectedManualCat?.name.toLowerCase().includes('bill');
+
+  const activeWeekId = useMemo(() => {
+    const today = new Date();
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    const currentWeekRange = getWeekRange(today, firstDay, 0);
+    return getWeekId(currentWeekRange, firstDay);
+  }, [household?.firstDayOfWeek]);
 
   // Additive Quick-Add Math Logic: increments the current manualAmount by preset value
   const handleQuickAdd = (preset: number) => {
@@ -542,11 +554,14 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     onChange={(e) => setManualCategoryId(e.target.value)}
                     className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
                   >
-                    {categories.map((cat) => (
-                      <option key={cat.id} value={cat.id}>
-                        {cat.name} ({formatCurrency(cat.currentWeeklyBudget)}/wk)
-                      </option>
-                    ))}
+                    {categories.map((cat) => {
+                      const effectiveWeekly = getCategoryEffectiveWeeklyBudget(cat, activeWeekId, household);
+                      return (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.name} ({formatCurrency(effectiveWeekly.budget)}/wk)
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
 

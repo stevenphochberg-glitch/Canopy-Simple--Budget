@@ -18,6 +18,8 @@ import {
   ExternalLink,
   ChevronRight,
   TrendingDown,
+  TrendingUp,
+  DollarSign,
   AlertCircle,
   Tag,
   Layers,
@@ -47,6 +49,7 @@ export const CategoryLedgerView: React.FC = () => {
     setSelectedLedgerCategoryId,
     openLogExpenseModal,
     deleteExpense,
+    deleteDeposit,
     updateExpense,
     addTransactionComment,
     addTransactionReaction,
@@ -73,12 +76,13 @@ export const CategoryLedgerView: React.FC = () => {
 
   // Find currently active category object (if any)
   const activeCategory = useMemo(() => {
-    if (!selectedLedgerCategoryId) return null;
+    if (!selectedLedgerCategoryId || selectedLedgerCategoryId === 'deposits') return null;
     return categories.find((c) => c.id === selectedLedgerCategoryId) || null;
   }, [categories, selectedLedgerCategoryId]);
 
   // Filter & Sort expenses
   const filteredExpenses = useMemo(() => {
+    if (selectedLedgerCategoryId === 'deposits') return [];
     return expenses
       .filter((exp) => {
         // Category filter
@@ -120,6 +124,40 @@ export const CategoryLedgerView: React.FC = () => {
         return 0;
       });
   }, [expenses, selectedLedgerCategoryId, selectedMemberFilter, searchQuery, sortBy, categories, members]);
+
+  // Filter & Sort One-off Deposits
+  const filteredDeposits = useMemo(() => {
+    if (selectedLedgerCategoryId && selectedLedgerCategoryId !== 'deposits') {
+      return [];
+    }
+    const deps = household?.oneOffDeposits || [];
+    return deps
+      .filter((dep) => {
+        if (selectedMemberFilter !== 'all' && dep.payerMemberId && dep.payerMemberId !== selectedMemberFilter) {
+          return false;
+        }
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          const matchesDesc = dep.description.toLowerCase().includes(q);
+          const matchesAmount = dep.amount.toString().includes(q);
+          const member = members.find((m) => m.userId === dep.payerMemberId);
+          const matchesMember = member?.name.toLowerCase().includes(q);
+          if (!matchesDesc && !matchesAmount && !matchesMember) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const timeA = new Date(a.date).getTime();
+        const timeB = new Date(b.date).getTime();
+        if (sortBy === 'date-desc') return timeB - timeA;
+        if (sortBy === 'date-asc') return timeA - timeB;
+        if (sortBy === 'amount-desc') return b.amount - a.amount;
+        if (sortBy === 'amount-asc') return a.amount - b.amount;
+        return 0;
+      });
+  }, [household?.oneOffDeposits, selectedLedgerCategoryId, selectedMemberFilter, searchQuery, sortBy, members]);
 
   // Aggregate metrics for active selection
   const totalSelectedAmount = useMemo(() => {
@@ -258,9 +296,34 @@ export const CategoryLedgerView: React.FC = () => {
                   : 'bg-beige-200 text-dark-green-900'
               }`}
             >
-              {expenses.length}
+              {expenses.length + (household?.oneOffDeposits?.length || 0)}
             </span>
           </button>
+
+          {/* Income & Deposits Tab */}
+          {(household?.oneOffDeposits?.length || 0) > 0 && (
+            <button
+              id="tab-category-deposits"
+              onClick={() => setSelectedLedgerCategoryId('deposits')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all flex-shrink-0 cursor-pointer border ${
+                selectedLedgerCategoryId === 'deposits'
+                  ? 'bg-emerald-800 text-white border-emerald-800 shadow-sm'
+                  : 'bg-white text-emerald-900 hover:bg-emerald-50 border-emerald-200'
+              }`}
+            >
+              <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Income & Deposits</span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
+                  selectedLedgerCategoryId === 'deposits'
+                    ? 'bg-emerald-900 text-emerald-100'
+                    : 'bg-emerald-100 text-emerald-900'
+                }`}
+              >
+                {household?.oneOffDeposits?.length || 0}
+              </span>
+            </button>
+          )}
 
           {/* Individual Category Tabs */}
           {categories.map((cat) => {
@@ -471,19 +534,26 @@ export const CategoryLedgerView: React.FC = () => {
       {/* SUMMARY BANNER */}
       <div className="flex items-center justify-between text-xs text-brown-700 px-1">
         <span>
-          Showing <strong>{filteredExpenses.length}</strong> {filteredExpenses.length === 1 ? 'transaction' : 'transactions'}
+          Showing <strong>{filteredExpenses.length + filteredDeposits.length}</strong> {filteredExpenses.length + filteredDeposits.length === 1 ? 'record' : 'records'}
         </span>
         <span>
-          Total Value: <strong className="text-dark-green-900 font-extrabold">{formatCurrency(totalSelectedAmount)}</strong>
+          Expenses: <strong className="text-dark-green-900 font-extrabold">{formatCurrency(totalSelectedAmount)}</strong>
+          {filteredDeposits.length > 0 && (
+            <span className="ml-2 text-emerald-700">
+              (Deposits: <strong>+{formatCurrency(filteredDeposits.reduce((s, d) => s + d.amount, 0))}</strong>)
+            </span>
+          )}
         </span>
       </div>
 
-      {/* TRANSACTIONS LIST */}
-      {filteredExpenses.length === 0 ? (
+      {/* TRANSACTIONS & DEPOSITS LIST */}
+      {filteredExpenses.length === 0 && filteredDeposits.length === 0 ? (
         <div className="bg-white border border-beige-200 rounded-3xl p-10 text-center space-y-4 shadow-xs">
           <div className="w-14 h-14 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 mx-auto">
             {activeCategory ? (
               <CategoryIcon name={activeCategory.name} group={activeCategory.group} icon={activeCategory.icon} className="w-7 h-7" />
+            ) : selectedLedgerCategoryId === 'deposits' ? (
+              <TrendingUp className="w-7 h-7 text-emerald-800" />
             ) : (
               <Receipt className="w-7 h-7 text-dark-green-800" />
             )}
@@ -494,22 +564,97 @@ export const CategoryLedgerView: React.FC = () => {
             </h3>
             <p className="text-xs text-brown-700">
               {searchQuery
-                ? `No expense matches your search query "${searchQuery}".`
+                ? `No record matches your search query "${searchQuery}".`
+                : selectedLedgerCategoryId === 'deposits'
+                ? 'No one-off deposits have been logged yet.'
                 : activeCategory
                 ? `No transactions recorded for ${activeCategory.name} yet.`
                 : 'No expenses have been logged in the household budget yet.'}
             </p>
           </div>
-          <button
-            onClick={() => openLogExpenseModal(activeCategory)}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Log an Expense Now</span>
-          </button>
+          {selectedLedgerCategoryId !== 'deposits' && (
+            <button
+              onClick={() => openLogExpenseModal(activeCategory)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Log an Expense Now</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3.5">
+          {/* RENDER ONE-OFF INCOME DEPOSITS */}
+          {filteredDeposits.map((dep) => {
+            const payer = members.find((m) => m.userId === dep.payerMemberId);
+            return (
+              <div
+                key={dep.id}
+                id={`deposit-card-${dep.id}`}
+                className="bg-white border border-emerald-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-emerald-300 transition-all space-y-3 bg-gradient-to-r from-emerald-50/40 via-white to-white"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-800 shrink-0">
+                      <DollarSign className="w-5 h-5" />
+                    </div>
+
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
+                          {dep.description}
+                        </h4>
+                        <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-900 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <TrendingUp className="w-3 h-3 text-emerald-700" />
+                          One-Off Income
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3 text-xs text-brown-700">
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5" />
+                          {formatDateDisplay(dep.date)}
+                        </span>
+                        <span>&bull;</span>
+                        <div className="flex items-center gap-1.5">
+                          {payer?.avatarUrl ? (
+                            <img
+                              src={payer.avatarUrl}
+                              alt={payer.name}
+                              className="w-4 h-4 rounded-full object-cover border border-beige-300"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <User className="w-3.5 h-3.5 text-brown-700" />
+                          )}
+                          <span className="font-medium">{payer?.name || 'Household Member'}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
+                    <div className="text-lg sm:text-xl font-black text-emerald-700 tracking-tight font-mono">
+                      +{formatCurrency(dep.amount)}
+                    </div>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await deleteDeposit(dep.id);
+                      }}
+                      id={`del-dep-${dep.id}`}
+                      className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-brown-700 hover:text-red-700 border border-beige-300 transition cursor-pointer"
+                      title="Delete deposit"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* RENDER REGULAR EXPENSES */}
           {filteredExpenses.map((exp) => {
             const cat = categories.find((c) => c.id === exp.categoryId);
             const member = members.find((m) => m.userId === exp.loggedByUserId);

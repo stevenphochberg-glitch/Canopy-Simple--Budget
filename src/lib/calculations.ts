@@ -643,11 +643,18 @@ export function getCategoryEffectiveWeeklyBudget(
   const nameSlug = category.name ? category.name.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
   const altSlug = category.name ? category.name.toLowerCase().replace(/\s+/g, '') : '';
   
+  const isSavings =
+    category.id === 'cat_savings' ||
+    category.type === 'savings' ||
+    category.group?.toLowerCase() === 'savings' ||
+    category.name?.toLowerCase().includes('saving');
+
   const overrideVal =
     weekOverrides[category.id] ??
     (altSlug ? weekOverrides[altSlug] : undefined) ??
     (nameSlug ? weekOverrides[nameSlug] : undefined) ??
-    (category.name ? weekOverrides[category.name] : undefined);
+    (category.name ? weekOverrides[category.name] : undefined) ??
+    (isSavings ? (weekOverrides['savings'] ?? weekOverrides['cat_savings']) : undefined);
 
   if (overrideVal !== undefined && overrideVal !== null && !isNaN(Number(overrideVal))) {
     const numOverride = Number(overrideVal);

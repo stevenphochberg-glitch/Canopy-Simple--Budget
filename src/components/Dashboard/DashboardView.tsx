@@ -194,7 +194,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     );
   }, [categories]);
 
-  const isVariableIncome = household?.incomeType === 'variable' || Boolean(bufferCategory);
+  const isVariableIncome = household?.incomeType === 'variable';
   const bufferAmount = bufferCategory ? (Number(bufferCategory.currentWeeklyBudget) || 0) : (household?.initialBufferAmount || 0);
   const baselineBurnRate = useMemo(() => {
     if (household?.baselineWeeklyBurnRate && household.baselineWeeklyBurnRate > 0) {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange, calculateCategorySpending } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
@@ -14,6 +14,10 @@ import {
   CheckCircle2,
   AlertTriangle,
   Award,
+  ArrowRight,
+  ArrowLeft,
+  Target,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface MonthlyRetrospectiveModalProps {
@@ -25,16 +29,29 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
   isOpen,
   onClose,
 }) => {
-  const { household, categories, expenses, members, user, checkIns, executeMonthEndResetAction, showToast } =
-    useHousehold();
+  const {
+    household,
+    categories,
+    expenses,
+    members,
+    user,
+    checkIns,
+    savingsGoals,
+    allocateSavingsToGoals,
+    executeMonthEndResetAction,
+    showToast,
+  } = useHousehold();
 
+  const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const [intentionsText, setIntentionsText] = useState<string>('');
-  const [reflectionNote, setReflectionNote] = useState<string>('');
   const [isExecutingReset, setIsExecutingReset] = useState<boolean>(false);
   const [isCompleted, setIsCompleted] = useState<boolean>(false);
   const [isSwept, setIsSwept] = useState<boolean>(false);
   const [isBillsSurplusTransferred, setIsBillsSurplusTransferred] = useState<boolean>(false);
   const [isBillsDeficitDeducted, setIsBillsDeficitDeducted] = useState<boolean>(false);
+
+  // Allocations to savings goals: map of goalId -> dollar amount
+  const [allocations, setAllocations] = useState<Record<string, number>>({});
 
   // Month range
   const monthRange = useMemo(() => {
@@ -111,6 +128,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       .slice(0, 3);
 
     return {
+      weeksInMonth,
       totalMonthlyBudget,
       totalSpent,
       netRemaining: totalMonthlyBudget - totalSpent,
@@ -124,14 +142,59 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       billsTotalSpent,
       billsDifference,
     };
-  }, [categories, expenses, monthRange]);
+  }, [categories, expenses, monthRange, household?.fiscalYearEndMonth]);
+
+  // Compute Total Saved Funds Available to Allocate
+  const totalSavedFunds = useMemo(() => {
+    const savingsCatMonthly = categories
+      .filter((c) => c.group?.toLowerCase() === 'savings' || c.name.toLowerCase().includes('saving'))
+      .reduce((sum, c) => sum + (Number(c.baselineBudget) || 0) * monthStats.weeksInMonth, 0);
+
+    const surplusContribution = isSwept ? monthStats.totalSurplus : 0;
+    const billsSurplus = isBillsSurplusTransferred ? Math.max(0, monthStats.billsDifference) : 0;
+    const billsDeduction = isBillsDeficitDeducted ? Math.abs(Math.min(0, monthStats.billsDifference)) : 0;
+
+    const computed = savingsCatMonthly + surplusContribution + billsSurplus - billsDeduction;
+    return Math.max(0, computed);
+  }, [
+    categories,
+    monthStats.weeksInMonth,
+    monthStats.totalSurplus,
+    monthStats.billsDifference,
+    isSwept,
+    isBillsSurplusTransferred,
+    isBillsDeficitDeducted,
+  ]);
+
+  // Initialize allocations when entering step 2
+  useEffect(() => {
+    if (savingsGoals.length > 0 && Object.keys(allocations).length === 0 && totalSavedFunds > 0) {
+      // Default: allocate everything to the first goal (e.g. Emergency Savings Fund)
+      const primaryGoal = savingsGoals[0];
+      setAllocations({ [primaryGoal.id]: totalSavedFunds });
+    }
+  }, [savingsGoals, totalSavedFunds]);
+
+  // Calculate sum of allocations & remaining
+  const totalAllocated = useMemo(() => {
+    return Object.values(allocations).reduce((sum: number, val: number) => sum + (Number(val) || 0), 0);
+  }, [allocations]);
+
+  const remainingToAllocate = useMemo(() => {
+    return totalSavedFunds - totalAllocated;
+  }, [totalSavedFunds, totalAllocated]);
+
+  const is100PercentAllocated = useMemo(() => {
+    // Exact or floating point tolerance
+    return Math.abs(remainingToAllocate) < 0.01;
+  }, [remainingToAllocate]);
 
   if (!isOpen) return null;
 
   const handleSweepToSavings = () => {
     if (monthStats.totalSurplus <= 0) return;
     setIsSwept(true);
-    showToast(`Successfully swept ${formatCurrency(monthStats.totalSurplus)} in monthly surplus directly into Savings!`);
+    showToast(`Successfully swept ${formatCurrency(monthStats.totalSurplus)} in monthly surplus directly into Savings!`, 'success');
   };
 
   const handleTransferBillsSurplus = () => {
@@ -146,13 +209,62 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     showToast(`Covered ${formatCurrency(Math.abs(monthStats.billsDifference))} Bills deficit by deducting from Savings allocation.`, 'success');
   };
 
-  const handleExecuteReset = async () => {
+  const handleAllocationChange = (goalId: string, value: number) => {
+    setAllocations((prev) => ({
+      ...prev,
+      [goalId]: Math.max(0, value),
+    }));
+  };
+
+  const handleDistributeEvenly = () => {
+    if (savingsGoals.length === 0 || totalSavedFunds <= 0) return;
+    const split = Math.floor((totalSavedFunds / savingsGoals.length) * 100) / 100;
+    const newAlloc: Record<string, number> = {};
+    let runningSum = 0;
+
+    savingsGoals.forEach((g, idx) => {
+      if (idx === savingsGoals.length - 1) {
+        newAlloc[g.id] = Math.round((totalSavedFunds - runningSum) * 100) / 100;
+      } else {
+        newAlloc[g.id] = split;
+        runningSum += split;
+      }
+    });
+    setAllocations(newAlloc);
+  };
+
+  const handleAllocateAllToGoal = (goalId: string) => {
+    const newAlloc: Record<string, number> = {};
+    savingsGoals.forEach((g) => {
+      newAlloc[g.id] = g.id === goalId ? totalSavedFunds : 0;
+    });
+    setAllocations(newAlloc);
+  };
+
+  const handleFinalizeAndReset = async () => {
+    if (!is100PercentAllocated && totalSavedFunds > 0) {
+      showToast(`Please allocate 100% of the saved funds (${formatCurrency(remainingToAllocate)} remaining) before finalizing.`, 'error');
+      return;
+    }
+
     setIsExecutingReset(true);
     try {
+      // 1. Record allocations to savings goals
+      const allocationList: { goalId: string; amount: number }[] = Object.entries(allocations)
+        .filter(([_, amt]) => (amt as number) > 0)
+        .map(([goalId, amount]) => ({ goalId, amount: Number(amount) }));
+
+      if (allocationList.length > 0) {
+        await allocateSavingsToGoals(allocationList);
+      }
+
+      // 2. Execute month-end hard reset
       await executeMonthEndResetAction();
       setIsCompleted(true);
+      showToast('Month-End Hard Reset executed and Savings Goals funded!', 'success');
     } catch (err) {
       console.error('Failed to execute month-end reset:', err);
+      showToast(`Error executing reset: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setIsExecutingReset(false);
     }
@@ -175,18 +287,27 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                 <span className="text-xs text-dark-grey-600">{monthRange.label}</span>
               </div>
               <h2 className="text-lg sm:text-xl font-black text-dark-green-900 leading-tight">
-                Fiscal Month-End Review & Hard Reset
+                {currentStep === 1
+                  ? 'Fiscal Month-End Review & Hard Reset'
+                  : 'Allocate Monthly Savings into Goals'}
               </h2>
             </div>
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-brown-700 hover:text-dark-green-900 hover:bg-beige-200 transition cursor-pointer"
-            title="Close"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center gap-2">
+            {!isCompleted && (
+              <div className="flex items-center gap-1 text-xs font-bold text-sage-900 bg-sage-100 px-2.5 py-1 rounded-xl">
+                <span>Step {currentStep} of 2</span>
+              </div>
+            )}
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl text-brown-700 hover:text-dark-green-900 hover:bg-beige-200 transition cursor-pointer"
+              title="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -201,7 +322,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   Month-End Reset Complete!
                 </h3>
                 <p className="text-xs text-brown-700 leading-relaxed">
-                  All category budgets have been reset to their baseline default values. Your household is primed for a fresh financial month ahead.
+                  All category budgets have been restored to baseline defaults and <strong>{formatCurrency(totalAllocated)}</strong> was successfully banked across your household savings goals.
                 </p>
               </div>
               <button
@@ -212,9 +333,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                 Back to Dashboard
               </button>
             </div>
-          ) : (
+          ) : currentStep === 1 ? (
             <>
-              {/* Monthly Overview Stats */}
+              {/* Step 1: Monthly Overview Stats */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="p-3.5 bg-beige-50 border border-beige-200 rounded-2xl">
                   <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
@@ -489,40 +610,255 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   onChange={(e) => setIntentionsText(e.target.value)}
                   placeholder="e.g., Focus on reducing restaurant spending; increase contribution to Vacation Savings..."
                   rows={2}
-                  className="w-full p-3 bg-beige-50 border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                  className="w-full p-3 bg-beige-50 border border-beige-300 rounded-xl text-xs text-dark-green-900 focus:outline-hidden focus:border-dark-green-800"
                 />
               </div>
             </>
+          ) : (
+            /* Step 2: Savings Goal Allocation */
+            <div className="space-y-5">
+              {/* Savings Total Pool Banner */}
+              <div className="p-5 bg-gradient-to-br from-dark-green-900 to-dark-green-950 text-white rounded-2xl shadow-md space-y-3">
+                <div className="flex items-start justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <PiggyBank className="w-5 h-5 text-emerald-300" />
+                      <span className="text-xs font-bold text-sage-200 uppercase tracking-wider">
+                        Accumulated Monthly Savings
+                      </span>
+                    </div>
+                    <div className="text-3xl font-black font-mono tracking-tight text-white">
+                      {formatCurrency(totalSavedFunds)}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={handleDistributeEvenly}
+                      className="px-2.5 py-1 bg-white/15 hover:bg-white/25 text-white text-[11px] font-bold rounded-lg transition cursor-pointer"
+                    >
+                      Split Evenly
+                    </button>
+                    {savingsGoals[0] && (
+                      <button
+                        type="button"
+                        onClick={() => handleAllocateAllToGoal(savingsGoals[0].id)}
+                        className="px-2.5 py-1 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-200 border border-emerald-400/30 text-[11px] font-bold rounded-lg transition cursor-pointer"
+                      >
+                        All to Emergency Fund
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-sage-100/90 leading-relaxed border-t border-white/10 pt-2.5">
+                  Allocate your accumulated monthly savings funds across your household goals below. You must distribute 100% of the funds before executing the Hard Reset.
+                </p>
+              </div>
+
+              {/* Status & Distribution Validation Bar */}
+              <div
+                className={`p-3.5 rounded-2xl border flex items-center justify-between transition-colors ${
+                  is100PercentAllocated
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                    : remainingToAllocate > 0
+                    ? 'bg-amber-50 border-amber-300 text-amber-950'
+                    : 'bg-red-50 border-red-300 text-red-950'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {is100PercentAllocated ? (
+                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                  ) : remainingToAllocate > 0 ? (
+                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                  ) : (
+                    <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                  )}
+                  <div>
+                    <span className="text-xs font-bold block">
+                      {is100PercentAllocated
+                        ? '100% Allocated — Ready to finalize!'
+                        : remainingToAllocate > 0
+                        ? `Remaining to distribute: ${formatCurrency(remainingToAllocate)}`
+                        : `Overallocated by ${formatCurrency(Math.abs(remainingToAllocate))}`}
+                    </span>
+                    <span className="text-[11px] opacity-80">
+                      Total Allocated: {formatCurrency(totalAllocated)} / {formatCurrency(totalSavedFunds)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="text-right">
+                  <span
+                    className={`text-xs font-black font-mono px-2 py-0.5 rounded-full ${
+                      is100PercentAllocated
+                        ? 'bg-emerald-200 text-emerald-900'
+                        : 'bg-amber-200 text-amber-900'
+                    }`}
+                  >
+                    {totalSavedFunds > 0
+                      ? `${Math.round((totalAllocated / totalSavedFunds) * 100)}%`
+                      : '100%'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Savings Goals Allocation Cards */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <h4 className="text-xs font-black text-dark-green-900 uppercase tracking-wider">
+                    Household Savings Goals
+                  </h4>
+                  <span className="text-[11px] text-brown-700">
+                    {savingsGoals.length} {savingsGoals.length === 1 ? 'Goal' : 'Goals'} active
+                  </span>
+                </div>
+
+                {savingsGoals.map((goal) => {
+                  const currentAlloc = allocations[goal.id] || 0;
+                  const isEmergencyFund = goal.name.toLowerCase().includes('emergency');
+                  const percent = goal.targetAmount > 0
+                    ? Math.min(100, Math.round(((goal.currentAmount + currentAlloc) / goal.targetAmount) * 100))
+                    : 0;
+
+                  return (
+                    <div
+                      key={goal.id}
+                      className={`p-4 rounded-2xl border transition-all space-y-3 ${
+                        isEmergencyFund
+                          ? 'bg-gradient-to-r from-emerald-50/60 to-white border-emerald-300 shadow-xs'
+                          : 'bg-white border-beige-300 hover:border-beige-400'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                              isEmergencyFund
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : 'bg-sage-100 text-dark-green-800'
+                            }`}
+                          >
+                            {isEmergencyFund ? (
+                              <ShieldCheck className="w-5 h-5" />
+                            ) : (
+                              <Target className="w-5 h-5" />
+                            )}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h5 className="font-extrabold text-sm text-dark-green-900 leading-tight">
+                                {goal.name}
+                              </h5>
+                              {isEmergencyFund && (
+                                <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded">
+                                  Default Fund
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs text-brown-700 flex items-center gap-2 mt-0.5">
+                              <span>Current: <strong>{formatCurrency(goal.currentAmount)}</strong></span>
+                              <span>&bull;</span>
+                              <span>Target: <strong>{formatCurrency(goal.targetAmount)}</strong></span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Amount Input */}
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-black text-dark-green-900">$</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            value={currentAlloc === 0 ? '' : currentAlloc}
+                            onChange={(e) => handleAllocationChange(goal.id, Number(e.target.value) || 0)}
+                            placeholder="0"
+                            className="w-24 px-3 py-1.5 bg-beige-50 border border-beige-300 rounded-xl text-sm font-bold font-mono text-dark-green-900 text-right focus:outline-hidden focus:border-dark-green-700"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Progress Bar */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px] text-brown-700 font-medium">
+                          <span>
+                            Progress with this allocation: <strong>{percent}%</strong>
+                          </span>
+                          <span>
+                            New total: {formatCurrency(goal.currentAmount + currentAlloc)}
+                          </span>
+                        </div>
+                        <div className="w-full bg-beige-200 rounded-full h-2 overflow-hidden">
+                          <div
+                            className={`h-2 rounded-full transition-all duration-300 ${
+                              isEmergencyFund ? 'bg-emerald-600' : 'bg-dark-green-700'
+                            }`}
+                            style={{ width: `${percent}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
         </div>
 
         {/* Footer */}
         {!isCompleted && (
           <div className="px-6 py-4 bg-beige-50/80 border-t border-beige-200 flex items-center justify-between">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2 text-brown-700 hover:text-dark-green-900 text-xs font-bold transition cursor-pointer"
-            >
-              Cancel
-            </button>
-
-            <div className="flex flex-col items-end gap-1">
+            {currentStep === 1 ? (
               <button
                 type="button"
-                onClick={handleExecuteReset}
-                disabled={isExecutingReset || !isFinalWeeklyCheckInComplete}
-                className="flex items-center gap-2 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={onClose}
+                className="px-4 py-2 text-brown-700 hover:text-dark-green-900 text-xs font-bold transition cursor-pointer"
+              >
+                Cancel
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setCurrentStep(1)}
+                className="flex items-center gap-1.5 px-4 py-2 bg-white hover:bg-beige-100 text-dark-green-900 text-xs font-bold rounded-xl border border-beige-300 transition cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to Review</span>
+              </button>
+            )}
+
+            {currentStep === 1 ? (
+              <div className="flex flex-col items-end gap-1">
+                <button
+                  type="button"
+                  onClick={() => setCurrentStep(2)}
+                  disabled={!isFinalWeeklyCheckInComplete}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span>Continue to Savings Allocation</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+                {!isFinalWeeklyCheckInComplete && (
+                  <span className="text-[11px] text-amber-800 font-semibold italic text-right max-w-sm">
+                    * Complete the final weekly check-in before finalizing the monthly retrospective.
+                  </span>
+                )}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleFinalizeAndReset}
+                disabled={isExecutingReset || !is100PercentAllocated}
+                className="flex items-center gap-2 px-6 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-4 h-4" />
-                <span>{isExecutingReset ? 'Executing Reset...' : 'Execute Month-End Hard Reset'}</span>
-              </button>
-              {!isFinalWeeklyCheckInComplete && (
-                <span className="text-[11px] text-amber-800 font-semibold italic text-right max-w-sm">
-                  * The last weekly check-in of the month needs to be completed before the Monthly Retrospective can be completed.
+                <span>
+                  {isExecutingReset ? 'Executing Reset...' : 'Confirm Allocations & Hard Reset'}
                 </span>
-              )}
-            </div>
+              </button>
+            )}
           </div>
         )}
       </div>

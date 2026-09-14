@@ -107,6 +107,22 @@
         "linkedExpenseId": { "type": "string", "maxLength": 128 }
       },
       "required": ["type", "content", "authorId", "timestamp"]
+    },
+    "SavingsGoal": {
+      "title": "SavingsGoal",
+      "description": "Dedicated household savings target milestone.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "name": { "type": "string", "maxLength": 128 },
+        "targetAmount": { "type": "number" },
+        "currentAmount": { "type": "number" },
+        "categoryId": { "type": "string", "maxLength": 128 },
+        "targetDate": { "type": "string" },
+        "isAchieved": { "type": "boolean" },
+        "notes": { "type": "string", "maxLength": 500 }
+      },
+      "required": ["name", "targetAmount", "currentAmount"]
     }
   },
   "firestore": {
@@ -137,6 +153,10 @@
     "/households/{householdId}/feed/{feedId}": {
       "schema": { "$ref": "#/entities/FeedItem" },
       "description": "Real-time activity stream"
+    },
+    "/households/{householdId}/savingsGoals/{goalId}": {
+      "schema": { "$ref": "#/entities/SavingsGoal" },
+      "description": "Household savings goals"
     }
   }
 }

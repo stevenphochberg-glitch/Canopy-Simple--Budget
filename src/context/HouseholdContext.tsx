@@ -189,6 +189,7 @@ export interface HouseholdContextType {
   createSavingsGoal: (goal: Omit<SavingsGoal, 'id'>) => Promise<void>;
   updateSavingsGoal: (id: string, updates: Partial<SavingsGoal>) => Promise<void>;
   deleteSavingsGoal: (id: string) => Promise<void>;
+  allocateSavingsToGoals: (allocations: Record<string, number>) => Promise<void>;
 
   // Expense mutations
   addExpense: (expense: Omit<Expense, 'id'>) => Promise<void>;
@@ -231,6 +232,7 @@ export interface HouseholdContextType {
     payerMemberId?: string;
     notes?: string;
   }) => Promise<void>;
+  deleteDeposit: (depositId: string) => Promise<void>;
   applyExtraPaycheckDecision: (decision: ExtraPaycheckDecision) => Promise<void>;
   resetHouseholdToOnboarding: () => void;
 
@@ -628,7 +630,22 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           ...(d.data() as SavingsGoal),
           id: d.id,
         }));
-        setSavingsGoals(loadedGoals);
+        if (loadedGoals.length === 0) {
+          const defaultGoal: SavingsGoal = {
+            id: `goal_emergency_${householdId}`,
+            name: 'Emergency Savings Fund',
+            targetAmount: 5000,
+            currentAmount: 0,
+            isAchieved: false,
+          };
+          setSavingsGoals([defaultGoal]);
+          if (isFirebaseConfigured && db) {
+            const goalRef = doc(db, 'households', householdId, 'savingsGoals', defaultGoal.id);
+            setDoc(goalRef, sanitizeFirestorePayload(defaultGoal)).catch(console.error);
+          }
+        } else {
+          setSavingsGoals(loadedGoals);
+        }
       },
       (err) => {
         console.warn(`[Firestore] SavingsGoals listener note:`, err);
@@ -1457,7 +1474,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Income updated & category budgets recalculated.');
   };
 
-  // One-Off Deposit routing directly into the top-level Income Buffer
+  // One-Off Deposit routing: immediately expands weekly savings budget via weeklyOverrides map
   const addOneOffDeposit = async (depositData: {
     description: string;
     amount: number;
@@ -1468,55 +1485,79 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!household) return;
 
     const safeAmount = Math.max(0, depositData.amount);
+    const depositDateStr = depositData.date || new Date().toISOString().split('T')[0];
     const newDeposit: OneOffDeposit = {
       id: `dep_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
       description: depositData.description.trim() || 'One-off Deposit',
       amount: safeAmount,
-      date: depositData.date || new Date().toISOString().split('T')[0],
+      date: depositDateStr,
       payerMemberId: depositData.payerMemberId,
       notes: depositData.notes,
     };
 
     const updatedDeposits = [...(household.oneOffDeposits || []), newDeposit];
-    const newBufferAmount = (household.initialBufferAmount || 0) + safeAmount;
+    const isVariable = household.incomeType === 'variable';
 
-    // Check if an "Income Buffer" category exists; if not, create it
-    const existingBuffer = categories.find(
-      (c) => c.name.toLowerCase() === 'income buffer' || c.id === 'cat_income_buffer'
+    // 1. Determine weekId based on deposit date
+    const depositDateObj = new Date(depositDateStr + 'T12:00:00');
+    const targetWeekRange = getWeekRange(depositDateObj, household.firstDayOfWeek || 'Monday', 0);
+    const weekId = formatLocalDate(targetWeekRange.startDate);
+
+    // 2. Identify Savings Category & Baseline Target
+    const savingsCat = categories.find(
+      (c) =>
+        c.id === 'cat_savings' ||
+        c.type === 'savings' ||
+        c.group?.toLowerCase() === 'savings' ||
+        c.name.toLowerCase().includes('saving')
     );
-    let targetBufferCat: Category;
+    const baselineSavings = savingsCat ? Number(savingsCat.baselineBudget) || 0 : 0;
+
+    // 3. Calculate Expanded Savings Override
+    const existingWeeklyOverrides = { ...(household.weeklyOverrides || {}) };
+    const weekOverrides = { ...(existingWeeklyOverrides[weekId] || {}) };
+    const existingSavingsOverride =
+      weekOverrides.savings ?? (savingsCat ? weekOverrides[savingsCat.id] : undefined);
+
+    const currentSavingsBudget =
+      existingSavingsOverride !== undefined ? Number(existingSavingsOverride) : baselineSavings;
+    const newSavingsBudget = currentSavingsBudget + safeAmount;
+
+    const updatedWeekOverrides = {
+      ...weekOverrides,
+      savings: newSavingsBudget,
+      ...(savingsCat ? { [savingsCat.id]: newSavingsBudget } : {}),
+    };
+
+    const updatedWeeklyOverrides = {
+      ...existingWeeklyOverrides,
+      [weekId]: updatedWeekOverrides,
+    };
+
+    let newBufferAmount = household.initialBufferAmount || 0;
+    let targetBufferCat: Category | null = null;
     let updatedCategories = [...categories];
 
-    if (existingBuffer) {
-      targetBufferCat = {
-        ...existingBuffer,
-        currentWeeklyBudget: (existingBuffer.currentWeeklyBudget || 0) + safeAmount,
-      };
-      updatedCategories = categories.map((c) => (c.id === targetBufferCat.id ? targetBufferCat : c));
-    } else {
-      targetBufferCat = {
-        id: 'cat_income_buffer',
-        name: 'Income Buffer',
-        group: 'Savings',
-        type: 'savings',
-        icon: 'shield',
-        color: 'dark-green',
-        baselineBudget: 0,
-        currentWeeklyBudget: safeAmount,
-        subcategories: ['One-Off Deposits', 'Bonuses', 'Gifts', 'Tax Return', 'Operating Buffer'],
-        description: 'Dedicated holding tank for one-off deposits and lump sum reserves.',
-        totalLogged: 0,
-        transactionCount: 0,
-      };
-      updatedCategories = [targetBufferCat, ...categories];
+    if (isVariable) {
+      newBufferAmount += safeAmount;
+      const existingBuffer = categories.find(
+        (c) => c.name.toLowerCase() === 'income buffer' || c.id === 'cat_income_buffer'
+      );
+      if (existingBuffer) {
+        targetBufferCat = {
+          ...existingBuffer,
+          currentWeeklyBudget: (existingBuffer.currentWeeklyBudget || 0) + safeAmount,
+        };
+        updatedCategories = categories.map((c) => (c.id === targetBufferCat!.id ? targetBufferCat! : c));
+        setCategories(updatedCategories);
+      }
     }
-
-    setCategories(updatedCategories);
 
     const updatedHousehold: Household = {
       ...household,
       oneOffDeposits: updatedDeposits,
-      initialBufferAmount: newBufferAmount,
+      weeklyOverrides: updatedWeeklyOverrides,
+      ...(isVariable ? { initialBufferAmount: newBufferAmount } : {}),
     };
     setHousehold(updatedHousehold);
 
@@ -1524,16 +1565,42 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       try {
         const batch = writeBatch(db);
         const householdRef = doc(db, 'households', household.id);
-        batch.update(
-          householdRef,
+        const hhUpdates: any = {
+          oneOffDeposits: updatedDeposits,
+          [`weeklyOverrides.${weekId}.savings`]: newSavingsBudget,
+          updatedAt: new Date().toISOString(),
+        };
+        if (savingsCat) {
+          hhUpdates[`weeklyOverrides.${weekId}.${savingsCat.id}`] = newSavingsBudget;
+        }
+        if (isVariable) {
+          hhUpdates.initialBufferAmount = newBufferAmount;
+        }
+        batch.update(householdRef, sanitizeFirestorePayload(hhUpdates));
+
+        if (isVariable && targetBufferCat) {
+          const catRef = doc(db, 'households', household.id, 'categories', (targetBufferCat as Category).id);
+          batch.set(catRef, sanitizeFirestorePayload(targetBufferCat), { merge: true });
+        }
+
+        // Add feed item for deposit
+        const now = Date.now();
+        const payer = members.find((m) => m.userId === depositData.payerMemberId) || user;
+        const feedRef = doc(db, 'households', household.id, 'feed', `feed_dep_${now}`);
+        batch.set(
+          feedRef,
           sanitizeFirestorePayload({
-            oneOffDeposits: updatedDeposits,
-            initialBufferAmount: newBufferAmount,
-            updatedAt: new Date().toISOString(),
+            id: `feed_dep_${now}`,
+            type: 'transaction',
+            content: `Logged one-off deposit of ${formatCurrency(safeAmount)}: "${newDeposit.description}" (+${formatCurrency(safeAmount)} added to ${weekId} Savings)`,
+            authorId: user?.userId || 'usr_self',
+            authorName: payer?.name || user?.name || 'Member',
+            authorAvatar: user?.avatarUrl,
+            timestamp: now,
+            date: newDeposit.date,
           })
         );
-        const catRef = doc(db, 'households', household.id, 'categories', targetBufferCat.id);
-        batch.set(catRef, sanitizeFirestorePayload(targetBufferCat), { merge: true });
+
         await batch.commit();
       } catch (err) {
         console.error('Firestore addOneOffDeposit error:', err);
@@ -1541,7 +1608,97 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    showToast(`Routed ${formatCurrency(safeAmount)} directly to the Income Buffer!`, 'success');
+    showToast(`Logged deposit: ${formatCurrency(safeAmount)} (${newDeposit.description}). Expanded ${weekId} savings!`, 'success');
+  };
+
+  const deleteDeposit = async (depositId: string) => {
+    if (!household) return;
+    const target = (household.oneOffDeposits || []).find((d) => d.id === depositId);
+    if (!target) return;
+    const updatedDeposits = (household.oneOffDeposits || []).filter((d) => d.id !== depositId);
+
+    const safeAmount = target.amount || 0;
+    const depositDateStr = target.date || new Date().toISOString().split('T')[0];
+    const depositDateObj = new Date(depositDateStr + 'T12:00:00');
+    const targetWeekRange = getWeekRange(depositDateObj, household.firstDayOfWeek || 'Monday', 0);
+    const weekId = formatLocalDate(targetWeekRange.startDate);
+
+    const savingsCat = categories.find(
+      (c) =>
+        c.id === 'cat_savings' ||
+        c.type === 'savings' ||
+        c.group?.toLowerCase() === 'savings' ||
+        c.name.toLowerCase().includes('saving')
+    );
+    const baselineSavings = savingsCat ? Number(savingsCat.baselineBudget) || 0 : 0;
+
+    const existingWeeklyOverrides = { ...(household.weeklyOverrides || {}) };
+    const weekOverrides = { ...(existingWeeklyOverrides[weekId] || {}) };
+    const currentSavingsVal = weekOverrides.savings ?? (savingsCat ? weekOverrides[savingsCat.id] : undefined);
+
+    let shouldDeleteSavingsOverride = false;
+    let newSavingsBudget = baselineSavings;
+
+    if (currentSavingsVal !== undefined) {
+      newSavingsBudget = Number(currentSavingsVal) - safeAmount;
+      if (newSavingsBudget <= baselineSavings) {
+        shouldDeleteSavingsOverride = true;
+        delete weekOverrides.savings;
+        if (savingsCat) {
+          delete weekOverrides[savingsCat.id];
+        }
+      } else {
+        weekOverrides.savings = newSavingsBudget;
+        if (savingsCat) {
+          weekOverrides[savingsCat.id] = newSavingsBudget;
+        }
+      }
+    }
+
+    if (Object.keys(weekOverrides).length === 0) {
+      delete existingWeeklyOverrides[weekId];
+    } else {
+      existingWeeklyOverrides[weekId] = weekOverrides;
+    }
+
+    const updatedHousehold: Household = {
+      ...household,
+      oneOffDeposits: updatedDeposits,
+      weeklyOverrides: existingWeeklyOverrides,
+    };
+    setHousehold(updatedHousehold);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const householdRef = doc(db, 'households', household.id);
+        const hhUpdates: any = {
+          oneOffDeposits: updatedDeposits,
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (shouldDeleteSavingsOverride) {
+          hhUpdates[`weeklyOverrides.${weekId}.savings`] = deleteField();
+          if (savingsCat) {
+            hhUpdates[`weeklyOverrides.${weekId}.${savingsCat.id}`] = deleteField();
+          }
+          if (Object.keys(weekOverrides).length === 0) {
+            hhUpdates[`weeklyOverrides.${weekId}`] = deleteField();
+          }
+        } else if (currentSavingsVal !== undefined) {
+          hhUpdates[`weeklyOverrides.${weekId}.savings`] = newSavingsBudget;
+          if (savingsCat) {
+            hhUpdates[`weeklyOverrides.${weekId}.${savingsCat.id}`] = newSavingsBudget;
+          }
+        }
+
+        await updateDoc(householdRef, hhUpdates);
+      } catch (err) {
+        console.error('Firestore deleteDeposit error:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}`);
+      }
+    }
+
+    showToast(`Deleted deposit "${target?.description || ''}" (${formatCurrency(target?.amount || 0)}).`);
   };
 
   // Category Mutations
@@ -1678,6 +1835,47 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
     showToast(`Removed goal "${target?.name || ''}".`);
+  };
+
+  const allocateSavingsToGoals = async (allocations: Record<string, number>) => {
+    if (!household) return;
+    const updatedGoals = savingsGoals.map((g) => {
+      const allocated = Number(allocations[g.id]) || 0;
+      if (allocated > 0) {
+        const newCurrent = (g.currentAmount || 0) + allocated;
+        const isAchieved = newCurrent >= (g.targetAmount || 0);
+        return {
+          ...g,
+          currentAmount: newCurrent,
+          isAchieved,
+          achievedAt: isAchieved && !g.isAchieved ? new Date().toISOString().split('T')[0] : g.achievedAt,
+        };
+      }
+      return g;
+    });
+
+    setSavingsGoals(updatedGoals);
+
+    if (isFirebaseConfigured && db && household.id) {
+      try {
+        const batch = writeBatch(db);
+        for (const [goalId, amount] of Object.entries(allocations)) {
+          if (amount > 0) {
+            const goal = updatedGoals.find((g) => g.id === goalId);
+            if (goal) {
+              const goalRef = doc(db, 'households', household.id, 'savingsGoals', goalId);
+              batch.set(goalRef, sanitizeFirestorePayload(goal), { merge: true });
+            }
+          }
+        }
+        await batch.commit();
+      } catch (err) {
+        console.error('Firestore allocateSavingsToGoals error:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/savingsGoals`);
+      }
+    }
+
+    showToast('Savings goals successfully funded!', 'success');
   };
 
   // Universal Staging & Confirmation Flow
@@ -2807,6 +3005,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         createSavingsGoal,
         updateSavingsGoal,
         deleteSavingsGoal,
+        allocateSavingsToGoals,
 
         addExpense,
         deleteExpense,
@@ -2828,6 +3027,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateHousehold,
         updateMemberIncome,
         addOneOffDeposit,
+        deleteDeposit,
         applyExtraPaycheckDecision,
         resetHouseholdToOnboarding,
 

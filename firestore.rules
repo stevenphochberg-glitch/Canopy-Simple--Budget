@@ -68,6 +68,10 @@ service cloud.firestore {
         allow read: if isSignedIn();
         allow write: if isSignedIn() && isValidId(feedId);
       }
+      match /savingsGoals/{goalId} {
+        allow read: if isSignedIn();
+        allow write: if isSignedIn() && isValidId(goalId);
+      }
     }
   }
 }
