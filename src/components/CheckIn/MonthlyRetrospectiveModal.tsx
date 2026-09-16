@@ -274,7 +274,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div className="bg-white border border-beige-200 rounded-3xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Header */}
-        <div className="px-6 py-4 bg-gradient-to-r from-sage-50 to-beige-50 border-b border-beige-200 flex items-center justify-between">
+        <div className="px-6 py-4 bg-sage-50/70 border-b border-beige-200 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shadow-xs">
               <Calendar className="w-5 h-5" />
@@ -359,7 +359,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   className={`p-3.5 border rounded-2xl ${
                     monthStats.netRemaining >= 0
                       ? 'bg-sage-50 border-sage-200'
-                      : 'bg-red-50 border-red-200'
+                      : 'bg-alert-red-50 border-alert-red-200'
                   }`}
                 >
                   <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
@@ -367,7 +367,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   </span>
                   <span
                     className={`text-base sm:text-lg font-black ${
-                      monthStats.netRemaining >= 0 ? 'text-sage-800' : 'text-red-600'
+                      monthStats.netRemaining >= 0 ? 'text-sage-800' : 'text-alert-red-600'
                     }`}
                   >
                     {monthStats.netRemaining >= 0
@@ -405,9 +405,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                 </div>
 
                 {/* Overages */}
-                <div className="p-4 bg-red-50/70 border border-red-200 rounded-2xl space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs font-bold text-red-900">
-                    <AlertTriangle className="w-4 h-4 text-red-600" />
+                <div className="p-4 bg-alert-red-50/70 border border-alert-red-200 rounded-2xl space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-alert-red-900">
+                    <AlertTriangle className="w-4 h-4 text-alert-red-600" />
                     <span>Top Overages (Deficits)</span>
                   </div>
                   {monthStats.topOverspent.length === 0 ? (
@@ -420,7 +420,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                           className="flex items-center justify-between text-xs bg-white/80 px-2.5 py-1.5 rounded-lg"
                         >
                           <span className="font-medium text-dark-green-900">{cat.name}</span>
-                          <span className="font-extrabold text-red-600">
+                          <span className="font-extrabold text-alert-red-600">
                             -{formatCurrency(Math.abs(cat.difference))} over
                           </span>
                         </div>
@@ -460,8 +460,8 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                           <span>+{formatCurrency(monthStats.billsDifference)} Month Surplus</span>
                         </span>
                       ) : monthStats.billsDifference < 0 ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-red-700 bg-red-100 px-2.5 py-1 rounded-full">
-                          <TrendingUp className="w-3.5 h-3.5 text-red-600" />
+                        <span className="inline-flex items-center gap-1 text-[11px] font-black text-alert-red-700 bg-alert-red-100 px-2.5 py-1 rounded-full">
+                          <TrendingUp className="w-3.5 h-3.5 text-alert-red-600" />
                           <span>-{formatCurrency(Math.abs(monthStats.billsDifference))} Month Deficit</span>
                         </span>
                       ) : (
@@ -505,8 +505,8 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
 
                   {/* Action for Bills Month-End Deficit */}
                   {monthStats.billsDifference < 0 && (
-                    <div className="p-3 bg-red-50/70 border border-red-200 rounded-xl flex items-center justify-between gap-3">
-                      <p className="text-xs text-red-950">
+                    <div className="p-3 bg-alert-red-50/70 border border-alert-red-200 rounded-xl flex items-center justify-between gap-3">
+                      <p className="text-xs text-alert-red-950">
                         Higher bills/utilities resulted in a <strong>{formatCurrency(Math.abs(monthStats.billsDifference))}</strong> deficit. Cover this overage directly from your accumulated Savings allocation.
                       </p>
                       <button
@@ -515,8 +515,8 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                         disabled={isBillsDeficitDeducted}
                         className={`px-3.5 py-1.5 rounded-xl text-xs font-black transition cursor-pointer shrink-0 flex items-center gap-1.5 ${
                           isBillsDeficitDeducted
-                            ? 'bg-red-200 text-red-900 cursor-default'
-                            : 'bg-red-700 hover:bg-red-800 text-white shadow-xs'
+                            ? 'bg-alert-red-200 text-alert-red-900 cursor-default'
+                            : 'bg-alert-red-800 hover:bg-alert-red-900 text-white shadow-xs'
                         }`}
                       >
                         {isBillsDeficitDeducted ? (
@@ -538,7 +538,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
 
               {/* Single-Click Monthly Check-in Sweep to Savings */}
               {monthStats.totalSurplus > 0 && (
-                <div className="p-4 bg-gradient-to-br from-sage-50 to-emerald-50 border border-sage-200 rounded-2xl space-y-3">
+                <div className="p-4 bg-sage-50/70 border border-sage-200 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-xl bg-sage-200 text-dark-green-900 flex items-center justify-center">
@@ -581,19 +581,19 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
               )}
 
               {/* Hard Reset Explanation Card */}
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl space-y-1.5">
-                <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
-                  <RotateCcw className="w-4 h-4 text-amber-700" />
+              <div className="p-4 bg-gold-50 border border-gold-200 rounded-2xl space-y-1.5">
+                <div className="flex items-center gap-2 text-xs font-bold text-gold-900">
+                  <RotateCcw className="w-4 h-4 text-gold-700" />
                   <span>The Fiscal Month-End Hard Reset</span>
                 </div>
-                <p className="text-xs text-amber-950 leading-relaxed">
+                <p className="text-xs text-gold-950 leading-relaxed">
                   In Canopy, rollovers and deficit adjustments <strong>do not roll over across month boundaries</strong>. Executing the Hard Reset returns all category weekly budgets back to their default baseline values, providing a clean slate for next month.
                 </p>
               </div>
 
               {!isFinalWeeklyCheckInComplete && (
-                <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center gap-2.5 text-xs text-amber-950 font-medium">
-                  <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
+                <div className="p-3.5 bg-gold-50/90 border border-gold-300 rounded-2xl flex items-center gap-2.5 text-xs text-gold-950 font-medium">
+                  <AlertTriangle className="w-4 h-4 text-gold-700 shrink-0" />
                   <span>
                     * The last weekly check-in of the month needs to be completed before the Monthly Retrospective can be completed.
                   </span>
@@ -618,11 +618,11 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
             /* Step 2: Savings Goal Allocation */
             <div className="space-y-5">
               {/* Savings Total Pool Banner */}
-              <div className="p-5 bg-gradient-to-br from-dark-green-900 to-dark-green-950 text-white rounded-2xl shadow-md space-y-3">
+              <div className="p-5 bg-dark-green-900 text-white rounded-2xl shadow-md space-y-3">
                 <div className="flex items-start justify-between">
                   <div className="space-y-1">
                     <div className="flex items-center gap-2">
-                      <PiggyBank className="w-5 h-5 text-emerald-300" />
+                      <PiggyBank className="w-5 h-5 text-sage-300" />
                       <span className="text-xs font-bold text-sage-200 uppercase tracking-wider">
                         Accumulated Monthly Savings
                       </span>
@@ -644,7 +644,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                       <button
                         type="button"
                         onClick={() => handleAllocateAllToGoal(savingsGoals[0].id)}
-                        className="px-2.5 py-1 bg-emerald-500/30 hover:bg-emerald-500/40 text-emerald-200 border border-emerald-400/30 text-[11px] font-bold rounded-lg transition cursor-pointer"
+                        className="px-2.5 py-1 bg-sage-600/30 hover:bg-sage-600/40 text-sage-200 border border-sage-400/30 text-[11px] font-bold rounded-lg transition cursor-pointer"
                       >
                         All to Emergency Fund
                       </button>
@@ -661,19 +661,19 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
               <div
                 className={`p-3.5 rounded-2xl border flex items-center justify-between transition-colors ${
                   is100PercentAllocated
-                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                    ? 'bg-sage-50 border-sage-300 text-dark-green-950'
                     : remainingToAllocate > 0
-                    ? 'bg-amber-50 border-amber-300 text-amber-950'
-                    : 'bg-red-50 border-red-300 text-red-950'
+                    ? 'bg-gold-50 border-gold-300 text-gold-950'
+                    : 'bg-alert-red-50 border-alert-red-300 text-alert-red-950'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   {is100PercentAllocated ? (
-                    <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <CheckCircle2 className="w-5 h-5 text-sage-700 shrink-0" />
                   ) : remainingToAllocate > 0 ? (
-                    <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                    <AlertTriangle className="w-5 h-5 text-gold-600 shrink-0" />
                   ) : (
-                    <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                    <AlertTriangle className="w-5 h-5 text-alert-red-600 shrink-0" />
                   )}
                   <div>
                     <span className="text-xs font-bold block">
@@ -693,8 +693,8 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   <span
                     className={`text-xs font-black font-mono px-2 py-0.5 rounded-full ${
                       is100PercentAllocated
-                        ? 'bg-emerald-200 text-emerald-900'
-                        : 'bg-amber-200 text-amber-900'
+                        ? 'bg-sage-200 text-dark-green-900'
+                        : 'bg-gold-200 text-gold-900'
                     }`}
                   >
                     {totalSavedFunds > 0
@@ -727,7 +727,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                       key={goal.id}
                       className={`p-4 rounded-2xl border transition-all space-y-3 ${
                         isEmergencyFund
-                          ? 'bg-gradient-to-r from-emerald-50/60 to-white border-emerald-300 shadow-xs'
+                          ? 'bg-sage-50/40 border-sage-300 shadow-xs'
                           : 'bg-white border-beige-300 hover:border-beige-400'
                       }`}
                     >
@@ -736,7 +736,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                           <div
                             className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
                               isEmergencyFund
-                                ? 'bg-emerald-100 text-emerald-800'
+                                ? 'bg-sage-100 text-dark-green-800'
                                 : 'bg-sage-100 text-dark-green-800'
                             }`}
                           >
@@ -752,7 +752,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                                 {goal.name}
                               </h5>
                               {isEmergencyFund && (
-                                <span className="text-[9px] font-black uppercase tracking-wider bg-emerald-100 text-emerald-900 px-1.5 py-0.5 rounded">
+                                <span className="text-[9px] font-black uppercase tracking-wider bg-sage-100 text-dark-green-900 px-1.5 py-0.5 rounded">
                                   Default Fund
                                 </span>
                               )}
@@ -793,7 +793,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                         <div className="w-full bg-beige-200 rounded-full h-2 overflow-hidden">
                           <div
                             className={`h-2 rounded-full transition-all duration-300 ${
-                              isEmergencyFund ? 'bg-emerald-600' : 'bg-dark-green-700'
+                              isEmergencyFund ? 'bg-sage-600' : 'bg-dark-green-700'
                             }`}
                             style={{ width: `${percent}%` }}
                           />
@@ -841,7 +841,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                   <ArrowRight className="w-4 h-4" />
                 </button>
                 {!isFinalWeeklyCheckInComplete && (
-                  <span className="text-[11px] text-amber-800 font-semibold italic text-right max-w-sm">
+                  <span className="text-[11px] text-gold-800 font-semibold italic text-right max-w-sm">
                     * Complete the final weekly check-in before finalizing the monthly retrospective.
                   </span>
                 )}

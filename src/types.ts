@@ -219,6 +219,10 @@ export interface Expense {
   loggedByUserId: string;
   receiptImgUrl?: string;
   billFrequency?: BillFrequency;
+  tags?: string[];
+  subcategory?: string;
+  depositDestination?: 'savings_budget' | 'goal';
+  targetGoalId?: string;
   comments?: TransactionComment[];
   reactions?: TransactionReaction[];
 }
@@ -232,6 +236,10 @@ export interface StagedExpense {
   loggedByUserId: string;
   receiptImgUrl?: string;
   billFrequency?: BillFrequency;
+  tags?: string[];
+  subcategory?: string;
+  depositDestination?: 'savings_budget' | 'goal';
+  targetGoalId?: string;
 }
 
 export interface DateRange {

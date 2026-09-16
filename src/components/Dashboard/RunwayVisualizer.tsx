@@ -65,7 +65,7 @@ export const RunwayVisualizer: React.FC<RunwayVisualizerProps> = ({
   return (
     <div
       id="runway-forecast-card"
-      className="bg-gradient-to-br from-white via-beige-50/50 to-sage-50/40 border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4"
+      className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4"
     >
       {/* Header & Badges */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-beige-200/70 pb-3">

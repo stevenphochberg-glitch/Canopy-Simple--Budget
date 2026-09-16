@@ -175,6 +175,7 @@ export interface HouseholdContextType {
     totalBudget: number;
   }) => Promise<void>;
   deleteWeeklyCheckIn: (checkInId: string) => Promise<void>;
+  updateCheckInNotes: (checkInId: string, notes: string) => Promise<void>;
   triggerFreshStartAction: () => Promise<void>;
   executeMonthEndResetAction: () => Promise<void>;
 
@@ -1980,7 +1981,45 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         loggedByUserId: item.loggedByUserId || user?.userId || 'usr_self',
         receiptImgUrl: item.receiptImgUrl || undefined,
         billFrequency: item.billFrequency || undefined,
+        tags: item.tags && item.tags.length > 0 ? item.tags : undefined,
+        subcategory: item.subcategory || undefined,
+        depositDestination: item.depositDestination || undefined,
+        targetGoalId: item.targetGoalId || undefined,
       };
+    });
+
+    // Process any goal deposits or savings budget expansions
+    createdExpenses.forEach((exp) => {
+      if (exp.depositDestination === 'goal' && exp.targetGoalId) {
+        allocateSavingsToGoals({ [exp.targetGoalId]: exp.amount });
+      } else if (exp.depositDestination === 'savings_budget' && household) {
+        const firstDay = household.firstDayOfWeek || 'Monday';
+        const expDate = new Date(exp.timestamp);
+        const wRange = getWeekRange(expDate, firstDay, 0);
+        const weekId = getWeekId(wRange, firstDay);
+        const curWeekly = household.weeklyOverrides || {};
+        const curWeekObj = curWeekly[weekId] || {};
+        const savingsCat = categories.find((c) => c.type === 'savings' || c.group === 'Savings' || c.id === 'cat_savings');
+        const baseSavings = savingsCat?.baselineBudget || 0;
+        const curSavings = curWeekObj.savings !== undefined ? curWeekObj.savings : baseSavings;
+        const nextSavings = curSavings + exp.amount;
+        const updatedOverrides = {
+          ...curWeekly,
+          [weekId]: {
+            ...curWeekObj,
+            savings: nextSavings,
+          },
+        };
+        setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: updatedOverrides } : prev));
+        if (isFirebaseConfigured && db && household?.id) {
+          const hhRef = doc(db, 'households', household.id);
+          updateDoc(hhRef, sanitizeFirestorePayload({
+            [`weeklyOverrides.${weekId}.savings`]: nextSavings,
+            ...(savingsCat ? { [`weeklyOverrides.${weekId}.${savingsCat.id}`]: nextSavings } : {}),
+            updatedAt: new Date().toISOString(),
+          })).catch(console.error);
+        }
+      }
     });
 
     // 1. Optimistic local state update
@@ -2018,6 +2057,10 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             loggedByUserId: exp.loggedByUserId,
             receiptImgUrl: exp.receiptImgUrl || null,
             billFrequency: exp.billFrequency || null,
+            tags: exp.tags || null,
+            subcategory: exp.subcategory || null,
+            depositDestination: exp.depositDestination || null,
+            targetGoalId: exp.targetGoalId || null,
           };
           batch.set(expRef, sanitizeFirestorePayload(expPayload));
 
@@ -2665,6 +2708,45 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  // Update notes/reflection for a completed check-in
+  const updateCheckInNotes = async (checkInId: string, notes: string) => {
+    if (!household) return;
+
+    // Optimistically update local check-in
+    setCheckIns((prev) =>
+      prev.map((c) => (c.id === checkInId ? { ...c, notes } : c))
+    );
+
+    showToast('Reflection comment updated.');
+
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
+        await updateDoc(checkinRef, { notes, updatedAt: new Date().toISOString() });
+
+        const now = Date.now();
+        const feedRef = doc(db, 'households', household.id, 'feed', `feed_note_${now}`);
+        await setDoc(
+          feedRef,
+          sanitizeFirestorePayload({
+            id: `feed_note_${now}`,
+            type: 'checkin',
+            content: `Updated Weekly Reflection: "${notes}"`,
+            authorId: user?.userId || 'usr_self',
+            authorName: user?.name || 'Member',
+            authorAvatar: user?.avatarUrl,
+            timestamp: now,
+            date: formatLocalDate(new Date(now)),
+          })
+        );
+      } catch (err) {
+        console.error('Failed to update check-in notes in Firestore:', err);
+        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/checkins/${checkInId}`);
+        showToast(`Failed to update comment: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      }
+    }
+  };
+
   // Trigger Fresh Start (Resolves missed weeks with $0 on-budget expenses)
   const triggerFreshStartAction = async () => {
     if (!household) return;
@@ -2993,6 +3075,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         closeAllocationModal,
         completeWeeklyCheckIn,
         deleteWeeklyCheckIn,
+        updateCheckInNotes,
         triggerFreshStartAction,
         executeMonthEndResetAction,
 

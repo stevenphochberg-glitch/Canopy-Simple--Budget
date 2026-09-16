@@ -101,7 +101,7 @@ export const WeeklyCheckInView: React.FC = () => {
             onClick={() => openWeeklyCheckInModal()}
             className={`flex items-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer ${
               isPastDue
-                ? 'bg-red-600 hover:bg-red-700 text-white animate-pulse'
+                ? 'bg-alert-red-600 hover:bg-alert-red-700 text-white animate-pulse'
                 : 'bg-dark-green-800 hover:bg-dark-green-900 text-white'
             }`}
           >
@@ -120,25 +120,25 @@ export const WeeklyCheckInView: React.FC = () => {
       {/* Main Status Hero Banner */}
       {isPastDue ? (
         /* PAST DUE RED BANNER */
-        <div className="bg-red-50 border-2 border-red-300 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+        <div className="bg-alert-red-50 border-2 border-alert-red-300 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-start gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
+              <div className="w-12 h-12 rounded-2xl bg-alert-red-600 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
                 <AlertTriangle className="w-6 h-6" />
               </div>
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-black uppercase tracking-wider bg-red-200 text-red-900 px-2 py-0.5 rounded-full">
+                  <span className="text-[10px] font-black uppercase tracking-wider bg-alert-red-200 text-alert-red-900 px-2 py-0.5 rounded-full">
                     Action Required
                   </span>
-                  <span className="text-xs font-bold text-red-800">
+                  <span className="text-xs font-bold text-alert-red-800">
                     Past-Due Weekly Check-In
                   </span>
                 </div>
-                <h3 className="text-xl font-black text-red-950">
+                <h3 className="text-xl font-black text-alert-red-950">
                   A New Week Began Without Check-In
                 </h3>
-                <p className="text-xs text-red-900 leading-relaxed max-w-xl">
+                <p className="text-xs text-alert-red-900 leading-relaxed max-w-xl">
                   Your last check-in was missed. Complete the check-in now to review your week and calculate rollover budgets, or use <strong>"Start Fresh"</strong> to assume exactly on budget.
                 </p>
               </div>
@@ -147,14 +147,14 @@ export const WeeklyCheckInView: React.FC = () => {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => triggerFreshStartAction()}
-                className="px-4 py-2.5 bg-white border border-red-200 hover:bg-red-100 text-red-900 text-xs font-bold rounded-2xl shadow-2xs transition cursor-pointer"
+                className="px-4 py-2.5 bg-white border border-alert-red-200 hover:bg-alert-red-100 text-alert-red-900 text-xs font-bold rounded-2xl shadow-2xs transition cursor-pointer"
               >
                 Start Fresh (On-Budget)
               </button>
 
               <button
                 onClick={() => openWeeklyCheckInModal()}
-                className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold rounded-2xl shadow-sm transition cursor-pointer"
+                className="px-5 py-2.5 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-2xl shadow-sm transition cursor-pointer"
               >
                 Complete Check-In Now
               </button>
@@ -163,7 +163,7 @@ export const WeeklyCheckInView: React.FC = () => {
         </div>
       ) : status === 'pending' || isLastDayOfWeek ? (
         /* ACTIVE CHECK-IN DAY BANNER */
-        <div className="bg-gradient-to-br from-sage-50 to-beige-50 border-2 border-sage-300 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
+        <div className="bg-sage-50/70 border-2 border-sage-300 rounded-3xl p-6 sm:p-7 shadow-xs space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="flex items-start gap-3.5">
               <div className="w-12 h-12 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
@@ -294,7 +294,7 @@ export const WeeklyCheckInView: React.FC = () => {
                   isOverridden
                     ? diff > 0
                       ? 'bg-sage-50/60 border-sage-200'
-                      : 'bg-red-50/60 border-red-200'
+                      : 'bg-alert-red-50/60 border-alert-red-200'
                     : 'bg-beige-50/40 border-beige-200'
                 }`}
               >
@@ -323,7 +323,7 @@ export const WeeklyCheckInView: React.FC = () => {
                   {isOverridden && (
                     <span
                       className={`font-bold ${
-                        diff > 0 ? 'text-sage-800' : 'text-red-600'
+                        diff > 0 ? 'text-sage-800' : 'text-alert-red-600'
                       }`}
                     >
                       {diff > 0 ? `+${formatCurrency(diff)} rollover` : `-${formatCurrency(Math.abs(diff))} deficit`}

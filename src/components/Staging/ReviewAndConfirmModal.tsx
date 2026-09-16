@@ -30,6 +30,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
     categories,
     members,
     user,
+    savingsGoals,
   } = useHousehold();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -83,7 +84,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
         </div>
 
         {/* Staging Summary Header Banner */}
-        <div className="p-4 sm:px-6 bg-gradient-to-r from-sage-50 to-beige-50 border-b border-beige-200 flex items-center justify-between">
+        <div className="p-4 sm:px-6 bg-sage-50/70 border-b border-beige-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Receipt className="w-5 h-5 text-dark-green-800" />
             <div>
@@ -140,7 +141,7 @@ export const ReviewAndConfirmModal: React.FC = () => {
                   {stagedExpenses.length > 1 && (
                     <button
                       onClick={() => removeStagedItem(index)}
-                      className="text-brown-700 hover:text-red-600 p-1 rounded-lg hover:bg-red-50 transition cursor-pointer text-xs flex items-center gap-1"
+                      className="text-brown-700 hover:text-alert-red-700 p-1 rounded-lg hover:bg-alert-red-50 transition cursor-pointer text-xs flex items-center gap-1"
                       title="Remove item"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -260,6 +261,118 @@ export const ReviewAndConfirmModal: React.FC = () => {
                     </select>
                   </div>
                 </div>
+
+                {/* Deposit Destination Row (When item is savings/deposit) */}
+                {(item.categoryId === 'cat_savings' || item.depositDestination) && (
+                  <div className="p-3 bg-sage-50/80 border border-sage-200 rounded-xl space-y-2 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-sage-700" />
+                        Deposit Destination
+                      </label>
+                      <span className="text-[9px] font-extrabold text-sage-800 bg-sage-200/70 px-2 py-0.5 rounded-full">
+                        Savings Allocation
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateStagedItem(index, {
+                            depositDestination: 'savings_budget',
+                            targetGoalId: undefined,
+                            tags: ['One-Time Deposit', 'Budget Expansion'],
+                          })
+                        }
+                        className={`p-2 rounded-lg text-left text-xs font-bold border transition cursor-pointer ${
+                          item.depositDestination === 'savings_budget' || !item.depositDestination
+                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800 text-dark-green-900'
+                            : 'bg-white/60 border-sage-200 text-brown-800 hover:bg-white'
+                        }`}
+                      >
+                        Expand Savings Budget
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateStagedItem(index, {
+                            depositDestination: 'goal',
+                            targetGoalId: item.targetGoalId || savingsGoals[0]?.id || 'goal_emergency',
+                            tags: ['One-Time Deposit', 'Goal Deposit'],
+                          })
+                        }
+                        className={`p-2 rounded-lg text-left text-xs font-bold border transition cursor-pointer ${
+                          item.depositDestination === 'goal'
+                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800 text-dark-green-900'
+                            : 'bg-white/60 border-sage-200 text-brown-800 hover:bg-white'
+                        }`}
+                      >
+                        Direct Goal Deposit
+                      </button>
+                    </div>
+
+                    {item.depositDestination === 'goal' && (
+                      <div className="pt-1">
+                        <select
+                          value={item.targetGoalId || 'goal_emergency'}
+                          onChange={(e) =>
+                            updateStagedItem(index, {
+                              targetGoalId: e.target.value,
+                            })
+                          }
+                          className="w-full px-3 py-1.5 bg-white border border-sage-300 rounded-lg text-xs font-bold text-dark-green-900"
+                        >
+                          <option value="goal_emergency">
+                            🛡️ Emergency Savings Fund (${formatCurrency(savingsGoals.find(g => g.id === 'goal_emergency')?.currentAmount || 0)} allocated)
+                          </option>
+                          {savingsGoals
+                            .filter((g) => g.id !== 'goal_emergency')
+                            .map((goal) => (
+                              <option key={goal.id} value={goal.id}>
+                                🎯 {goal.name} (${formatCurrency(goal.currentAmount || 0)} / {formatCurrency(goal.targetAmount || 0)})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Subcategory & Tags Display/Editor for non-savings items */}
+                {item.categoryId !== 'cat_savings' && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 flex items-center gap-1 mr-1">
+                      <Tag className="w-2.5 h-2.5" /> Tags:
+                    </span>
+                    {item.tags && item.tags.length > 0 ? (
+                      item.tags.map((tag, tagIdx) => (
+                        <span
+                          key={tagIdx}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-sage-100 text-dark-green-900 text-[10px] font-bold"
+                        >
+                          #{tag}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const newTags = item.tags?.filter((_, i) => i !== tagIdx);
+                              updateStagedItem(index, {
+                                tags: newTags && newTags.length > 0 ? newTags : undefined,
+                                subcategory: newTags && newTags.length > 0 ? newTags[0] : undefined,
+                              });
+                            }}
+                            className="text-brown-700 hover:text-alert-red-700 cursor-pointer ml-0.5"
+                          >
+                            <X className="w-2.5 h-2.5" />
+                          </button>
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-dark-grey-500 italic">No tags attached</span>
+                    )}
+                  </div>
+                )}
 
                 {/* Bill Frequency Row (When category is Bills or frequency is set) */}
                 {(selectedCategory?.group === 'Bills' ||

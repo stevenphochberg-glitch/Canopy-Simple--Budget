@@ -98,7 +98,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({ isOpen, onCl
                           </span>
                         )}
                         {member.isPlaceholder && !isCurrentUser && (
-                          <span className="text-[10px] bg-amber-100 text-amber-900 font-bold px-2 py-0.2 rounded-full border border-amber-300">
+                          <span className="text-[10px] bg-gold-100 text-gold-900 font-bold px-2 py-0.2 rounded-full border border-gold-300">
                             Unclaimed Slot
                           </span>
                         )}

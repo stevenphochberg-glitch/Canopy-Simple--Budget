@@ -819,7 +819,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
 
                         <div className="sm:col-span-6 space-y-1">
                           <label className="text-[11px] font-bold text-dark-grey-800 block">
-                            Total Scheduled Income ($) <span className="text-red-500">*</span>
+                            Total Scheduled Income ($) <span className="text-alert-red-600">*</span>
                           </label>
                           <div className="relative">
                             <DollarSign className="w-3.5 h-3.5 text-brown-600 absolute left-2.5 top-2" />
@@ -841,7 +841,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
 
                         <div className="sm:col-span-6 space-y-1">
                           <label className="text-[11px] font-bold text-dark-grey-800 block">
-                            Start Date <span className="text-red-500">*</span>
+                            Start Date <span className="text-alert-red-600">*</span>
                           </label>
                           <input
                             type="date"
@@ -854,7 +854,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
 
                         <div className="sm:col-span-6 space-y-1">
                           <label className="text-[11px] font-bold text-dark-grey-800 block">
-                            End Date <span className="text-red-500">*</span>
+                            End Date <span className="text-alert-red-600">*</span>
                           </label>
                           <input
                             type="date"
@@ -916,7 +916,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                               <button
                                 type="button"
                                 onClick={() => handleRemoveActiveProject(proj.id)}
-                                className="text-dark-grey-600 hover:text-red-600 p-1 transition cursor-pointer"
+                                className="text-dark-grey-600 hover:text-alert-red-700 p-1 transition cursor-pointer"
                                 title="Remove project"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -1061,7 +1061,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                       {/* Amount Input */}
                       <div className="sm:col-span-6 space-y-1">
                         <label className="text-xs font-bold text-dark-grey-800 block">
-                          Deposit Amount ($) <span className="text-red-500">*</span>
+                          Deposit Amount ($) <span className="text-alert-red-600">*</span>
                         </label>
                         <div className="relative">
                           <DollarSign className="w-5 h-5 text-dark-green-800 absolute left-3 top-2" />
@@ -1083,7 +1083,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                       {/* Description */}
                       <div className="sm:col-span-6 space-y-1">
                         <label className="text-xs font-bold text-dark-grey-800 block">
-                          Description <span className="text-red-500">*</span>
+                          Description <span className="text-alert-red-600">*</span>
                         </label>
                         <input
                           type="text"
@@ -1172,7 +1172,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                             <button
                               type="button"
                               onClick={() => handleRemoveManualEntry(ent.id, ent.amount)}
-                              className="text-dark-grey-600 hover:text-red-600 p-1 transition cursor-pointer"
+                              className="text-dark-grey-600 hover:text-alert-red-700 p-1 transition cursor-pointer"
                               title="Delete entry"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1190,7 +1190,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
       </div>
 
       {/* Unified Weekly Pool Callout Card */}
-      <div className="p-4 sm:p-5 bg-gradient-to-br from-sage-100 to-beige-100 border border-sage-300 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
+      <div className="p-4 sm:p-5 bg-sage-100/90 border border-sage-300 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-sm">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-dark-green-800 text-white rounded-xl shadow-sm">
             <Calculator className="w-6 h-6" />
@@ -1224,7 +1224,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
               key={member.userId}
               className={`p-4 sm:p-5 bg-white border rounded-2xl space-y-4 shadow-sm transition ${
                 isMissingDate
-                  ? 'border-red-400 ring-2 ring-red-400/20'
+                  ? 'border-alert-red-400 ring-2 ring-alert-red-400/20'
                   : 'border-beige-200'
               }`}
             >
@@ -1328,13 +1328,13 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                       <label
                         htmlFor={`last-pay-date-${member.userId}`}
                         className={`text-xs font-bold block ${
-                          isMissingDate ? 'text-red-700' : 'text-dark-grey-800'
+                          isMissingDate ? 'text-alert-red-700' : 'text-dark-grey-800'
                         }`}
                       >
-                        Date of Last Paycheck <span className="text-red-600">*</span>
+                        Date of Last Paycheck <span className="text-alert-red-600">*</span>
                       </label>
                       {isMissingDate && (
-                        <span className="text-[10px] text-red-600 font-semibold">Strictly required</span>
+                        <span className="text-[10px] text-alert-red-600 font-semibold">Strictly required</span>
                       )}
                     </div>
                     <input
@@ -1345,7 +1345,7 @@ export const IncomeStep: React.FC<IncomeStepProps> = ({
                       onChange={(e) => handleLastPayDateChange(member.userId, e.target.value)}
                       className={`w-full px-3 py-2.5 bg-beige-50/50 border rounded-xl text-dark-green-900 font-medium text-sm focus:bg-white focus:outline-none focus:ring-2 cursor-pointer transition ${
                         isMissingDate
-                          ? 'border-red-500 ring-2 ring-red-500/20 focus:border-red-600'
+                          ? 'border-alert-red-500 ring-2 ring-alert-red-500/20 focus:border-alert-red-600'
                           : 'border-beige-300 focus:ring-dark-green-700/20 focus:border-dark-green-700'
                       }`}
                     />

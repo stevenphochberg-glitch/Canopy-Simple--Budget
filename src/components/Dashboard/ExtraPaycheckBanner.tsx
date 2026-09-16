@@ -61,27 +61,27 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
   }
 
   return (
-    <div className="bg-gradient-to-br from-emerald-50 via-sage-50 to-beige-50 border-2 border-emerald-300/80 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
+    <div className="bg-sage-50/70 border-2 border-sage-300 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
       {/* Top Banner Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start gap-3">
           <div className="p-2.5 bg-dark-green-800 text-white rounded-2xl shadow-xs shrink-0 mt-0.5">
-            <Sparkles className="w-5 h-5 text-emerald-200" />
+            <Sparkles className="w-5 h-5 text-sage-200" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] font-black uppercase tracking-wider text-dark-green-800 bg-emerald-100/90 border border-emerald-200 px-2.5 py-0.5 rounded-full">
+              <span className="text-[10px] font-black uppercase tracking-wider text-dark-green-800 bg-sage-100/90 border border-sage-200 px-2.5 py-0.5 rounded-full">
                 Extra Paycheck Detected &bull; {extraInfo.fiscalMonthName} (Q{extraInfo.quarter})
               </span>
               {savedDecision && !isEditing && (
-                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-full flex items-center gap-1">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Allocated
+                <span className="text-[10px] font-bold text-dark-green-800 bg-sage-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3 text-sage-600" /> Allocated
                 </span>
               )}
             </div>
             <h3 className="text-base sm:text-lg font-black text-dark-green-950 mt-1">
               3-Paycheck Month: Forecasted{' '}
-              <span className="text-emerald-800 underline decoration-emerald-400 decoration-2">
+              <span className="text-dark-green-800 underline decoration-sage-400 decoration-2">
                 +{formatCurrency(extraInfo.totalExtraIncome)}
               </span>{' '}
               in Extra Income
@@ -116,9 +116,9 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
 
       {/* Decision Summary When Closed */}
       {savedDecision && !isEditing && (
-        <div className="p-3 bg-white/90 border border-emerald-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+        <div className="p-3 bg-white/90 border border-sage-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
           <div className="flex items-center gap-2 text-dark-green-900 font-semibold">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+            <CheckCircle2 className="w-4 h-4 text-sage-600" />
             <span>
               Decision applied:{' '}
               <strong>
@@ -140,7 +140,7 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
 
       {/* Interactive Allocation Module */}
       {isEditing && (
-        <div className="space-y-4 pt-2 border-t border-emerald-200/60">
+        <div className="space-y-4 pt-2 border-t border-sage-200/60">
           <p className="text-xs font-bold text-dark-green-900">
             Choose how to distribute your +{formatCurrency(extraInfo.totalExtraIncome)} surplus:
           </p>
@@ -220,8 +220,8 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
               }`}
             >
               <div className="space-y-2">
-                <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-dark-green-900">
-                  <CalendarCheck className="w-4 h-4 text-emerald-800" />
+                <div className="w-8 h-8 rounded-xl bg-sage-100 flex items-center justify-center text-dark-green-900">
+                  <CalendarCheck className="w-4 h-4 text-dark-green-800" />
                 </div>
                 <div>
                   <h4 className="font-extrabold text-dark-green-900 text-sm">Option C: Prorate for Extra Week</h4>
@@ -279,7 +279,7 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
                 <span className="font-bold text-dark-green-900">Option D: Category Percentage Split</span>
                 <span
                   className={`font-black ${
-                    isCustomPctValid ? 'text-emerald-700' : 'text-red-600 font-extrabold'
+                    isCustomPctValid ? 'text-sage-800' : 'text-alert-red-600 font-extrabold'
                   }`}
                 >
                   Total: {totalCustomPct}% / 100% {isCustomPctValid ? '✓' : '(Must equal 100%)'}

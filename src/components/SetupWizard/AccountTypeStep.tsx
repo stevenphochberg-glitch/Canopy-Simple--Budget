@@ -305,7 +305,7 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
               </div>
 
               {joinError && (
-                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700">
+                <div className="flex items-center gap-2 p-3 bg-alert-red-50 border border-alert-red-200 rounded-xl text-xs font-semibold text-alert-red-700">
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   <span>{joinError}</span>
                 </div>
@@ -553,7 +553,7 @@ export const AccountTypeStep: React.FC<AccountTypeStepProps> = ({
               </div>
 
               {joinError && (
-                <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700">
+                <div className="flex items-center gap-2 p-3 bg-alert-red-50 border border-alert-red-200 rounded-xl text-xs font-semibold text-alert-red-700">
                   <AlertCircle className="w-4 h-4 flex-shrink-0" />
                   <span>{joinError}</span>
                 </div>

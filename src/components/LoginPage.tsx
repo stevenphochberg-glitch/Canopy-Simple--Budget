@@ -127,7 +127,7 @@ export const LoginPage: React.FC = () => {
               </button>
 
               {authError && (
-                <p className="text-xs text-red-600 bg-red-50 p-3 rounded-xl border border-red-200">
+                <p className="text-xs text-alert-red-700 bg-alert-red-50 p-3 rounded-xl border border-alert-red-200">
                   {authError}
                 </p>
               )}

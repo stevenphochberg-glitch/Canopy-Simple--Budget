@@ -98,7 +98,7 @@ export const SavingsGoalsLedgerSection: React.FC<SavingsGoalsLedgerSectionProps>
   };
 
   return (
-    <div className="bg-gradient-to-br from-sage-50/50 via-white to-beige-50/50 border border-sage-200/80 rounded-3xl p-5 sm:p-6 shadow-xs space-y-5">
+    <div className="bg-sage-50/40 border border-sage-200/80 rounded-3xl p-5 sm:p-6 shadow-xs space-y-5">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-sage-100 pb-4">
         <div className="flex items-center gap-3">
@@ -269,7 +269,7 @@ export const SavingsGoalsLedgerSection: React.FC<SavingsGoalsLedgerSectionProps>
                 key={goal.id}
                 className={`p-4 rounded-2xl border transition-all space-y-3 bg-white ${
                   isCompleted
-                    ? 'border-emerald-300 bg-emerald-50/30'
+                    ? 'border-sage-300 bg-sage-50/40'
                     : 'border-beige-200 hover:border-sage-300'
                 }`}
               >
@@ -327,8 +327,8 @@ export const SavingsGoalsLedgerSection: React.FC<SavingsGoalsLedgerSectionProps>
                         <div className="flex items-center gap-1.5">
                           <h4 className="text-sm font-black text-dark-green-900">{goal.name}</h4>
                           {isCompleted && (
-                            <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-                              <CheckCircle2 className="w-3 h-3" />
+                            <span className="flex items-center gap-1 text-[9px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-sage-100 text-dark-green-900 border border-sage-300">
+                              <CheckCircle2 className="w-3 h-3 text-dark-green-700" />
                               Achieved!
                             </span>
                           )}
@@ -352,7 +352,7 @@ export const SavingsGoalsLedgerSection: React.FC<SavingsGoalsLedgerSectionProps>
                         <button
                           type="button"
                           onClick={() => deleteSavingsGoal(goal.id)}
-                          className="p-1.5 text-dark-grey-600 hover:text-red-700 hover:bg-red-50 rounded-lg transition"
+                          className="p-1.5 text-dark-grey-600 hover:text-alert-red-700 hover:bg-alert-red-50 rounded-lg transition"
                           title="Delete Goal"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

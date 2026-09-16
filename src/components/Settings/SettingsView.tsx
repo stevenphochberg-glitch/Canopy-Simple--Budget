@@ -791,7 +791,7 @@ export const SettingsView: React.FC = () => {
                           </span>
                         )}
                         {member.isPlaceholder && (
-                          <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-1.5 py-0.5 rounded-md">
+                          <span className="text-[10px] bg-gold-100 text-gold-900 font-semibold px-1.5 py-0.5 rounded-md">
                             Placeholder
                           </span>
                         )}
@@ -806,7 +806,7 @@ export const SettingsView: React.FC = () => {
                     type="button"
                     onClick={() => setMemberToRemove(member)}
                     id={`remove-member-btn-${member.userId}`}
-                    className="p-2 text-brown-700 hover:text-red-700 hover:bg-red-50 rounded-xl transition border border-transparent hover:border-red-200 cursor-pointer flex-shrink-0"
+                    className="p-2 text-brown-700 hover:text-alert-red-700 hover:bg-alert-red-50 rounded-xl transition border border-transparent hover:border-alert-red-200 cursor-pointer flex-shrink-0"
                     title={`Remove ${member.name} from household`}
                   >
                     <Trash2 className="w-4 h-4" />
@@ -1004,7 +1004,7 @@ export const SettingsView: React.FC = () => {
                           <div className="space-y-1">
                             <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block flex items-center gap-1">
                               <span>Date of Last Paycheck</span>
-                              <span className="text-red-700">*</span>
+                              <span className="text-alert-red-700">*</span>
                             </label>
                             <input
                               type="date"
@@ -1021,11 +1021,11 @@ export const SettingsView: React.FC = () => {
                                 }))
                               }
                               className={`px-2.5 py-1.5 bg-white border rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none ${
-                                memState.error ? 'border-red-500 ring-1 ring-red-500 bg-red-50/50' : 'border-beige-300'
+                                memState.error ? 'border-alert-red-500 ring-1 ring-alert-red-500 bg-alert-red-50/50' : 'border-beige-300'
                               }`}
                             />
                             {memState.error && (
-                              <p className="text-[10px] font-bold text-red-700">{memState.error}</p>
+                              <p className="text-[10px] font-bold text-alert-red-700">{memState.error}</p>
                             )}
                           </div>
 
@@ -1057,7 +1057,7 @@ export const SettingsView: React.FC = () => {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-beige-100 pb-3">
                   <div>
                     <div className="flex items-center gap-2">
-                      <Shield className="w-4 h-4 text-emerald-700" />
+                      <Shield className="w-4 h-4 text-dark-green-700" />
                       <h3 className="text-base font-extrabold text-dark-green-900">
                         One-Off Scheduled Deposits (Bonuses, Gifts, Windfalls)
                       </h3>
@@ -1070,7 +1070,7 @@ export const SettingsView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => setShowAddOneOffModal(true)}
-                    className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer self-start sm:self-auto"
+                    className="px-3.5 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer self-start sm:self-auto"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Log One-Off Deposit</span>
@@ -1085,25 +1085,25 @@ export const SettingsView: React.FC = () => {
                       return (
                         <div
                           key={dep.id}
-                          className="p-3.5 bg-emerald-50/60 border border-emerald-200/80 rounded-2xl flex items-center justify-between gap-3"
+                          className="p-3.5 bg-sage-50/70 border border-sage-200/80 rounded-2xl flex items-center justify-between gap-3"
                         >
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
                               <span className="text-xs font-bold text-dark-green-950 truncate">
                                 {dep.description}
                               </span>
-                              <span className="text-[10px] bg-emerald-200/80 text-emerald-900 font-semibold px-2 py-0.5 rounded-md flex-shrink-0">
+                              <span className="text-[10px] bg-sage-200/80 text-dark-green-900 font-semibold px-2 py-0.5 rounded-md flex-shrink-0">
                                 Buffer
                               </span>
                             </div>
-                            <div className="flex items-center gap-2 text-[11px] text-emerald-800 mt-1">
+                            <div className="flex items-center gap-2 text-[11px] text-dark-green-800 mt-1">
                               <span>{dep.date}</span>
                               {payer && <span>• {payer.name}</span>}
                               {dep.notes && <span className="truncate">• {dep.notes}</span>}
                             </div>
                           </div>
 
-                          <span className="text-sm font-black text-emerald-900 flex-shrink-0">
+                          <span className="text-sm font-black text-dark-green-900 flex-shrink-0">
                             +{formatCurrency(dep.amount)}
                           </span>
                         </div>
@@ -1134,9 +1134,9 @@ export const SettingsView: React.FC = () => {
                 <h3 className="text-base font-extrabold text-dark-green-900">
                   Variable Safety Buffers & Burn Rate
                 </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-amber-50/60 border border-amber-200 rounded-2xl">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-gold-50/60 border border-gold-200 rounded-2xl">
                   <div className="space-y-1">
-                    <label className="text-xs font-bold uppercase tracking-wider text-amber-950 block">
+                    <label className="text-xs font-bold uppercase tracking-wider text-gold-950 block">
                       Baseline Weekly Burn Rate ($)
                     </label>
                     <input
@@ -1144,13 +1144,13 @@ export const SettingsView: React.FC = () => {
                       min="0"
                       value={burnRate}
                       onChange={(e) => setBurnRate(parseFloat(e.target.value) || 0)}
-                      className="w-full px-3.5 py-2 bg-white border border-amber-300 rounded-xl text-sm font-bold text-dark-green-900 focus:outline-none"
+                      className="w-full px-3.5 py-2 bg-white border border-gold-300 rounded-xl text-sm font-bold text-dark-green-900 focus:outline-none"
                     />
-                    <span className="text-[10px] text-amber-800 block">Target maximum weekly spending cap</span>
+                    <span className="text-[10px] text-gold-800 block">Target maximum weekly spending cap</span>
                   </div>
 
                   <div className="space-y-1">
-                    <label className="text-xs font-bold uppercase tracking-wider text-amber-950 block">
+                    <label className="text-xs font-bold uppercase tracking-wider text-gold-950 block">
                       Initial Buffer Reserve ($)
                     </label>
                     <input
@@ -1158,9 +1158,9 @@ export const SettingsView: React.FC = () => {
                       min="0"
                       value={bufferAmount}
                       onChange={(e) => setBufferAmount(parseFloat(e.target.value) || 0)}
-                      className="w-full px-3.5 py-2 bg-white border border-amber-300 rounded-xl text-sm font-bold text-dark-green-900 focus:outline-none"
+                      className="w-full px-3.5 py-2 bg-white border border-gold-300 rounded-xl text-sm font-bold text-dark-green-900 focus:outline-none"
                     />
-                    <span className="text-[10px] text-amber-800 block">Liquid buffer to absorb payment gaps</span>
+                    <span className="text-[10px] text-gold-800 block">Liquid buffer to absorb payment gaps</span>
                   </div>
                 </div>
               </div>
@@ -1373,7 +1373,7 @@ export const SettingsView: React.FC = () => {
                                 <div className="text-[11px] text-dark-grey-600 mt-0.5">
                                   {p.startDate} → {p.endDate} ({diffWeeks} wks)
                                 </div>
-                                <div className="text-[11px] font-semibold text-emerald-800 mt-1">
+                                <div className="text-[11px] font-semibold text-dark-green-800 mt-1">
                                   Prorated: ~{formatCurrency(weeklyProrate)}/wk
                                 </div>
                               </div>
@@ -1385,7 +1385,7 @@ export const SettingsView: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveActiveProject(p.id)}
-                                  className="p-1.5 text-brown-700 hover:text-red-700 hover:bg-red-50 rounded-lg transition"
+                                  className="p-1.5 text-brown-700 hover:text-alert-red-700 hover:bg-alert-red-50 rounded-lg transition"
                                   title="Remove project"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -1484,7 +1484,7 @@ export const SettingsView: React.FC = () => {
                     <div className="flex items-center justify-between pt-2 border-t border-beige-200">
                       <div className="text-xs font-bold text-dark-green-900">
                         Projected Weekly Pool:{' '}
-                        <span className="text-emerald-800">
+                        <span className="text-dark-green-800">
                           {formatCurrency(
                             (typeof hourlyRate === 'number' ? hourlyRate : 0) *
                               (typeof hourlyHoursPerWeek === 'number' ? hourlyHoursPerWeek : 0)
@@ -1517,11 +1517,11 @@ export const SettingsView: React.FC = () => {
 
                     <form
                       onSubmit={handleAddManualIncomeEntry}
-                      className="p-4 bg-emerald-50/50 border border-emerald-200 rounded-2xl space-y-3"
+                      className="p-4 bg-sage-50/50 border border-sage-200 rounded-2xl space-y-3"
                     >
                       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-950 block">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-950 block">
                             Income Source / Description *
                           </label>
                           <input
@@ -1530,12 +1530,12 @@ export const SettingsView: React.FC = () => {
                             placeholder="e.g. Design Consulting Payout"
                             value={manualDesc}
                             onChange={(e) => setManualDesc(e.target.value)}
-                            className="w-full px-3 py-1.5 bg-white border border-emerald-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
+                            className="w-full px-3 py-1.5 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
                           />
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-950 block">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-950 block">
                             Deposit Amount ($) *
                           </label>
                           <input
@@ -1545,12 +1545,12 @@ export const SettingsView: React.FC = () => {
                             placeholder="e.g. 1450"
                             value={manualAmount}
                             onChange={(e) => setManualAmount(parseFloat(e.target.value) || '')}
-                            className="w-full px-3 py-1.5 bg-white border border-emerald-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
+                            className="w-full px-3 py-1.5 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
                           />
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-950 block">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-950 block">
                             Date Received *
                           </label>
                           <input
@@ -1558,16 +1558,16 @@ export const SettingsView: React.FC = () => {
                             required
                             value={manualDate}
                             onChange={(e) => setManualDate(e.target.value)}
-                            className="w-full px-3 py-1.5 bg-white border border-emerald-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
+                            className="w-full px-3 py-1.5 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none"
                           />
                         </div>
 
                         <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-emerald-950 block">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-950 block">
                             Routing Destination
                           </label>
-                          <div className="flex items-center gap-1.5 px-3 py-2 bg-emerald-100/70 border border-emerald-300 rounded-xl text-xs font-bold text-emerald-950">
-                            <Shield className="w-3.5 h-3.5 text-emerald-700" />
+                          <div className="flex items-center gap-1.5 px-3 py-2 bg-sage-100/70 border border-sage-300 rounded-xl text-xs font-bold text-dark-green-950">
+                            <Shield className="w-3.5 h-3.5 text-dark-green-700" />
                             <span>Income Buffer</span>
                           </div>
                         </div>
@@ -1576,7 +1576,7 @@ export const SettingsView: React.FC = () => {
                       <div className="flex justify-end pt-1">
                         <button
                           type="submit"
-                          className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
+                          className="px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-xs"
                         >
                           <Plus className="w-3.5 h-3.5" />
                           <span>Deposit to Buffer</span>
@@ -1604,13 +1604,13 @@ export const SettingsView: React.FC = () => {
                                 </span>
                               </div>
                               <div className="flex items-center gap-2">
-                                <span className="text-xs font-extrabold text-emerald-800">
+                                <span className="text-xs font-extrabold text-dark-green-800">
                                   +{formatCurrency(entry.amount)}
                                 </span>
                                 <button
                                   type="button"
                                   onClick={() => handleRemoveManualIncomeEntry(entry.id)}
-                                  className="p-1 text-brown-700 hover:text-red-700 rounded-md"
+                                  className="p-1 text-brown-700 hover:text-alert-red-700 rounded-md"
                                   title="Remove entry"
                                 >
                                   <Trash2 className="w-3.5 h-3.5" />
@@ -1828,7 +1828,7 @@ export const SettingsView: React.FC = () => {
                 </span>
                 <span
                   className={
-                    weeklyPool - totalAllocated >= 0 ? 'text-sage-800' : 'text-red-700'
+                    weeklyPool - totalAllocated >= 0 ? 'text-sage-800' : 'text-alert-red-700'
                   }
                 >
                   {weeklyPool - totalAllocated >= 0
@@ -1839,7 +1839,7 @@ export const SettingsView: React.FC = () => {
               <div className="w-full h-2.5 bg-beige-200 rounded-full overflow-hidden">
                 <div
                   className={`h-full rounded-full transition-all ${
-                    totalAllocated <= weeklyPool ? 'bg-dark-green-800' : 'bg-red-600'
+                    totalAllocated <= weeklyPool ? 'bg-dark-green-800' : 'bg-alert-red-600'
                   }`}
                   style={{
                     width: `${Math.min(100, weeklyPool > 0 ? (totalAllocated / weeklyPool) * 100 : 0)}%`,
@@ -1963,7 +1963,7 @@ export const SettingsView: React.FC = () => {
                           </span>
                           <span
                             className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded ${
-                              diff >= 0 ? 'bg-sage-100 text-sage-900' : 'bg-red-100 text-red-800'
+                              diff >= 0 ? 'bg-sage-100 text-sage-900' : 'bg-alert-red-100 text-alert-red-800'
                             }`}
                           >
                             {diff >= 0 ? `+${formatCurrency(diff)}` : `-${formatCurrency(Math.abs(diff))}`}
@@ -2192,7 +2192,7 @@ export const SettingsView: React.FC = () => {
           {/* Month-End Hard Reset */}
           <div className="bg-white border border-beige-200 rounded-3xl p-5 sm:p-6 shadow-sm space-y-3">
             <div className="flex items-center gap-2 text-dark-green-900 font-bold text-base">
-              <RotateCcw className="w-5 h-5 text-amber-700" />
+              <RotateCcw className="w-5 h-5 text-gold-700" />
               <span>Manual Month-End Hard Reset</span>
             </div>
             <p className="text-xs text-brown-700 leading-relaxed">
@@ -2200,8 +2200,8 @@ export const SettingsView: React.FC = () => {
             </p>
 
             {showMonthEndConfirm ? (
-              <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
-                <p className="text-xs font-semibold text-amber-950">
+              <div className="p-4 bg-gold-50 border border-gold-200 rounded-xl space-y-3">
+                <p className="text-xs font-semibold text-gold-950">
                   Execute Month-End Reset? All category weekly budgets will return to their default baseline values.
                 </p>
                 <div className="flex items-center gap-2">
@@ -2253,7 +2253,7 @@ export const SettingsView: React.FC = () => {
                 {leaveStep === 'confirm' ? (
                   <>
                     <div className="flex items-start gap-2.5 text-xs text-brown-900 font-medium">
-                      <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
+                      <AlertTriangle className="w-4 h-4 text-gold-700 flex-shrink-0 mt-0.5" />
                       <span>
                         Are you sure you want to leave <strong className="font-bold text-dark-green-900">{household?.name || 'the household'}</strong>? You will no longer have access to this shared budget unless you re-join with the sync code.
                       </span>
@@ -2263,7 +2263,7 @@ export const SettingsView: React.FC = () => {
                         type="button"
                         id="confirm-leave-household-step-btn"
                         onClick={() => setLeaveStep('choice')}
-                        className="px-4 py-2 bg-amber-700 hover:bg-amber-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+                        className="px-4 py-2 bg-brown-700 hover:bg-brown-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"
                       >
                         Continue
                       </button>
@@ -2335,19 +2335,19 @@ export const SettingsView: React.FC = () => {
           </div>
 
           {/* Danger Zone: Delete Account */}
-          <div className="bg-red-50/70 border border-red-200/90 rounded-3xl p-5 sm:p-6 shadow-sm space-y-3">
-            <div className="flex items-center gap-2 text-red-900 font-bold text-base">
-              <Trash2 className="w-5 h-5 text-red-700" />
+          <div className="bg-alert-red-50/70 border border-alert-red-200/90 rounded-3xl p-5 sm:p-6 shadow-sm space-y-3">
+            <div className="flex items-center gap-2 text-alert-red-900 font-bold text-base">
+              <Trash2 className="w-5 h-5 text-alert-red-700" />
               <span>Delete Account</span>
             </div>
-            <p className="text-xs text-red-800 leading-relaxed">
+            <p className="text-xs text-alert-red-800 leading-relaxed">
               Permanently delete your user profile and login credentials. Deleting your account will immediately remove you from the household and route you to the sign-up page. This action cannot be undone.
             </p>
 
             {showDeleteModal ? (
-              <div className="p-4 bg-red-100/80 border border-red-300 rounded-xl space-y-3">
-                <div className="flex items-start gap-2 text-xs text-red-950 font-semibold">
-                  <AlertTriangle className="w-4 h-4 text-red-700 flex-shrink-0 mt-0.5" />
+              <div className="p-4 bg-alert-red-100/80 border border-alert-red-300 rounded-xl space-y-3">
+                <div className="flex items-start gap-2 text-xs text-alert-red-950 font-semibold">
+                  <AlertTriangle className="w-4 h-4 text-alert-red-700 flex-shrink-0 mt-0.5" />
                   <span>
                     Warning: Are you absolutely certain you want to delete your account? You will be removed from your household and returned to the initial registration page.
                   </span>
@@ -2358,7 +2358,7 @@ export const SettingsView: React.FC = () => {
                     id="confirm-delete-account-btn"
                     disabled={isDeleting}
                     onClick={handleConfirmDeleteAccount}
-                    className="flex items-center gap-1.5 px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-4 py-2 bg-alert-red-700 hover:bg-alert-red-800 text-white text-xs font-bold rounded-xl transition cursor-pointer shadow-xs disabled:opacity-50"
                   >
                     {isDeleting ? (
                       <>
@@ -2376,7 +2376,7 @@ export const SettingsView: React.FC = () => {
                     type="button"
                     disabled={isDeleting}
                     onClick={() => setShowDeleteModal(false)}
-                    className="px-4 py-2 bg-white border border-red-200 hover:bg-red-50 text-red-900 text-xs font-medium rounded-xl transition cursor-pointer disabled:opacity-50"
+                    className="px-4 py-2 bg-white border border-alert-red-200 hover:bg-alert-red-50 text-alert-red-900 text-xs font-medium rounded-xl transition cursor-pointer disabled:opacity-50"
                   >
                     Cancel
                   </button>
@@ -2387,7 +2387,7 @@ export const SettingsView: React.FC = () => {
                 type="button"
                 id="delete-account-btn"
                 onClick={() => setShowDeleteModal(true)}
-                className="flex items-center gap-2 px-4 py-2.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-xl border border-red-700 transition cursor-pointer shadow-xs"
+                className="flex items-center gap-2 px-4 py-2.5 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-bold rounded-xl border border-alert-red-700 transition cursor-pointer shadow-xs"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Delete Account</span>
@@ -2403,7 +2403,7 @@ export const SettingsView: React.FC = () => {
           <div className="bg-white border border-beige-200 rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-4">
             <div className="flex items-center justify-between border-b border-beige-100 pb-3">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-2xl bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-800">
+                <div className="w-9 h-9 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
                   <Shield className="w-4 h-4" />
                 </div>
                 <div>
@@ -2518,8 +2518,8 @@ export const SettingsView: React.FC = () => {
                 />
               </div>
 
-              <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-2 text-xs text-emerald-900">
-                <Shield className="w-4 h-4 text-emerald-700 flex-shrink-0" />
+              <div className="p-3 bg-sage-50 border border-sage-200 rounded-xl flex items-center gap-2 text-xs text-dark-green-900">
+                <Shield className="w-4 h-4 text-dark-green-700 flex-shrink-0" />
                 <span>
                   This deposit will directly increase your <strong>Income Buffer</strong> without affecting weekly member paycheck allocations.
                 </span>
@@ -2535,7 +2535,7 @@ export const SettingsView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-emerald-800 hover:bg-emerald-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs"
+                  className="px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Deposit into Buffer</span>
@@ -2549,9 +2549,9 @@ export const SettingsView: React.FC = () => {
       {/* REMOVE HOUSEHOLD MEMBER CONFIRMATION MODAL */}
       {memberToRemove && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/40 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white border border-red-200 rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-4">
+          <div className="bg-white border border-alert-red-200 rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-4">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-red-100 border border-red-200 flex items-center justify-center text-red-700 flex-shrink-0">
+              <div className="w-10 h-10 rounded-2xl bg-alert-red-100 border border-alert-red-200 flex items-center justify-center text-alert-red-700 flex-shrink-0">
                 <AlertTriangle className="w-5 h-5" />
               </div>
               <div>
@@ -2564,30 +2564,30 @@ export const SettingsView: React.FC = () => {
               </div>
             </div>
 
-            <div className="p-4 bg-red-50/70 border border-red-200 rounded-2xl space-y-2 text-xs text-red-950 leading-relaxed">
+            <div className="p-4 bg-alert-red-50/70 border border-alert-red-200 rounded-2xl space-y-2 text-xs text-alert-red-950 leading-relaxed">
               <p>
                 Are you sure you want to remove <span className="font-bold">{memberToRemove.name}</span> from <span className="font-bold">{household?.name || 'this household'}</span>?
               </p>
               {memberToRemove.isPlaceholder ? (
-                <p className="text-red-800 text-[11px]">
+                <p className="text-alert-red-800 text-[11px]">
                   This is an <span className="font-bold">unclaimed placeholder profile</span>. Its roster record in <code className="font-mono bg-white/70 px-1 py-0.5 rounded">households/members</code> will be permanently deleted and the shared weekly pool will adjust automatically.
                 </p>
               ) : memberToRemove.userId === user?.userId ? (
-                <p className="text-red-800 text-[11px]">
+                <p className="text-alert-red-800 text-[11px]">
                   <span className="font-bold">Warning:</span> You are removing your own profile. You will leave this household and will need a sync code to rejoin.
                 </p>
               ) : (
-                <p className="text-red-800 text-[11px]">
+                <p className="text-alert-red-800 text-[11px]">
                   This is a <span className="font-bold">real user account</span>. The member will be removed from the household roster and their profile will be unlinked (active household reset).
                 </p>
               )}
-              <p className="text-[11px] font-bold text-red-700 pt-1">
+              <p className="text-[11px] font-bold text-alert-red-700 pt-1">
                 This action is permanent and cannot be undone.
               </p>
             </div>
 
             {removeMemberError && (
-              <div className="p-3 bg-red-100 border border-red-300 rounded-xl text-xs text-red-900 font-semibold">
+              <div className="p-3 bg-alert-red-100 border border-alert-red-300 rounded-xl text-xs text-alert-red-900 font-semibold">
                 {removeMemberError}
               </div>
             )}
@@ -2609,7 +2609,7 @@ export const SettingsView: React.FC = () => {
                 disabled={isRemovingMember}
                 onClick={handleConfirmRemoveMember}
                 id="confirm-remove-member-btn"
-                className="px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
+                className="px-4 py-2 bg-alert-red-700 hover:bg-alert-red-800 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer disabled:opacity-50"
               >
                 {isRemovingMember ? (
                   <>

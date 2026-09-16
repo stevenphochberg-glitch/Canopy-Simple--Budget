@@ -36,7 +36,7 @@ export const SyncCodeStep: React.FC<SyncCodeStepProps> = ({
       </div>
 
       {/* Sync Code Hero Display */}
-      <div className="p-6 bg-gradient-to-br from-dark-green-800 to-dark-green-900 text-white rounded-2xl shadow-md text-center space-y-3">
+      <div className="p-6 bg-dark-green-900 text-white rounded-2xl shadow-md text-center space-y-3">
         <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-dark-green-700/60 border border-dark-green-600 text-[11px] font-semibold tracking-wider uppercase text-sage-200">
           <Shield className="w-3 h-3 text-sage-300" />
           Household Sync Code

@@ -47,6 +47,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     members,
     user,
     household,
+    savingsGoals,
     addStagedItem,
     showToast,
     openStagingModal,
@@ -63,14 +64,41 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     localStorage.setItem(LAST_TAB_STORAGE_KEY, tab);
   };
 
+  // Available expense categories (strictly exclude savings categories)
+  const availableExpenseCategories = useMemo(() => {
+    return categories.filter(
+      (c) =>
+        c.id !== 'cat_savings' &&
+        c.type !== 'savings' &&
+        c.group?.toLowerCase() !== 'savings' &&
+        !c.name.toLowerCase().includes('saving')
+    );
+  }, [categories]);
+
+  const isSavingsCategory = (cat?: Category | null) => {
+    if (!cat) return false;
+    return (
+      cat.id === 'cat_savings' ||
+      cat.type === 'savings' ||
+      cat.group?.toLowerCase() === 'savings' ||
+      cat.name.toLowerCase().includes('saving')
+    );
+  };
+
   // -------------------------------------------------------------
   // PATH A: Manual Entry State
   // -------------------------------------------------------------
   const [manualAmount, setManualAmount] = useState<string>('');
   const [manualDescription, setManualDescription] = useState<string>('');
-  const [manualCategoryId, setManualCategoryId] = useState<string>(
-    initialCategory?.id || categories[0]?.id || ''
-  );
+  const [manualCategoryId, setManualCategoryId] = useState<string>(() => {
+    if (initialCategory?.id) {
+      if (isSavingsCategory(initialCategory)) {
+        return 'cat_one_time_deposit';
+      }
+      return initialCategory.id;
+    }
+    return availableExpenseCategories[0]?.id || 'cat_one_time_deposit';
+  });
   const [manualDate, setManualDate] = useState<string>(
     new Date().toISOString().split('T')[0]
   );
@@ -79,10 +107,24 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   );
   const [manualBillFrequency, setManualBillFrequency] = useState<BillFrequency>('monthly');
 
+  // One-Time Deposit state
+  const isOneTimeDeposit = manualCategoryId === 'cat_one_time_deposit';
+  const [depositDestination, setDepositDestination] = useState<'savings_budget' | 'goal'>('savings_budget');
+  const [selectedGoalId, setSelectedGoalId] = useState<string>(() => {
+    return savingsGoals[0]?.id || 'goal_emergency';
+  });
+
+  // Tagging engine state
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [customTagInput, setCustomTagInput] = useState<string>('');
+
   // Manual Batch Queue (for "Save & Add Another")
   const [manualBatch, setManualBatch] = useState<StagedExpense[]>([]);
 
-  const selectedManualCat = categories.find((c) => c.id === manualCategoryId);
+  const selectedManualCat = isOneTimeDeposit
+    ? null
+    : availableExpenseCategories.find((c) => c.id === manualCategoryId) || availableExpenseCategories[0] || null;
+
   const isBillsCategory =
     selectedManualCat?.group === 'Bills' ||
     selectedManualCat?.name.toLowerCase().includes('bill');
@@ -93,6 +135,34 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     const currentWeekRange = getWeekRange(today, firstDay, 0);
     return getWeekId(currentWeekRange, firstDay);
   }, [household?.firstDayOfWeek]);
+
+  // Keep selectedGoalId synced with savingsGoals
+  useEffect(() => {
+    if (savingsGoals.length > 0 && !savingsGoals.some((g) => g.id === selectedGoalId)) {
+      setSelectedGoalId(savingsGoals[0].id);
+    }
+  }, [savingsGoals, selectedGoalId]);
+
+  // Reset or initialize subcategory tags when category changes
+  useEffect(() => {
+    setSelectedTags([]);
+    setCustomTagInput('');
+  }, [manualCategoryId]);
+
+  const handleToggleTag = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  };
+
+  const handleAddCustomTag = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = customTagInput.trim();
+    if (trimmed && !selectedTags.includes(trimmed)) {
+      setSelectedTags((prev) => [...prev, trimmed]);
+      setCustomTagInput('');
+    }
+  };
 
   // Additive Quick-Add Math Logic: increments the current manualAmount by preset value
   const handleQuickAdd = (preset: number) => {
@@ -119,25 +189,31 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     if (name.includes('fun') || name.includes('dining') || group.includes('fun')) {
       return 'Restaurants & Dining, Coffee & Drinks, Shopping, Entertainment';
     }
-    if (name.includes('saving') || group.includes('saving')) {
-      return 'Emergency Fund, Long-term Savings, Vacation Fund';
-    }
-    if (name.includes('buffer')) {
-      return 'Client Invoices, Commission Deposits, Operating Buffer';
-    }
     return 'General household spending';
   };
 
+  // Sync initialCategory if changed from external trigger
   useEffect(() => {
     if (initialCategory?.id) {
-      setManualCategoryId(initialCategory.id);
-    } else if (categories.length > 0) {
-      // If current category is empty or not in categories, default to the first category's document ID
-      if (!manualCategoryId || !categories.some((c) => c.id === manualCategoryId)) {
-        setManualCategoryId(categories[0].id);
+      if (isSavingsCategory(initialCategory)) {
+        setManualCategoryId('cat_one_time_deposit');
+      } else {
+        setManualCategoryId(initialCategory.id);
       }
     }
-  }, [initialCategory, categories, manualCategoryId]);
+  }, [initialCategory]);
+
+  // Validate manualCategoryId: allow cat_one_time_deposit OR any known category
+  useEffect(() => {
+    if (
+      manualCategoryId &&
+      manualCategoryId !== 'cat_one_time_deposit' &&
+      availableExpenseCategories.length > 0 &&
+      !availableExpenseCategories.some((c) => c.id === manualCategoryId)
+    ) {
+      setManualCategoryId(availableExpenseCategories[0].id);
+    }
+  }, [availableExpenseCategories, manualCategoryId]);
 
   useEffect(() => {
     if (user?.userId) {
@@ -152,24 +228,40 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       return;
     }
 
-    const resolvedCategoryId =
-      manualCategoryId && categories.some((c) => c.id === manualCategoryId)
-        ? manualCategoryId
-        : categories[0]?.id || '';
+    const resolvedCategoryId = isOneTimeDeposit
+      ? 'cat_savings'
+      : manualCategoryId && availableExpenseCategories.some((c) => c.id === manualCategoryId)
+      ? manualCategoryId
+      : availableExpenseCategories[0]?.id || '';
+
+    const defaultDesc = isOneTimeDeposit
+      ? depositDestination === 'goal'
+        ? `Deposit to ${savingsGoals.find((g) => g.id === selectedGoalId)?.name || 'Savings Goal'}`
+        : 'One-Time Savings Deposit'
+      : 'Manual Expense';
 
     const newItem: StagedExpense = {
       amount: numAmount,
-      description: manualDescription.trim() || 'Manual Expense',
+      description: manualDescription.trim() || defaultDesc,
       categoryId: resolvedCategoryId,
       date: manualDate || new Date().toISOString().split('T')[0],
       loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
       billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+      tags: isOneTimeDeposit
+        ? ['One-Time Deposit', depositDestination === 'goal' ? 'Goal Deposit' : 'Budget Expansion']
+        : selectedTags.length > 0
+        ? selectedTags
+        : undefined,
+      subcategory: isOneTimeDeposit ? undefined : selectedTags[0] || undefined,
+      depositDestination: isOneTimeDeposit ? depositDestination : undefined,
+      targetGoalId: isOneTimeDeposit && depositDestination === 'goal' ? selectedGoalId : undefined,
     };
 
     setManualBatch((prev) => [...prev, newItem]);
     // Reset amount & description for next item, keep category/date for quick entry
     setManualAmount('');
     setManualDescription('');
+    setSelectedTags([]);
     showToast(`Added "$${numAmount.toFixed(2)}" to current batch (${manualBatch.length + 1} items).`);
   };
 
@@ -177,25 +269,40 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     const currentNum = parseFloat(manualAmount);
     const itemsToStage: StagedExpense[] = [...manualBatch];
 
-    const resolvedCategoryId =
-      manualCategoryId && categories.some((c) => c.id === manualCategoryId)
-        ? manualCategoryId
-        : categories[0]?.id || '';
+    const resolvedCategoryId = isOneTimeDeposit
+      ? 'cat_savings'
+      : manualCategoryId && availableExpenseCategories.some((c) => c.id === manualCategoryId)
+      ? manualCategoryId
+      : availableExpenseCategories[0]?.id || '';
+
+    const defaultDesc = isOneTimeDeposit
+      ? depositDestination === 'goal'
+        ? `Deposit to ${savingsGoals.find((g) => g.id === selectedGoalId)?.name || 'Savings Goal'}`
+        : 'One-Time Savings Deposit'
+      : 'Manual Expense';
 
     // If the user filled the current fields, add it too
     if (currentNum && currentNum > 0) {
       itemsToStage.push({
         amount: currentNum,
-        description: manualDescription.trim() || 'Manual Expense',
+        description: manualDescription.trim() || defaultDesc,
         categoryId: resolvedCategoryId,
         date: manualDate || new Date().toISOString().split('T')[0],
         loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
         billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+        tags: isOneTimeDeposit
+          ? ['One-Time Deposit', depositDestination === 'goal' ? 'Goal Deposit' : 'Budget Expansion']
+          : selectedTags.length > 0
+          ? selectedTags
+          : undefined,
+        subcategory: isOneTimeDeposit ? undefined : selectedTags[0] || undefined,
+        depositDestination: isOneTimeDeposit ? depositDestination : undefined,
+        targetGoalId: isOneTimeDeposit && depositDestination === 'goal' ? selectedGoalId : undefined,
       });
     }
 
     if (itemsToStage.length === 0) {
-      showToast('Please enter an amount for your expense.');
+      showToast('Please enter an amount for your transaction.');
       return;
     }
 
@@ -203,8 +310,9 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     setManualBatch([]);
     setManualAmount('');
     setManualDescription('');
+    setSelectedTags([]);
 
-    // Close Log Expense modal and open Review & Confirm staging view
+    // Close Log modal and open Review & Confirm staging view
     onClose();
     openStagingModal(itemsToStage);
   };
@@ -237,7 +345,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     setNoteError(null);
 
     try {
-      const parsedItems = await parseQuickNoteWithGemini(quickNoteText, categories);
+      const parsedItems = await parseQuickNoteWithGemini(quickNoteText, availableExpenseCategories);
       if (!parsedItems || parsedItems.length === 0) {
         throw new Error('No transaction entities could be detected in this text.');
       }
@@ -322,7 +430,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       const { items, receiptUrl } = await scanReceiptWithGemini(
         source,
         householdId,
-        categories,
+        availableExpenseCategories,
         selectedFile?.name
       );
 
@@ -368,7 +476,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg sm:text-xl font-extrabold text-dark-green-900 tracking-tight">
-                Log Expense
+                Log Transaction
               </h2>
               <p className="text-xs text-brown-700">
                 Choose your preferred logging path &bull; Routed to Review & Confirm
@@ -471,7 +579,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                         </span>
                         <button
                           onClick={() => removeBatchItem(idx)}
-                          className="text-brown-700 hover:text-red-600 ml-1 cursor-pointer"
+                          className="text-brown-700 hover:text-alert-red-700 ml-1 cursor-pointer"
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -535,7 +643,11 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                   <input
                     id="manual-input-description"
                     type="text"
-                    placeholder="e.g. Trader Joe's, Shell Gas, Lunch with team"
+                    placeholder={
+                      isOneTimeDeposit
+                        ? 'e.g. Tax Refund, Bonus, Gift, Birthday Money'
+                        : "e.g. Trader Joe's, Shell Gas, Lunch with team"
+                    }
                     value={manualDescription}
                     onChange={(e) => setManualDescription(e.target.value)}
                     className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
@@ -554,7 +666,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     onChange={(e) => setManualCategoryId(e.target.value)}
                     className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
                   >
-                    {categories.map((cat) => {
+                    {availableExpenseCategories.map((cat) => {
                       const effectiveWeekly = getCategoryEffectiveWeeklyBudget(cat, activeWeekId, household);
                       return (
                         <option key={cat.id} value={cat.id}>
@@ -562,11 +674,173 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                         </option>
                       );
                     })}
+                    <option value="cat_one_time_deposit">
+                      ✨ One-Time Deposit (Savings Allocation)
+                    </option>
                   </select>
                 </div>
 
-                {/* Contextual Category Tags / Examples Helper Row */}
-                {selectedManualCat && (
+                {/* Special One-Time Deposit Routing Box */}
+                {isOneTimeDeposit && (
+                  <div className="p-4 bg-sage-50/90 border border-sage-200 rounded-2xl space-y-3 animate-in fade-in">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-extrabold text-dark-green-950 flex items-center gap-1.5">
+                        <Sparkles className="w-4 h-4 text-sage-700" />
+                        Deposit Destination
+                      </span>
+                      <span className="text-[10px] font-bold text-sage-800 bg-sage-200/80 px-2 py-0.5 rounded-full">
+                        Savings Routing
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDepositDestination('savings_budget')}
+                        className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                          depositDestination === 'savings_budget'
+                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800'
+                            : 'bg-white/60 border-sage-200 hover:bg-white'
+                        }`}
+                      >
+                        <span className="text-xs font-bold text-dark-green-900 block">
+                          Expand Savings Budget
+                        </span>
+                        <span className="text-[10px] text-brown-700 leading-tight mt-1 block">
+                          Increases this week's Savings allocation envelope.
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDepositDestination('goal')}
+                        className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
+                          depositDestination === 'goal'
+                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800'
+                            : 'bg-white/60 border-sage-200 hover:bg-white'
+                        }`}
+                      >
+                        <span className="text-xs font-bold text-dark-green-900 block">
+                          Direct Goal Deposit
+                        </span>
+                        <span className="text-[10px] text-brown-700 leading-tight mt-1 block">
+                          Allocates directly to an individual savings goal.
+                        </span>
+                      </button>
+                    </div>
+
+                    {depositDestination === 'goal' && (
+                      <div className="space-y-1 pt-1">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 block">
+                          Select Savings Goal
+                        </label>
+                        <select
+                          value={selectedGoalId}
+                          onChange={(e) => setSelectedGoalId(e.target.value)}
+                          className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-bold text-dark-green-900"
+                        >
+                          <option value="goal_emergency">
+                            🛡️ Emergency Savings Fund (${formatCurrency(savingsGoals.find(g => g.id === 'goal_emergency')?.currentAmount || 0)} allocated)
+                          </option>
+                          {savingsGoals
+                            .filter((g) => g.id !== 'goal_emergency')
+                            .map((goal) => (
+                              <option key={goal.id} value={goal.id}>
+                                🎯 {goal.name} (${formatCurrency(goal.currentAmount || 0)} / {formatCurrency(goal.targetAmount || 0)})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Subcategory & Tagging Engine for Standard Categories */}
+                {!isOneTimeDeposit && selectedManualCat && (
+                  <div className="space-y-2 p-3.5 bg-beige-50/80 border border-beige-200 rounded-2xl">
+                    <div className="flex items-center justify-between">
+                      <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                        <Tag className="w-3.5 h-3.5 text-sage-700" />
+                        Subcategories & Tags
+                      </label>
+                      <span className="text-[10px] text-brown-700 font-medium">
+                        Click tags or add custom
+                      </span>
+                    </div>
+
+                    {/* Pre-defined Subcategory Pills */}
+                    {selectedManualCat.subcategories && selectedManualCat.subcategories.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {selectedManualCat.subcategories.map((subcat) => {
+                          const isSelected = selectedTags.includes(subcat);
+                          return (
+                            <button
+                              key={subcat}
+                              type="button"
+                              onClick={() => handleToggleTag(subcat)}
+                              className={`px-2.5 py-1 rounded-xl text-xs font-bold transition cursor-pointer border ${
+                                isSelected
+                                  ? 'bg-dark-green-800 text-white border-dark-green-900 shadow-xs'
+                                  : 'bg-white text-brown-800 border-beige-300 hover:border-dark-green-700'
+                              }`}
+                            >
+                              {subcat}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Custom Tag Input & Active Tags Display */}
+                    <div className="flex items-center gap-2 pt-1">
+                      <input
+                        type="text"
+                        placeholder="+ Add custom tag..."
+                        value={customTagInput}
+                        onChange={(e) => setCustomTagInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomTag();
+                          }
+                        }}
+                        className="flex-1 px-3 py-1.5 bg-white border border-beige-300 rounded-xl text-xs font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleAddCustomTag()}
+                        disabled={!customTagInput.trim()}
+                        className="px-3 py-1.5 bg-beige-200 hover:bg-beige-300 text-dark-green-950 font-bold text-xs rounded-xl transition cursor-pointer disabled:opacity-40"
+                      >
+                        Add Tag
+                      </button>
+                    </div>
+
+                    {/* Active Selected Tags Display */}
+                    {selectedTags.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {selectedTags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-sage-100 border border-sage-200 text-dark-green-900 text-[11px] font-bold"
+                          >
+                            #{tag}
+                            <button
+                              type="button"
+                              onClick={() => handleToggleTag(tag)}
+                              className="text-brown-700 hover:text-alert-red-700 cursor-pointer ml-0.5"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Contextual Category Examples Helper Row */}
+                {!isOneTimeDeposit && selectedManualCat && (
                   <div className="flex items-start gap-1.5 px-3 py-2 bg-beige-100/70 border border-beige-200/90 rounded-xl text-xs text-brown-800 animate-in fade-in duration-150">
                     <span className="font-bold text-dark-green-900 shrink-0">Examples:</span>
                     <span className="text-brown-800 font-medium leading-relaxed">
@@ -671,7 +945,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
           {/* ============================================================== */}
           {activeTab === 'quicknote' && (
             <div className="space-y-4">
-              <div className="p-3.5 bg-gradient-to-r from-sage-50 to-beige-50 border border-sage-200 rounded-2xl space-y-1">
+              <div className="p-3.5 bg-sage-50/70 border border-sage-200 rounded-2xl space-y-1">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-dark-green-900">
                   <Sparkles className="w-4 h-4 text-sage-600" />
                   <span>Gemini Natural Language Entity Extractor</span>
@@ -716,8 +990,8 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
               </div>
 
               {noteError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="p-3 bg-alert-red-50 border border-alert-red-200 rounded-xl text-xs text-alert-red-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-alert-red-600 flex-shrink-0 mt-0.5" />
                   <span>{noteError}</span>
                 </div>
               )}
@@ -756,7 +1030,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
           {/* ============================================================== */}
           {activeTab === 'scan' && (
             <div className="space-y-4">
-              <div className="p-3.5 bg-gradient-to-r from-sage-50 to-beige-50 border border-sage-200 rounded-2xl space-y-1">
+              <div className="p-3.5 bg-sage-50/70 border border-sage-200 rounded-2xl space-y-1">
                 <div className="flex items-center gap-1.5 text-xs font-bold text-dark-green-900">
                   <Camera className="w-4 h-4 text-brown-700" />
                   <span>Gemini Multimodal Receipt OCR</span>
@@ -833,8 +1107,8 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
               </div>
 
               {scanError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+                <div className="p-3 bg-alert-red-50 border border-alert-red-200 rounded-xl text-xs text-alert-red-800 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-alert-red-600 flex-shrink-0 mt-0.5" />
                   <span>{scanError}</span>
                 </div>
               )}

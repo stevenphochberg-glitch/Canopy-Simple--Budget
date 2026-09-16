@@ -12,6 +12,7 @@ import {
   calculateCategorySpending,
 } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
+import { getSavingsProgressFillColor } from '../Common/BudgetProgressBar';
 import {
   calculateCheckInStatus,
   getRemainingWeeksInMonth,
@@ -184,6 +185,25 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     return savingsCategories.reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
   }, [savingsCategories]);
 
+  // Derive "This week" Savings budget strictly from weeklyOverrides map (e.g. expanded by one-off deposits)
+  // or fall back to global baseline budget ($550).
+  const thisWeekSavingsTarget = useMemo(() => {
+    if (activeWeekId && household?.weeklyOverrides && household.weeklyOverrides[activeWeekId]) {
+      const weekOverrides = household.weeklyOverrides[activeWeekId];
+      if (weekOverrides.savings !== undefined && weekOverrides.savings !== null && !isNaN(Number(weekOverrides.savings))) {
+        return Number(weekOverrides.savings);
+      }
+      const savingsCat = savingsCategories.find(isSavingsCategory);
+      if (savingsCat && weekOverrides[savingsCat.id] !== undefined && !isNaN(Number(weekOverrides[savingsCat.id]))) {
+        return Number(weekOverrides[savingsCat.id]);
+      }
+      if (weekOverrides['cat_savings'] !== undefined && !isNaN(Number(weekOverrides['cat_savings']))) {
+        return Number(weekOverrides['cat_savings']);
+      }
+    }
+    return baselineSavingsTarget;
+  }, [activeWeekId, household?.weeklyOverrides, baselineSavingsTarget, savingsCategories]);
+
   // Dynamic Pacing Calculations for Step 2
   const categoryPacings = useMemo(() => {
     return expenseCategories.map((cat) => {
@@ -261,7 +281,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     futureSavingsReductionTotal,
   } = useMemo(() => {
     const bonus = availableTransferPot;
-    const baseTarget = baselineSavingsTarget;
+    const baseTarget = thisWeekSavingsTarget;
     const baseSaved = Math.max(0, baseTarget - totalSavingsPulledForDeficits);
 
     const totalBudgetThisWeek = baseTarget + bonus;
@@ -290,7 +310,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     };
   }, [
     availableTransferPot,
-    baselineSavingsTarget,
+    thisWeekSavingsTarget,
     totalSavingsPulledForDeficits,
     categoryPacings,
     overspendInputs,
@@ -444,7 +464,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         difference: savingsSavedThisWeek - savingsBudgetThisWeek,
         choice: 'savings',
         adjustmentPerWeek: futureSavingsBudget - Number(cat.baselineBudget),
-        previousWeeklyBudget: Number(cat.baselineBudget),
+        previousWeeklyBudget: thisWeekSavingsTarget,
         newWeeklyBudget: futureSavingsBudget,
         savingsContribution: savingsExpandedBonus,
       });
@@ -580,7 +600,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
       <div className="bg-white border border-beige-200 rounded-3xl w-full max-w-4xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="px-5 sm:px-6 py-3.5 bg-gradient-to-r from-beige-50 to-sage-50 border-b border-beige-200 flex items-center justify-between shrink-0">
+        <div className="px-5 sm:px-6 py-3.5 bg-beige-50 border-b border-beige-200 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shadow-xs shrink-0">
               <Sparkles className="w-5 h-5 text-sage-300" />
@@ -595,7 +615,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                     Historical Week
                   </span>
                 ) : isPreviewMode ? (
-                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
+                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-gold-100 text-gold-900 border border-gold-300">
                     Preview Mode
                   </span>
                 ) : (
@@ -876,7 +896,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
           {step === 2 && (
             <div className="space-y-6">
               {/* TOP SECTION: GLOBAL TRANSFER POT CARD */}
-              <div className="p-4 sm:p-5 bg-gradient-to-br from-dark-green-900 via-dark-green-800 to-sage-900 text-white rounded-3xl shadow-md border border-dark-green-950 space-y-3">
+              <div className="p-4 sm:p-5 bg-dark-green-900 text-white rounded-3xl shadow-md border border-dark-green-950 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-xs border border-white/20 flex items-center justify-center text-sage-300 shrink-0">
@@ -903,13 +923,13 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       +{formatCurrency(totalTransferPotGenerated)} transferred
                     </div>
                     {totalPotPulledForDeficits > 0 && (
-                      <div className="px-2.5 py-1 rounded-xl bg-red-500/20 border border-red-300/30 text-[11px] font-bold text-red-200">
+                      <div className="px-2.5 py-1 rounded-xl bg-alert-red-600/30 border border-alert-red-300/40 text-[11px] font-bold text-alert-red-200">
                         -{formatCurrency(totalPotPulledForDeficits)} used for deficits
                       </div>
                     )}
                     {availableTransferPot > 0 && (
-                      <div className="px-2.5 py-1 rounded-xl bg-emerald-500/20 border border-emerald-300/30 text-[11px] font-bold text-emerald-200 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 text-emerald-300" />
+                      <div className="px-2.5 py-1 rounded-xl bg-sage-700/40 border border-sage-400/40 text-[11px] font-bold text-sage-200 flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-sage-300" />
                         <span>+{formatCurrency(availableTransferPot)} routing to Savings</span>
                       </div>
                     )}
@@ -983,7 +1003,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                 {/* Base Spent Segment */}
                                 <div
                                   className={`h-full transition-all duration-300 ${
-                                    p.isOverspent ? 'bg-red-500' : 'bg-sage-600'
+                                    p.isOverspent ? 'bg-alert-red-600' : 'bg-sage-600'
                                   }`}
                                   style={{ width: `${Math.min(100, spentPct)}%` }}
                                 />
@@ -994,7 +1014,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                     className={`h-full transition-all duration-300 ${
                                       uChoice === 'transfer_pot'
                                         ? 'bg-dark-green-900'
-                                        : 'bg-sky-500'
+                                        : 'bg-sky-blue-600'
                                     }`}
                                     style={{ width: `${100 - spentPct}%` }}
                                   />
@@ -1012,7 +1032,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                       className={`font-black px-1.5 py-0.2 rounded text-[9px] ${
                                         uChoice === 'transfer_pot'
                                           ? 'bg-dark-green-900 text-white'
-                                          : 'bg-sky-100 text-sky-900 border border-sky-300'
+                                          : 'bg-sky-blue-100 text-sky-blue-900 border border-sky-blue-300'
                                       }`}
                                     >
                                       {uChoice === 'transfer_pot'
@@ -1022,10 +1042,10 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   </>
                                 ) : p.isOverspent ? (
                                   <>
-                                    <span className="text-red-600 font-bold">
+                                    <span className="text-alert-red-600 font-bold">
                                       {formatCurrency(p.deficit)} overspent
                                     </span>
-                                    <span className="text-red-700 font-black bg-red-100 px-1.5 py-0.2 rounded text-[9px]">
+                                    <span className="text-alert-red-700 font-black bg-alert-red-100 px-1.5 py-0.2 rounded text-[9px]">
                                       Deficit active
                                     </span>
                                   </>
@@ -1039,52 +1059,64 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       })}
 
                       {/* Savings Category Card (This Week) */}
-                      <div className="bg-gradient-to-br from-emerald-50 to-sage-50 border border-emerald-200 rounded-2xl p-3 space-y-2 shadow-2xs">
+                      <div className="bg-sage-50/70 border border-sage-200 rounded-2xl p-3 space-y-2 shadow-2xs">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
-                            <div className="w-7 h-7 rounded-xl bg-emerald-200 text-emerald-900 flex items-center justify-center shrink-0">
+                            <div className="w-7 h-7 rounded-xl bg-sage-200 text-dark-green-900 flex items-center justify-center shrink-0">
                               <PiggyBank className="w-3.5 h-3.5" />
                             </div>
                             <div>
-                              <span className="text-xs font-extrabold text-emerald-950 block">
+                              <span className="text-xs font-extrabold text-dark-green-950 block">
                                 Savings Pot Deposit
                               </span>
-                              <span className="text-[10px] text-emerald-800 font-medium">
-                                Base Target: {formatCurrency(baselineSavingsTarget)}
+                              <span className="text-[10px] text-sage-900 font-medium">
+                                Target: {formatCurrency(thisWeekSavingsTarget)}
+                                {thisWeekSavingsTarget !== baselineSavingsTarget && (
+                                  <span className="ml-1 text-dark-green-800 font-bold">
+                                    (Expanded from {formatCurrency(baselineSavingsTarget)} baseline)
+                                  </span>
+                                )}
                               </span>
                             </div>
                           </div>
 
                           <div className="text-right">
-                            <div className="text-xs font-black font-mono text-emerald-950">
+                            <div className="text-xs font-black font-mono text-dark-green-950">
                               {formatCurrency(savingsSavedThisWeek)}{' '}
-                              <span className="text-[10px] text-emerald-800 font-normal">
+                              <span className="text-[10px] text-sage-900 font-normal">
                                 / {formatCurrency(savingsBudgetThisWeek)}
                               </span>
                             </div>
-                            <span className="text-[9px] font-bold text-emerald-700 block">
+                            <span className="text-[9px] font-bold text-dark-green-800 block">
                               {savingsSavedThisWeek >= savingsBudgetThisWeek ? 'Target Achieved' : 'Deficit Active'}
                             </span>
                           </div>
                         </div>
 
-                        {/* Progress Bar for Savings */}
-                        <div className="w-full h-3 bg-emerald-200/80 rounded-full overflow-hidden flex border border-emerald-300/60">
-                          <div
-                            className="h-full bg-emerald-600 transition-all duration-300 rounded-full"
-                            style={{
-                              width: `${
-                                savingsBudgetThisWeek > 0
-                                  ? Math.min(100, Math.round((savingsSavedThisWeek / savingsBudgetThisWeek) * 100))
-                                  : 0
-                              }%`,
-                            }}
-                          />
-                        </div>
+                        {/* Progress Bar for Savings (Solid stepped color) */}
+                        {(() => {
+                          const savingsPct = savingsBudgetThisWeek > 0
+                            ? Math.round((savingsSavedThisWeek / savingsBudgetThisWeek) * 100)
+                            : 0;
+                          return (
+                            <div className={`w-full h-3 rounded-full overflow-hidden flex border ${
+                              savingsPct >= 100
+                                ? 'border-2 border-dark-green-800 ring-1 ring-dark-green-800/30 bg-beige-100'
+                                : 'border-sage-300/80 bg-beige-100'
+                            }`}>
+                              <div
+                                className={`h-full ${getSavingsProgressFillColor(savingsPct)} transition-all duration-300 rounded-full`}
+                                style={{
+                                  width: `${Math.min(100, savingsPct)}%`,
+                                }}
+                              />
+                            </div>
+                          );
+                        })()}
 
                         {savingsExpandedBonus > 0 && (
-                          <div className="text-[10px] text-emerald-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-emerald-200/80">
-                            <Sparkles className="w-3 h-3 text-emerald-600 shrink-0" />
+                          <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
+                            <Sparkles className="w-3 h-3 text-sage-600 shrink-0" />
                             <span>
                               Expanded budget: <strong>+{formatCurrency(savingsExpandedBonus)}</strong> bonus from Transfer Pot
                             </span>
@@ -1154,7 +1186,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   isHigher
                                     ? 'bg-sage-100 text-sage-900 border border-sage-300'
                                     : isLower
-                                    ? 'bg-red-50 text-red-700 border border-red-200'
+                                    ? 'bg-alert-red-50 text-alert-red-700 border border-alert-red-200'
                                     : 'bg-beige-100 text-brown-800'
                                 }`}
                               >
@@ -1166,36 +1198,36 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       })}
 
                       {/* Savings Category Following Weeks */}
-                      <div className="bg-white border border-emerald-200 rounded-2xl p-3 space-y-1.5 shadow-2xs">
+                      <div className="bg-white border border-sage-200 rounded-2xl p-3 space-y-1.5 shadow-2xs">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
-                            <div className="w-7 h-7 rounded-xl bg-emerald-100 text-emerald-900 flex items-center justify-center shrink-0">
+                            <div className="w-7 h-7 rounded-xl bg-sage-100 text-dark-green-900 flex items-center justify-center shrink-0">
                               <PiggyBank className="w-3.5 h-3.5" />
                             </div>
                             <div>
-                              <span className="text-xs font-extrabold text-emerald-950 block">
+                              <span className="text-xs font-extrabold text-dark-green-950 block">
                                 Savings Target Projection
                               </span>
-                              <span className="text-[10px] text-emerald-800">
+                              <span className="text-[10px] text-sage-900">
                                 Global Baseline: {formatCurrency(baselineSavingsTarget)}/wk
                               </span>
                             </div>
                           </div>
 
                           <div className="text-right">
-                            <div className="text-xs sm:text-sm font-black font-mono text-emerald-950">
+                            <div className="text-xs sm:text-sm font-black font-mono text-dark-green-950">
                               {formatCurrency(Math.max(0, baselineSavingsTarget - futureSavingsReductionTotal))}
-                              <span className="text-[10px] font-normal text-emerald-800">/wk</span>
+                              <span className="text-[10px] font-normal text-sage-900">/wk</span>
                             </div>
-                            <span className="text-[10px] text-emerald-700 font-medium block">
+                            <span className="text-[10px] text-dark-green-800 font-medium block">
                               for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
                             </span>
                           </div>
                         </div>
 
-                        <div className="pt-1 flex items-center justify-between text-[10px] border-t border-emerald-100">
-                          <span className="text-emerald-800 font-medium">Following Weeks Target:</span>
-                          <span className="font-bold text-emerald-900">
+                        <div className="pt-1 flex items-center justify-between text-[10px] border-t border-sage-100">
+                          <span className="text-sage-900 font-medium">Following Weeks Target:</span>
+                          <span className="font-bold text-dark-green-900">
                             {futureSavingsReductionTotal > 0
                               ? `-${formatCurrency(futureSavingsReductionTotal)}/wk from deficit override`
                               : 'Baseline target maintained'}
@@ -1302,20 +1334,20 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   onClick={() => handleUnderspendChoice(cat.id, 'prorate')}
                                   className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
                                     currentChoice === 'prorate'
-                                      ? 'bg-sky-600 text-white border-sky-700 shadow-xs'
+                                      ? 'bg-sky-blue-600 text-white border-sky-blue-700 shadow-xs'
                                       : 'bg-beige-50/50 hover:bg-beige-100 text-dark-green-900 border-beige-300'
                                   }`}
                                 >
                                   <div className="flex items-center justify-between gap-2 mb-1">
                                     <span className="text-xs font-black flex items-center gap-1.5">
-                                      <TrendingUp className="w-3.5 h-3.5 text-sky-200" />
+                                      <TrendingUp className="w-3.5 h-3.5 text-sky-blue-200" />
                                       Choice 2: Prorate
                                     </span>
                                     <span
                                       className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
                                         currentChoice === 'prorate'
                                           ? 'bg-white/20 text-white'
-                                          : 'bg-sky-100 text-sky-900'
+                                          : 'bg-sky-blue-100 text-sky-blue-900'
                                       }`}
                                     >
                                       +{formatCurrency(Math.round(p.leftover / remainingWeeksInMonth))}/wk
@@ -1323,7 +1355,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   </div>
                                   <p
                                     className={`text-[10px] leading-relaxed ${
-                                      currentChoice === 'prorate' ? 'text-sky-100' : 'text-dark-grey-600'
+                                      currentChoice === 'prorate' ? 'text-sky-blue-100' : 'text-dark-grey-600'
                                     }`}
                                   >
                                     Divides leftover across next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget increases to {formatCurrency(p.baseline + Math.round(p.leftover / remainingWeeksInMonth))}/wk.
@@ -1339,7 +1371,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                   {/* 2. Overspent Categories List */}
                   {categoryPacings.filter((p) => p.isOverspent).length > 0 && (
                     <div className="space-y-3">
-                      <span className="text-[11px] font-black uppercase tracking-wider text-red-800 bg-red-100 px-2.5 py-1 rounded-full inline-block">
+                      <span className="text-[11px] font-black uppercase tracking-wider text-alert-red-800 bg-alert-red-100 px-2.5 py-1 rounded-full inline-block">
                         Overspent Categories ({categoryPacings.filter((p) => p.isOverspent).length})
                       </span>
 
@@ -1360,11 +1392,11 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                           return (
                             <div
                               key={`over-${cat.id}`}
-                              className="p-4 bg-white border-2 border-red-200 rounded-2xl shadow-xs space-y-3"
+                              className="p-4 bg-white border-2 border-alert-red-200 rounded-2xl shadow-xs space-y-3"
                             >
-                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-red-100 pb-2.5">
+                              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-alert-red-100 pb-2.5">
                                 <div className="flex items-center gap-2.5">
-                                  <div className="w-8 h-8 rounded-xl bg-red-100 text-red-700 flex items-center justify-center shrink-0">
+                                  <div className="w-8 h-8 rounded-xl bg-alert-red-100 text-alert-red-700 flex items-center justify-center shrink-0">
                                     <AlertCircle className="w-4 h-4" />
                                   </div>
                                   <div>
@@ -1377,7 +1409,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   </div>
                                 </div>
 
-                                <div className="px-3 py-1 bg-red-100 border border-red-300 rounded-xl text-xs font-black text-red-800 self-start sm:self-auto">
+                                <div className="px-3 py-1 bg-alert-red-100 border border-alert-red-300 rounded-xl text-xs font-black text-alert-red-800 self-start sm:self-auto">
                                   -{formatCurrency(p.deficit)} Overspent
                                 </div>
                               </div>
@@ -1441,20 +1473,20 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                         Pull from Current Savings ($)
                                       </label>
                                       <span className="text-[10px] text-dark-grey-600 font-bold">
-                                        Max: {formatCurrency(baselineSavingsTarget)}
+                                        Max: {formatCurrency(thisWeekSavingsTarget)}
                                       </span>
                                     </div>
                                     <div className="flex items-center gap-1.5">
                                       <input
                                         type="number"
                                         min="0"
-                                        max={Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)}
+                                        max={Math.min(p.deficit - (Number(inputState.potPull) || 0), thisWeekSavingsTarget)}
                                         value={inputState.savingsPull || ''}
                                         onChange={(e) =>
                                           handleOverspendSavingsPull(
                                             cat.id,
                                             parseFloat(e.target.value) || 0,
-                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), thisWeekSavingsTarget)
                                           )
                                         }
                                         placeholder="0.00"
@@ -1465,8 +1497,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                         onClick={() =>
                                           handleOverspendSavingsPull(
                                             cat.id,
-                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget),
-                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), baselineSavingsTarget)
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), thisWeekSavingsTarget),
+                                            Math.min(p.deficit - (Number(inputState.potPull) || 0), thisWeekSavingsTarget)
                                           )
                                         }
                                         className="px-2 py-1.5 bg-sage-700 hover:bg-sage-800 text-white text-[10px] font-bold rounded-lg shrink-0"
@@ -1486,23 +1518,23 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                     <span>Deficit fully covered! Next weeks budget remains at {formatCurrency(p.baseline)}/wk.</span>
                                   </div>
                                 ) : !isOverMonthlyCap ? (
-                                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1 text-xs text-amber-950">
-                                    <div className="flex items-center gap-1.5 font-black text-amber-900">
-                                      <TrendingDown className="w-4 h-4 text-amber-700 shrink-0" />
+                                  <div className="p-2.5 bg-gold-50 border border-gold-200 rounded-xl space-y-1 text-xs text-gold-950">
+                                    <div className="flex items-center gap-1.5 font-black text-gold-900">
+                                      <TrendingDown className="w-4 h-4 text-gold-700 shrink-0" />
                                       <span>Auto-Prorating Remaining Deficit (-{formatCurrency(uncovered)})</span>
                                     </div>
-                                    <p className="text-[11px] text-amber-900/90 leading-relaxed">
+                                    <p className="text-[11px] text-gold-900/90 leading-relaxed">
                                       Reducing future weekly budgets by <strong>-{formatCurrency(Math.round(uncovered / remainingWeeksInMonth))}/wk</strong> across the remaining {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget: <strong>{formatCurrency(Math.max(0, p.baseline - Math.round(uncovered / remainingWeeksInMonth)))}/wk</strong>.
                                     </p>
                                   </div>
                                 ) : (
                                   /* EXCEPTION RULE: Overspend exceeds total remaining monthly budget */
-                                  <div className="p-3.5 bg-red-50 border-2 border-red-300 rounded-xl space-y-2.5 text-xs text-red-950">
-                                    <div className="flex items-center gap-2 font-black text-red-900">
-                                      <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                                  <div className="p-3.5 bg-alert-red-50 border-2 border-alert-red-300 rounded-xl space-y-2.5 text-xs text-alert-red-950">
+                                    <div className="flex items-center gap-2 font-black text-alert-red-900">
+                                      <AlertTriangle className="w-4 h-4 text-alert-red-600 shrink-0" />
                                       <span>Standard Proration Strictly Disabled (Negative Future Budget Prevention)</span>
                                     </div>
-                                    <p className="text-[11px] text-red-900 leading-relaxed">
+                                    <p className="text-[11px] text-alert-red-900 leading-relaxed">
                                       The remaining uncovered overspend of <strong>{formatCurrency(uncovered)}</strong> exceeds the total remaining monthly budget for this category (<strong>{formatCurrency(monthlyCap)}</strong> across {remainingWeeksInMonth} weeks). You must allocate more from Transfer Pot / Savings above, or choose an override option below:
                                     </p>
 
@@ -1513,8 +1545,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                         onClick={() => handleOverspendOverrideMode(cat.id, 'accept_loss')}
                                         className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                                           inputState.overrideMode === 'accept_loss'
-                                            ? 'bg-red-800 text-white border-red-900 shadow-xs'
-                                            : 'bg-white hover:bg-red-100 text-red-900 border-red-200'
+                                            ? 'bg-alert-red-800 text-white border-alert-red-900 shadow-xs'
+                                            : 'bg-white hover:bg-alert-red-100 text-alert-red-900 border-alert-red-200'
                                         }`}
                                       >
                                         <div className="flex items-center justify-between mb-0.5">
@@ -1522,7 +1554,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                             1. Accept a Loss for the Week
                                           </span>
                                         </div>
-                                        <span className="text-[10px] text-red-800 opacity-90 block">
+                                        <span className="text-[10px] text-alert-red-800 opacity-90 block">
                                           Sets future category budget to $0/wk and absorbs remaining deficit as a loss.
                                         </span>
                                       </button>
@@ -1532,8 +1564,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                         onClick={() => handleOverspendOverrideMode(cat.id, 'pull_future_savings')}
                                         className={`p-2.5 rounded-xl border text-left transition cursor-pointer ${
                                           inputState.overrideMode === 'pull_future_savings'
-                                            ? 'bg-red-800 text-white border-red-900 shadow-xs'
-                                            : 'bg-white hover:bg-red-100 text-red-900 border-red-200'
+                                            ? 'bg-alert-red-800 text-white border-alert-red-900 shadow-xs'
+                                            : 'bg-white hover:bg-alert-red-100 text-alert-red-900 border-alert-red-200'
                                         }`}
                                       >
                                         <div className="flex items-center justify-between mb-0.5">
@@ -1541,7 +1573,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                             2. Pull from Future Weeks' Savings
                                           </span>
                                         </div>
-                                        <span className="text-[10px] text-red-800 opacity-90 block">
+                                        <span className="text-[10px] text-alert-red-800 opacity-90 block">
                                           Reduces future weekly savings budgets by -{formatCurrency(Math.round((uncovered - monthlyCap) / remainingWeeksInMonth))}/wk to balance math.
                                         </span>
                                       </button>
@@ -1581,7 +1613,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
           {step === 3 && (
             <div className="space-y-5">
               {/* Savings Allocation Final Summary */}
-              <div className="p-4 sm:p-5 bg-gradient-to-br from-sage-50 via-emerald-50 to-beige-50 border border-sage-300 rounded-3xl space-y-3">
+              <div className="p-4 sm:p-5 bg-sage-50/70 border border-sage-300 rounded-3xl space-y-3">
                 <div className="flex items-center gap-2.5">
                   <div className="w-9 h-9 rounded-xl bg-dark-green-800 text-white flex items-center justify-center shrink-0">
                     <Sparkles className="w-5 h-5 text-sage-300" />
@@ -1599,10 +1631,10 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
                   <div className="p-3 bg-white rounded-2xl border border-beige-200 space-y-0.5">
                     <span className="text-[9px] uppercase font-bold text-dark-grey-600 block">
-                      Baseline Savings Goal
+                      This Week Savings Target
                     </span>
                     <span className="text-base font-black text-dark-green-900">
-                      {formatCurrency(baselineSavingsTarget)}
+                      {formatCurrency(thisWeekSavingsTarget)}
                     </span>
                   </div>
 
@@ -1624,14 +1656,14 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                     </span>
                   </div>
 
-                  <div className="p-3 bg-white rounded-2xl border border-emerald-300 bg-emerald-50/40 space-y-0.5">
-                    <span className="text-[9px] uppercase font-bold text-emerald-900 block">
+                  <div className="p-3 bg-white rounded-2xl border border-sage-300 bg-sage-50/60 space-y-0.5">
+                    <span className="text-[9px] uppercase font-bold text-dark-green-900 block">
                       Effective Saved This Week
                     </span>
-                    <span className="text-base font-black text-emerald-900">
+                    <span className="text-base font-black text-dark-green-900">
                       {formatCurrency(savingsSavedThisWeek)}
                     </span>
-                    <span className="text-[10px] text-emerald-800 block">
+                    <span className="text-[10px] text-sage-800 block">
                       out of {formatCurrency(savingsBudgetThisWeek)} total
                     </span>
                   </div>
@@ -1683,7 +1715,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                             </span>
                           )}
                           {dec.newWeeklyBudget < dec.previousWeeklyBudget && (
-                            <span className="text-[10px] text-red-600 font-bold ml-1">
+                            <span className="text-[10px] text-alert-red-600 font-bold ml-1">
                               (-{dec.previousWeeklyBudget - dec.newWeeklyBudget})
                             </span>
                           )}
@@ -1709,8 +1741,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               </div>
 
               {isPreviewMode && (
-                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2.5 text-xs text-amber-900 font-medium">
-                  <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                <div className="p-3.5 bg-gold-50 border border-gold-200 rounded-xl flex items-center gap-2.5 text-xs text-gold-900 font-medium">
+                  <Clock className="w-4 h-4 text-gold-700 shrink-0" />
                   <span>
                     * Check-ins cannot be submitted until the last day of the week. You are in Preview Mode.
                   </span>
@@ -1774,7 +1806,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                 )}
               </button>
               {isPreviewMode && (
-                <span className="text-[11px] text-amber-800 font-semibold italic">
+                <span className="text-[11px] text-gold-800 font-semibold italic">
                   * Check-ins cannot be submitted until the last day of the week.
                 </span>
               )}

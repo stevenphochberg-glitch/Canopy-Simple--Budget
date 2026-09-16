@@ -133,57 +133,10 @@ const MainLayout: React.FC = () => {
       {/* Top Navbar */}
       <Navbar onOpenProfileModal={() => setIsProfileModalOpen(true)} />
 
-      {/* Main Content Area with Desktop Sidebar */}
-      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 flex gap-8">
-        {/* Desktop Sidebar (lg:) */}
-        <aside className="hidden lg:flex flex-col w-60 flex-shrink-0 space-y-6">
-          {/* Quick Action */}
-          <button
-            id="sidebar-log-expense-btn"
-            onClick={() => openLogExpenseModal()}
-            className="w-full py-3 px-4 bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-2xl font-extrabold text-xs flex items-center justify-center gap-2 shadow-sm transition active:scale-98 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Log Expense</span>
-          </button>
-
-          {/* Navigation Links */}
-          <div className="bg-white border border-beige-200/90 rounded-2xl p-3 shadow-xs space-y-1">
-            {navLinks.map((item) => {
-              const Icon = item.icon;
-              const isActive = activeTab === item.id;
-              const hasAlert = item.id === 'checkin' && reviewDueStatus.isDue;
-              return (
-                <button
-                  key={item.id}
-                  id={`desktop-sidebar-${item.id}`}
-                  onClick={() => setActiveTab(item.id)}
-                  className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
-                    isActive
-                      ? 'bg-dark-green-800 text-white shadow-xs'
-                      : 'text-dark-grey-800 hover:bg-beige-100 hover:text-dark-green-900'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Icon className="w-4 h-4 shrink-0" />
-                    <span className="truncate">{item.label}</span>
-                  </div>
-                  {hasAlert && (
-                    <span
-                      id="desktop-checkin-notification-dot"
-                      className="w-2.5 h-2.5 bg-red-600 rounded-full ring-2 ring-white shrink-0"
-                      title="Review due"
-                      aria-label="Review due alert"
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
+      {/* Main Content Area */}
+      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 pb-24 lg:pb-8">
         {/* Dynamic Main View */}
-        <main className="flex-1 min-w-0">
+        <main className="w-full min-w-0">
           {activeTab === 'dashboard' && (
             <DashboardView onOpenProfileModal={() => setIsProfileModalOpen(true)} />
           )}
@@ -234,12 +187,12 @@ const MainLayout: React.FC = () => {
           id="global-toast-notification"
           className={`fixed bottom-16 sm:bottom-6 right-6 z-50 px-4 py-3 text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-4 duration-200 max-w-md ${
             toastType === 'error'
-              ? 'bg-red-900 text-white border border-red-700/80 shadow-red-950/40'
+              ? 'bg-alert-red-900 text-white border border-alert-red-700/80 shadow-alert-red-950/40'
               : 'bg-dark-green-900 text-white border border-sage-700/60'
           }`}
         >
           {toastType === 'error' ? (
-            <AlertCircle className="w-4 h-4 text-red-300 shrink-0" />
+            <AlertCircle className="w-4 h-4 text-alert-red-300 shrink-0" />
           ) : (
             <CheckCircle2 className="w-4 h-4 text-sage-300 shrink-0" />
           )}

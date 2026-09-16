@@ -9,6 +9,7 @@ import {
   getWeekId,
   getCategoryEffectiveWeeklyBudget,
   formatLocalDate,
+  getWeekRange,
 } from '../../lib/calculations';
 import {
   getFiscalMonthForDate,
@@ -20,6 +21,7 @@ import { CategoryIcon } from '../Common/CategoryIcon';
 import { ExtraPaycheckBanner } from './ExtraPaycheckBanner';
 import { RunwayVisualizer } from './RunwayVisualizer';
 import { calculateCheckInStatus } from '../../lib/checkInCalculations';
+import { CheckInReviewModal } from '../CheckIn/CheckInReviewModal';
 import {
   Plus,
   ChevronLeft,
@@ -33,6 +35,8 @@ import {
   ArrowRight,
   AlertTriangle,
   X,
+  PiggyBank,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -63,6 +67,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
+  const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
 
   // 1. Calculate 4-4-5 Fiscal Month & Tracker Coordinates & Extra Paycheck Detection
   const fiscalMonth = useMemo(() => {
@@ -174,18 +179,78 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const overallPercentage =
     totalTimeframeBudget > 0 ? Math.round((totalTimeframeSpent / totalTimeframeBudget) * 100) : 0;
 
-  // Dynamic Overall Progress Bar Color
-  // Smooth transition: earth-tone green (<80%) -> warm warning amber (80-94%) -> deep amber (95-99%) -> Actionable alert red (>=100%)
+  const isCurrentTimeframe = timeframeOffset === 0;
+
+  // Check for one-time deposits in the active week
+  const depositsThisWeek = useMemo(() => {
+    if (timeframeMode !== 'week') return [];
+    return (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + 'T12:00:00');
+      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
+    });
+  }, [timeframeMode, household?.oneOffDeposits, activeDateRange]);
+
+  const depositTotalThisWeek = useMemo(() => {
+    return depositsThisWeek.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+  }, [depositsThisWeek]);
+
+  const isDepositExpansion = useMemo(() => {
+    if (!hasAnyWeeklyOverride) return false;
+    if (depositTotalThisWeek > 0) return true;
+    const activeWeekStartStr = formatLocalDate(activeDateRange.startDate);
+    const hasMatchingDeposit = (household?.oneOffDeposits || []).some((dep) => {
+      const depDate = new Date(dep.date + 'T12:00:00');
+      const targetRange = getWeekRange(depDate, household?.firstDayOfWeek || 'Monday', 0);
+      return formatLocalDate(targetRange.startDate) === activeWeekStartStr;
+    });
+    if (hasMatchingDeposit) return true;
+    const weekOverrides = household?.weeklyOverrides?.[activeWeekId];
+    if (weekOverrides) {
+      const overrideKeys = Object.keys(weekOverrides);
+      const isOnlySavings = overrideKeys.every(
+        (k) => k === 'savings' || k === 'cat_savings' || categories.find((c) => c.id === k)?.type === 'savings'
+      );
+      if (isOnlySavings && totalTimeframeBudget > totalWeeklyBaseline) return true;
+    }
+    return false;
+  }, [
+    hasAnyWeeklyOverride,
+    depositTotalThisWeek,
+    household?.oneOffDeposits,
+    activeDateRange,
+    household?.firstDayOfWeek,
+    household?.weeklyOverrides,
+    activeWeekId,
+    categories,
+    totalTimeframeBudget,
+    totalWeeklyBaseline,
+  ]);
+
+  // 1% – 75%: Muted Sage Green, 75% – 90%: Earth Brown, 90% – 99%: Alert Red, >= 100%: Alert Red fill & Alert Red outline
   let overallBarColor = 'bg-sage-600';
   if (overallPercentage >= 100) {
-    overallBarColor = 'bg-red-600';
-  } else if (overallPercentage >= 95) {
-    overallBarColor = 'bg-amber-700';
-  } else if (overallPercentage >= 80) {
-    overallBarColor = 'bg-amber-600';
+    overallBarColor = 'bg-alert-red-600';
+  } else if (overallPercentage >= 90) {
+    overallBarColor = 'bg-alert-red-600';
+  } else if (overallPercentage >= 75) {
+    overallBarColor = 'bg-brown-700';
   }
 
-  const isCurrentTimeframe = timeframeOffset === 0;
+  // Timeframe Navigation formatted titles & fiscal sublabels
+  const timeframeNavDisplay = useMemo(() => {
+    if (timeframeMode === 'month') {
+      const monthTitle = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      const monthSub = `Month ${fiscalMonth.fiscalMonthNumber} of 12`;
+      return { title: monthTitle, sub: monthSub };
+    } else {
+      const startShort = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const endShort = activeDateRange.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const yearStr = activeDateRange.endDate.getFullYear();
+      const weekTitle = `${startShort} - ${endShort}, ${yearStr}`;
+      const weekSub = `W${fiscalTracker.weekOfFiscalYear} of Fiscal Year | W${fiscalTracker.weekOfFiscalMonth} of ${fiscalTracker.monthWeekCount} for M${fiscalTracker.fiscalMonthNumber}`;
+      return { title: weekTitle, sub: weekSub };
+    }
+  }, [timeframeMode, activeDateRange, fiscalMonth, fiscalTracker]);
 
   // 4. Variable Income Buffer & Runway Calculations
   const bufferCategory = useMemo(() => {
@@ -262,17 +327,17 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       {reviewDueStatus.isDue && (
         <div
           id="dashboard-review-due-alert"
-          className="bg-white border-2 border-red-500 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
+          className="bg-white border-2 border-alert-red-500 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
         >
           <div className="flex items-start sm:items-center gap-3.5">
             <div className="relative flex-shrink-0">
-              <div className="w-12 h-12 rounded-2xl bg-red-50 border border-red-200 flex items-center justify-center text-red-600">
+              <div className="w-12 h-12 rounded-2xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-600">
                 <CheckCircle className="w-6 h-6" />
               </div>
               {/* Solid Red Dot - Red is strictly reserved for actionable alerts and past-due notifications */}
               <span
                 id="dashboard-review-notification-dot"
-                className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-red-600 rounded-full ring-2 ring-white"
+                className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-alert-red-600 rounded-full ring-2 ring-white"
                 title="Actionable alert"
                 aria-label="Actionable alert"
               />
@@ -280,12 +345,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
             <div className="space-y-0.5 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-red-700 bg-red-100/90 px-2.5 py-0.5 rounded-full">
-                  <span className="w-2 h-2 rounded-full bg-red-600" />
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-alert-red-700 bg-alert-red-100/90 px-2.5 py-0.5 rounded-full">
+                  <span className="w-2 h-2 rounded-full bg-alert-red-600" />
                   Action Required &bull; {reviewDueStatus.type === 'monthly' ? 'Monthly Retrospective' : 'Weekly Check-In'}
                 </span>
                 {reviewDueStatus.isPastDue && (
-                  <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
+                  <span className="text-[10px] font-bold text-alert-red-600 bg-alert-red-50 border border-alert-red-200 px-2 py-0.5 rounded-full">
                     Past Due
                   </span>
                 )}
@@ -309,7 +374,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 openWeeklyCheckInModal();
               }
             }}
-            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-red-600 hover:bg-red-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
           >
             <span>{reviewDueStatus.type === 'monthly' ? 'Start Monthly Retro' : 'Complete Check-In'}</span>
             <ArrowRight className="w-4 h-4" />
@@ -368,9 +433,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <ChevronLeft className="w-4 h-4" />
             </button>
 
-            <div className="px-3 sm:px-4 py-1 text-center min-w-[140px] sm:min-w-[180px]">
+            <div className="px-3 sm:px-4 py-1 text-center min-w-[170px] sm:min-w-[240px]">
               <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
-                {activeDateRange.label}
+                {timeframeNavDisplay.title}
+              </span>
+              <span className="text-[10px] font-bold text-brown-700 block tracking-tight mt-0.5">
+                {timeframeNavDisplay.sub}
               </span>
             </div>
 
@@ -408,60 +476,52 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           id="dashboard-historical-checkin-banner"
           className="bg-white border-2 border-sage-300 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
         >
-          <div className="flex items-start sm:items-center gap-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-dark-green-800 text-white flex items-center justify-center shrink-0 shadow-xs">
-              <Clock className="w-6 h-6" />
-            </div>
-            <div className="space-y-0.5 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-dark-green-900 bg-sage-100 px-2.5 py-0.5 rounded-full">
-                  <Clock className="w-3 h-3 text-dark-green-800" />
-                  Historical Week &bull; {activeDateRange.label}
+          <div className="space-y-1.5 min-w-0">
+            <h3 className="text-base sm:text-lg font-black text-dark-green-950">
+              {historicalCheckIn ? 'Past Weekly Check-In Recorded' : 'Execute Historical Weekly Check-In'}
+            </h3>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-dark-green-900 bg-sage-100 px-2.5 py-0.5 rounded-full">
+                Historical Week &bull; {timeframeNavDisplay.title}
+              </span>
+              {historicalCheckIn ? (
+                <span className="text-[12px] font-black text-dark-green-900 bg-sage-100 border border-sage-300 px-3 py-1 rounded-full flex items-center gap-1.5 font-mono">
+                  <CheckCircle2 className="w-4 h-4 text-dark-green-700 shrink-0" />
+                  <span>{formatCurrency(historicalCheckIn.totalSaved)} saved</span>
                 </span>
-                {historicalCheckIn ? (
-                  <span className="text-[10px] font-extrabold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3 text-emerald-700" />
-                    Check-In Completed (${formatCurrency(historicalCheckIn.totalSaved)} saved)
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-extrabold text-amber-900 bg-amber-100 border border-amber-300 px-2.5 py-0.5 rounded-full">
-                    Check-In Not Yet Executed
-                  </span>
-                )}
-              </div>
-              <h3 className="text-base sm:text-lg font-black text-dark-green-950">
-                {historicalCheckIn ? 'Past Weekly Check-In Recorded' : 'Execute Historical Weekly Check-In'}
-              </h3>
-              <p className="text-xs text-brown-700 max-w-xl">
-                {historicalCheckIn
-                  ? `Weekly check-in recorded for ${activeDateRange.label}. You can review or re-execute this past check-in at any time.`
-                  : `Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for ${activeDateRange.label}.`}
-              </p>
+              ) : (
+                <span className="text-[10px] font-extrabold text-brown-900 bg-brown-100 border border-brown-300 px-2.5 py-0.5 rounded-full">
+                  Check-In Not Yet Executed
+                </span>
+              )}
             </div>
+            <p className="text-xs text-brown-700 max-w-xl">
+              {historicalCheckIn
+                ? `Weekly check-in recorded for ${timeframeNavDisplay.title}. You can review the breakdown and reflection notes at any time.`
+                : `Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for ${timeframeNavDisplay.title}.`}
+            </p>
           </div>
 
           <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
-            {historicalCheckIn && (
+            {historicalCheckIn ? (
               <button
-                id="dashboard-historical-checkin-delete-btn"
-                onClick={() => setIsDeleteConfirmOpen(true)}
-                className="flex-shrink-0 flex items-center justify-center gap-1.5 px-3.5 py-3 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs sm:text-sm font-extrabold rounded-2xl shadow-2xs transition active:scale-95 cursor-pointer"
-                title="Delete this historical check-in record and reverse future prorations"
+                id="dashboard-historical-checkin-cta"
+                onClick={() => setIsReviewModalOpen(true)}
+                className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
               >
-                <Trash2 className="w-4 h-4 text-rose-600" />
-                <span>Delete Check-In</span>
+                <span>Review Check-In</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            ) : (
+              <button
+                id="dashboard-historical-checkin-cta"
+                onClick={() => openWeeklyCheckInModal()}
+                className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+              >
+                <span>Execute Check-In for this Week</span>
+                <ArrowRight className="w-4 h-4" />
               </button>
             )}
-
-            <button
-              id="dashboard-historical-checkin-cta"
-              onClick={() => openWeeklyCheckInModal()}
-              className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
-            >
-              <Clock className="w-4 h-4" />
-              <span>{historicalCheckIn ? 'Review Check-In' : 'Execute Check-In for this Week'}</span>
-              <ArrowRight className="w-4 h-4" />
-            </button>
           </div>
         </div>
       )}
@@ -474,7 +534,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               {timeframeMode === 'week' ? 'Weekly' : 'Monthly Normalized'}
             </span>
             <h2 className="text-xs sm:text-sm font-extrabold text-dark-green-900">
-              {activeDateRange.label} Spending Summary
+              {timeframeNavDisplay.title} Spending Summary
             </h2>
           </div>
 
@@ -502,12 +562,22 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   </span>
                   <span
                     className="text-dark-green-900"
-                    title={`Active Weekly Prorated: ${formatCurrency(totalTimeframeBudget)}`}
+                    title={
+                      isDepositExpansion
+                        ? `Expanded Weekly Budget: ${formatCurrency(totalTimeframeBudget)}`
+                        : `Active Weekly Prorated: ${formatCurrency(totalTimeframeBudget)}`
+                    }
                   >
                     {formatCurrency(totalTimeframeBudget)}
                   </span>
-                  <span className="text-[9px] font-extrabold px-1.5 py-0.2 rounded bg-sage-100 text-sage-900 border border-sage-200">
-                    Prorated
+                  <span
+                    className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded border ${
+                      isDepositExpansion
+                        ? 'bg-sage-100 text-dark-green-900 border-sage-300'
+                        : 'bg-sky-blue-100 text-sky-blue-900 border-sky-blue-300'
+                    }`}
+                  >
+                    {isDepositExpansion ? 'One-Time Deposit' : 'Prorated'}
                   </span>
                 </>
               ) : (
@@ -516,7 +586,15 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </div>
             <p className="text-[10px] text-brown-700 truncate">
               {hasAnyWeeklyOverride
-                ? `Prorated from check-in (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(totalTimeframeBudget - totalWeeklyBaseline)})`
+                ? isDepositExpansion
+                  ? `Expanded via one-time deposit (+${formatCurrency(
+                      depositTotalThisWeek > 0
+                        ? depositTotalThisWeek
+                        : totalTimeframeBudget - totalWeeklyBaseline
+                    )})`
+                  : `Prorated from check-in (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(
+                      totalTimeframeBudget - totalWeeklyBaseline
+                    )})`
                 : `Across ${visibleCategories.length} ${timeframeMode === 'week' ? 'weekly categories' : 'categories'}`}
             </p>
           </div>
@@ -536,7 +614,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           <div
             className={`p-2.5 border rounded-lg space-y-0.5 ${
               isNetOverBudget
-                ? 'bg-red-50/70 border-red-200'
+                ? 'bg-alert-red-50/70 border-alert-red-200'
                 : 'bg-sage-50/60 border-sage-200'
             }`}
           >
@@ -545,7 +623,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </span>
             <div
               className={`text-lg sm:text-xl font-black font-mono tracking-tight ${
-                isNetOverBudget ? 'text-red-600' : 'text-sage-900'
+                isNetOverBudget ? 'text-alert-red-600' : 'text-sage-900'
               }`}
             >
               {isNetOverBudget
@@ -566,7 +644,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             <span>Overall Budget Consumption</span>
             <span>{overallPercentage}%</span>
           </div>
-          <div className="w-full h-1.5 bg-beige-200 rounded-full overflow-hidden border border-beige-300/40">
+          <div
+            className={`w-full h-2 rounded-full overflow-hidden transition-all ${
+              overallPercentage >= 100
+                ? 'border-2 border-alert-red-500 ring-2 ring-alert-red-500/20 bg-alert-red-50'
+                : 'bg-beige-200 border border-beige-300/40'
+            }`}
+          >
             <div
               className={`h-full ${overallBarColor} transition-all duration-500 ease-out rounded-full`}
               style={{ width: `${Math.min(100, Math.max(0, overallPercentage))}%` }}
@@ -667,7 +751,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer border border-beige-300"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>Log Expense</span>
+            <span>Log Transaction</span>
           </button>
         </div>
 
@@ -681,7 +765,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 No transactions logged in this timeframe
               </h4>
               <p className="text-xs text-brown-700">
-                Click "Log Expense" above to record receipts and expenses into the household ledger.
+                Click "Log Transaction" above to record receipts and expenses into the household ledger.
               </p>
             </div>
             <button
@@ -689,7 +773,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl shadow-xs transition cursor-pointer"
             >
               <Plus className="w-4 h-4" />
-              <span>Log First Expense for this Timeframe</span>
+              <span>Log First Transaction for this Timeframe</span>
             </button>
           </div>
         ) : (
@@ -767,80 +851,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         )}
       </div>
 
-      {/* Delete Historical Check-In Confirmation Modal */}
-      {isDeleteConfirmOpen && historicalCheckIn && (
-        <div
-          id="delete-checkin-modal-backdrop"
-          className="fixed inset-0 z-50 bg-dark-green-950/60 backdrop-blur-xs flex items-center justify-center p-4"
-        >
-          <div
-            id="delete-checkin-modal"
-            className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-beige-300 space-y-5 animate-in fade-in zoom-in-95 duration-150"
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-rose-100 border border-rose-200 text-rose-700 flex items-center justify-center shrink-0">
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-black text-dark-green-950">
-                    Delete Historical Check-In
-                  </h3>
-                  <p className="text-xs font-bold text-brown-600">
-                    {activeDateRange.label}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => !isDeletingCheckIn && setIsDeleteConfirmOpen(false)}
-                className="p-1.5 text-brown-600 hover:text-dark-green-900 rounded-xl hover:bg-beige-100 transition cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 space-y-2">
-              <p className="text-sm font-extrabold text-rose-900">
-                Are you sure? This will reverse all budget prorations and savings transfers for this week.
-              </p>
-              <p className="text-xs text-rose-800 leading-relaxed">
-                Deleting this check-in will erase the reconciliation record, restore future-week budget envelopes back to their baseline allocations, and return this week to an un-reconciled state.
-              </p>
-            </div>
-
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <button
-                type="button"
-                id="cancel-delete-checkin-btn"
-                onClick={() => setIsDeleteConfirmOpen(false)}
-                disabled={isDeletingCheckIn}
-                className="px-4 py-2.5 rounded-xl border border-beige-300 text-xs sm:text-sm font-extrabold text-brown-800 hover:bg-beige-100 transition cursor-pointer disabled:opacity-50"
-              >
-                Cancel
-              </button>
-
-              <button
-                type="button"
-                id="confirm-delete-checkin-btn"
-                onClick={async () => {
-                  if (!historicalCheckIn) return;
-                  setIsDeletingCheckIn(true);
-                  try {
-                    await deleteWeeklyCheckIn(historicalCheckIn.id);
-                    setIsDeleteConfirmOpen(false);
-                  } finally {
-                    setIsDeletingCheckIn(false);
-                  }
-                }}
-                disabled={isDeletingCheckIn}
-                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs sm:text-sm font-extrabold shadow-sm transition active:scale-95 cursor-pointer flex items-center gap-2 disabled:opacity-50"
-              >
-                <Trash2 className="w-4 h-4" />
-                <span>{isDeletingCheckIn ? 'Deleting...' : 'Delete Check-In'}</span>
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Check-In Read-Only Review Modal */}
+      {historicalCheckIn && (
+        <CheckInReviewModal
+          isOpen={isReviewModalOpen}
+          onClose={() => setIsReviewModalOpen(false)}
+          checkIn={historicalCheckIn}
+        />
       )}
     </div>
   );

@@ -389,14 +389,14 @@ export const FeedView: React.FC = () => {
           <div className="flex items-center gap-4 text-xs font-semibold text-brown-700 flex-wrap bg-beige-50/70 p-3 rounded-2xl border border-beige-200">
             <span className="text-dark-green-900 font-extrabold">Fiscal Calendar Indicators:</span>
             <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-emerald-100 border border-emerald-300 flex items-center justify-center text-emerald-800">
+              <div className="w-5 h-5 rounded-full bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900">
                 <CheckCircle2 className="w-3.5 h-3.5" />
               </div>
               <span>Weekly Check-In</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-700">
-                <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-600" />
+              <div className="w-5 h-5 rounded-full bg-gold-100 border border-gold-300 flex items-center justify-center text-gold-900">
+                <Star className="w-3.5 h-3.5 fill-gold-500 text-gold-700" />
               </div>
               <span>Monthly Review</span>
             </div>
@@ -470,14 +470,14 @@ export const FeedView: React.FC = () => {
                   {/* Middle: Vertically Stacked Indicators (Icons) */}
                   <div className="flex-1 flex flex-col justify-center gap-1 my-1">
                     {cell.meta.hasCheckin && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-900 bg-emerald-100/90 px-1.5 py-0.5 rounded-md border border-emerald-300" title="Weekly Check-In Completed">
-                        <CheckCircle2 className="w-3 h-3 text-emerald-700 shrink-0" />
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-300" title="Weekly Check-In Completed">
+                        <CheckCircle2 className="w-3 h-3 text-dark-green-700 shrink-0" />
                         <span className="truncate hidden sm:inline">Check-in</span>
                       </div>
                     )}
                     {cell.meta.hasStar && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100/90 px-1.5 py-0.5 rounded-md border border-amber-300" title="Monthly Review / Major Milestone">
-                        <Star className="w-3 h-3 fill-amber-500 text-amber-600 shrink-0" />
+                      <div className="flex items-center gap-1 text-[10px] font-bold text-gold-950 bg-gold-100/90 px-1.5 py-0.5 rounded-md border border-gold-300" title="Monthly Review / Major Milestone">
+                        <Star className="w-3 h-3 fill-gold-500 text-gold-700 shrink-0" />
                         <span className="truncate hidden sm:inline">Review</span>
                       </div>
                     )}

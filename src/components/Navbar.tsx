@@ -183,21 +183,20 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     }
   };
 
-  const navItems: Array<{ id: ActiveTab; label: string; icon: React.FC<{ className?: string }> }> = [
+  const headerTabs: Array<{ id: ActiveTab; label: string; icon: React.FC<{ className?: string }> }> = [
     { id: 'dashboard', label: 'My Budget', icon: LayoutDashboard },
     { id: 'ledger', label: 'Ledger', icon: Receipt },
     { id: 'checkin', label: 'Check-in', icon: CheckCircle },
     { id: 'feed', label: 'Activity', icon: Activity },
-    { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
   return (
     <>
       {/* Top Header Bar (Desktop & Mobile) */}
-      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-beige-200 px-4 sm:px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
-          {/* Logo (Icon only, no text word) */}
-          <div className="flex items-center gap-3">
+      <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-beige-200 px-4 sm:px-6 py-2.5">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+          {/* Logo on the far left - Routes directly to My Budget */}
+          <div className="flex items-center gap-3 shrink-0">
             <button
               onClick={() => setActiveTab('dashboard')}
               aria-label="Household Dashboard"
@@ -205,21 +204,54 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             >
               <img
                 src="/logo.jpeg"
-                alt="App Logo"
+                alt="Canopy Logo"
                 className="w-9 h-9 rounded-xl object-cover border border-beige-300 group-hover:scale-105 transition-transform shadow-xs"
               />
             </button>
           </div>
 
-          {/* Right Header Elements */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* Desktop Log Expense CTA Button */}
+          {/* Center-Aligned Navigation Tabs (Desktop / Tablet) */}
+          <nav className="hidden md:flex items-center gap-1 bg-beige-100/80 p-1 rounded-2xl border border-beige-200">
+            {headerTabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              const hasAlert = tab.id === 'checkin' && reviewDueStatus.isDue;
+
+              return (
+                <button
+                  key={tab.id}
+                  id={`header-tab-${tab.id}`}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-bold transition cursor-pointer relative ${
+                    isActive
+                      ? 'bg-white text-dark-green-950 shadow-xs border border-beige-200/60'
+                      : 'text-dark-grey-700 hover:text-dark-green-900 hover:bg-beige-200/50'
+                  }`}
+                >
+                  <Icon className="w-3.5 h-3.5 shrink-0" />
+                  <span>{tab.label}</span>
+                  {hasAlert && (
+                    <span
+                      id="header-checkin-notification-dot"
+                      className="w-2 h-2 bg-alert-red-600 rounded-full shrink-0 animate-pulse"
+                      title="Check-in review due"
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Right Header Elements: + Log Transaction & Account Menu */}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {/* Primary Log Transaction CTA Button */}
             <button
-              id="header-log-expense-btn"
+              id="header-log-transaction-btn"
               onClick={() => openLogExpenseModal()}
-              className="hidden sm:flex items-center justify-center px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition cursor-pointer"
+              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer"
             >
-              <span>Log Expense</span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>Log Transaction</span>
             </button>
 
             {/* Account & Administrative Dropdown Menu */}
@@ -245,14 +277,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                 <ChevronDown className={`w-3 h-3 text-dark-green-800 transition-transform ${showMemberDropdown ? 'rotate-180' : ''}`} />
               </button>
 
-              {/* Dropdown Menu Container (closed via click-outside ref listener) */}
-
               {/* Dropdown Menu Container */}
               {showMemberDropdown && (
                 <div
-                  className="absolute right-0 mt-2 w-72 sm:w-80 max-h-[60vh] overflow-y-auto bg-white border border-beige-200 rounded-3xl shadow-xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150 space-y-3 overscroll-contain"
+                  className="absolute right-0 mt-2 w-72 sm:w-80 max-h-[70vh] overflow-y-auto bg-white border border-beige-200 rounded-3xl shadow-xl p-3 z-50 animate-in fade-in slide-in-from-top-2 duration-150 space-y-3 overscroll-contain"
                 >
-                  {/* User Profile Header */}
+                  {/* SECTION 1: User Identity */}
                   <div className="p-3 bg-beige-50/80 border border-beige-200/80 rounded-2xl space-y-1">
                     <div className="flex items-center gap-2.5">
                       <img
@@ -281,7 +311,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                     </div>
                   </div>
 
-                  {/* Household Switcher Section */}
+                  {/* SECTION 2: Household Switching */}
                   <div className="space-y-1 pt-1 border-t border-beige-100">
                     <div className="flex items-center justify-between px-2 py-0.5">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-brown-700">
@@ -356,9 +386,43 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         )
                       )}
                     </div>
+
+                    {/* Switch Household Member Profile (if > 1 member) */}
+                    {members.length > 1 && (
+                      <div className="pt-2 border-t border-beige-100/60 space-y-1">
+                        <p className="text-[10px] font-bold uppercase tracking-wider text-brown-700 px-2 py-0.5">
+                          Switch Active Member:
+                        </p>
+                        {members.map((m) => (
+                          <button
+                            key={m.userId}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              switchActiveMember(m.userId);
+                              setShowMemberDropdown(false);
+                            }}
+                            className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-left text-xs transition cursor-pointer ${
+                              m.userId === user?.userId
+                                ? 'bg-sage-100 font-bold text-dark-green-900 border border-sage-300'
+                                : 'hover:bg-beige-50 text-dark-grey-800'
+                            }`}
+                          >
+                            <img
+                              src={m.avatarUrl}
+                              alt={m.name}
+                              className="w-6 h-6 rounded-full object-cover border border-beige-300"
+                            />
+                            <span className="flex-1 truncate">{m.name}</span>
+                            {m.userId === user?.userId && (
+                              <Check className="w-3.5 h-3.5 text-dark-green-700" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
-                  {/* Relocated Administrative Actions */}
+                  {/* SECTION 3: Administration */}
                   <div className="space-y-1 pt-1 border-t border-beige-100">
                     <p className="text-[10px] font-bold uppercase tracking-wider text-brown-700 px-2 py-0.5">
                       Administration
@@ -371,7 +435,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         openAllocationModal();
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
                     >
                       <div className="w-7 h-7 rounded-lg bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-800 group-hover:bg-sage-200 transition">
                         <SlidersHorizontal className="w-3.5 h-3.5" />
@@ -391,7 +455,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         setActiveTab('settings');
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
                     >
                       <div className="w-7 h-7 rounded-lg bg-beige-100 border border-beige-300 flex items-center justify-center text-brown-800 group-hover:bg-beige-200 transition">
                         <Settings className="w-3.5 h-3.5" />
@@ -411,7 +475,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         onOpenProfileModal();
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
                     >
                       <div className="w-7 h-7 rounded-lg bg-beige-100 border border-beige-300 flex items-center justify-center text-brown-800 group-hover:bg-beige-200 transition">
                         <Users className="w-3.5 h-3.5" />
@@ -431,7 +495,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         setShowJoinModal(true);
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-dark-green-900 hover:bg-sage-50 rounded-xl transition cursor-pointer text-left group"
                     >
                       <div className="w-7 h-7 rounded-lg bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-800 group-hover:bg-sage-200 transition">
                         <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -451,53 +515,19 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         setShowLeaveModal(true);
                       }}
-                      className="w-full flex items-center gap-3 px-3 py-2.5 text-xs font-bold text-amber-900 hover:bg-amber-50 rounded-xl transition cursor-pointer text-left group"
+                      className="w-full flex items-center gap-3 px-3 py-2 text-xs font-bold text-brown-900 hover:bg-beige-100 rounded-xl transition cursor-pointer text-left group"
                     >
-                      <div className="w-7 h-7 rounded-lg bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 group-hover:bg-amber-200 transition">
+                      <div className="w-7 h-7 rounded-lg bg-beige-200 border border-beige-300 flex items-center justify-center text-brown-800 group-hover:bg-beige-300 transition">
                         <UserMinus className="w-3.5 h-3.5" />
                       </div>
                       <div className="flex-1">
                         <span>Leave Current Household</span>
-                        <p className="text-[10px] font-normal text-amber-700">
+                        <p className="text-[10px] font-normal text-brown-700">
                           Detach from active budget
                         </p>
                       </div>
                     </button>
                   </div>
-
-                  {/* Switch Household Profile (if > 1 member) */}
-                  {members.length > 1 && (
-                    <div className="pt-2 border-t border-beige-100 space-y-1">
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-brown-700 px-2 py-0.5">
-                        Switch Active Member:
-                      </p>
-                      {members.map((m) => (
-                        <button
-                          key={m.userId}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            switchActiveMember(m.userId);
-                            setShowMemberDropdown(false);
-                          }}
-                          className={`w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-xl text-left text-xs transition cursor-pointer ${
-                            m.userId === user?.userId
-                              ? 'bg-sage-100 font-bold text-dark-green-900 border border-sage-300'
-                              : 'hover:bg-beige-50 text-dark-grey-800'
-                          }`}
-                        >
-                          <img
-                            src={m.avatarUrl}
-                            alt={m.name}
-                            className="w-6 h-6 rounded-full object-cover border border-beige-300"
-                          />
-                          <span className="flex-1 truncate">{m.name}</span>
-                          {m.userId === user?.userId && (
-                            <Check className="w-3.5 h-3.5 text-dark-green-700" />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
 
                   {/* Sign Out */}
                   <div className="pt-2 border-t border-beige-100">
@@ -507,9 +537,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                         setShowMemberDropdown(false);
                         signOut();
                       }}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-bold text-red-700 hover:bg-red-50 rounded-xl transition cursor-pointer"
+                      className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-bold text-alert-red-700 hover:bg-alert-red-50 rounded-xl transition cursor-pointer"
                     >
-                      <LogOut className="w-4 h-4 text-red-600" />
+                      <LogOut className="w-4 h-4 text-alert-red-600" />
                       <span>Sign Out</span>
                     </button>
                   </div>
@@ -592,7 +622,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             {reviewDueStatus.isDue && (
               <span
                 id="mobile-checkin-notification-dot"
-                className="absolute top-0 right-0 w-2.5 h-2.5 bg-red-600 rounded-full ring-2 ring-white"
+                className="absolute top-0 right-0 w-2.5 h-2.5 bg-alert-red-600 rounded-full ring-2 ring-white"
                 title="Review due"
                 aria-label="Review due alert"
               />
@@ -732,7 +762,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               )}
 
               {joinError && (
-                <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs font-semibold text-red-700 flex items-center gap-2">
+                <div className="p-3 bg-alert-red-50 border border-alert-red-200 rounded-xl text-xs font-semibold text-alert-red-700 flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 flex-shrink-0" />
                   <span>{joinError}</span>
                 </div>
@@ -777,7 +807,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-sm animate-in fade-in">
           <div className="bg-white rounded-3xl border border-beige-200 shadow-2xl max-w-md w-full p-6 space-y-5">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-800 flex-shrink-0">
+              <div className="w-10 h-10 rounded-2xl bg-beige-200 border border-beige-300 flex items-center justify-center text-brown-800 flex-shrink-0">
                 <UserMinus className="w-5 h-5" />
               </div>
               <div>
@@ -792,7 +822,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
 
             {leaveStep === 'confirm' ? (
               <>
-                <p className="text-xs text-dark-grey-700 leading-relaxed bg-amber-50/70 border border-amber-200/80 p-3.5 rounded-2xl">
+                <p className="text-xs text-dark-grey-700 leading-relaxed bg-beige-100/80 border border-beige-200/80 p-3.5 rounded-2xl">
                   Leaving will detach your active profile from this household budget. You will no longer have access to this shared budget unless you re-join with the sync code.
                 </p>
 
@@ -807,7 +837,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                   <button
                     type="button"
                     onClick={() => setLeaveStep('choice')}
-                    className="px-5 py-2.5 rounded-xl bg-amber-700 hover:bg-amber-800 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
+                    className="px-5 py-2.5 rounded-xl bg-brown-700 hover:bg-brown-800 text-xs font-bold text-white shadow-xs flex items-center gap-2 cursor-pointer"
                   >
                     <span>Continue</span>
                   </button>

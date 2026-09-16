@@ -162,7 +162,7 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
       </div>
 
       {/* Income Pool & Allocation Tracker Bar */}
-      <div className="p-4 sm:p-5 bg-gradient-to-br from-sage-100 to-beige-100 border border-sage-300 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
+      <div className="p-4 sm:p-5 bg-sage-100/90 border border-sage-300 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xs">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-dark-green-800 text-white rounded-xl shadow-xs">
             <PieChart className="w-6 h-6" />
@@ -197,14 +197,14 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
           )}
 
           {isOverAllocated && (
-            <div className="flex items-center gap-1.5 text-xs font-bold text-red-700 bg-red-100/90 px-2.5 py-1 rounded-lg border border-red-200">
-              <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
+            <div className="flex items-center gap-1.5 text-xs font-bold text-alert-red-700 bg-alert-red-100/90 px-2.5 py-1 rounded-lg border border-alert-red-200">
+              <AlertTriangle className="w-3.5 h-3.5 text-alert-red-600" />
               <span>Over by {formatCurrency(Math.abs(unallocated))}</span>
             </div>
           )}
 
           {!isPerfectMatch && !isOverAllocated && (
-            <div className="flex items-center justify-between gap-3 text-xs font-bold text-amber-800 bg-amber-100/80 px-2.5 py-1 rounded-lg border border-amber-200">
+            <div className="flex items-center justify-between gap-3 text-xs font-bold text-gold-900 bg-gold-100/90 px-2.5 py-1 rounded-lg border border-gold-200">
               <span>{formatCurrency(unallocated)} unallocated</span>
               <button
                 type="button"

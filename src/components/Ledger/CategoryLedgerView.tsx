@@ -24,7 +24,7 @@ import {
   Tag,
   Layers,
 } from 'lucide-react';
-import { Category, Expense, BillFrequency } from '../../types';
+import { Category, Expense, BillFrequency, CheckIn } from '../../types';
 import { parseExpenseTimestamp } from '../../lib/calculations';
 import { EarthToneReaction } from '../Common/EarthToneReaction';
 import { BudgetProgressBar } from '../Common/BudgetProgressBar';
@@ -43,6 +43,7 @@ export const CategoryLedgerView: React.FC = () => {
     household,
     categories,
     expenses,
+    checkIns,
     members,
     user,
     selectedLedgerCategoryId,
@@ -80,9 +81,71 @@ export const CategoryLedgerView: React.FC = () => {
     return categories.find((c) => c.id === selectedLedgerCategoryId) || null;
   }, [categories, selectedLedgerCategoryId]);
 
-  // Filter & Sort expenses
+  // Is the active category Savings?
+  const isSavingsCategory = useMemo(() => {
+    if (!activeCategory) return false;
+    return (
+      activeCategory.id === 'cat_savings' ||
+      activeCategory.type === 'savings' ||
+      activeCategory.group?.toLowerCase() === 'savings' ||
+      activeCategory.name?.toLowerCase().includes('saving')
+    );
+  }, [activeCategory]);
+
+  // Helper to extract savings dollar contribution from completed check-in record
+  const getCheckInSavingsAmount = (checkIn: CheckIn): number => {
+    if (checkIn.totalSaved !== undefined && checkIn.totalSaved !== null && !isNaN(Number(checkIn.totalSaved))) {
+      return Number(checkIn.totalSaved);
+    }
+    if (checkIn.decisions && checkIn.decisions.length > 0) {
+      return checkIn.decisions.reduce((sum, d) => {
+        if (d.savingsContribution) return sum + d.savingsContribution;
+        if (d.choice === 'savings') return sum + (d.difference > 0 ? d.difference : 0);
+        return sum;
+      }, 0);
+    }
+    return 0;
+  };
+
+  // Filter & Sort completed checkIns (for Savings ledger timeline)
+  const filteredSavingsCheckIns = useMemo(() => {
+    if (!isSavingsCategory) return [];
+    const completed = (checkIns || []).filter((c) => c.status === 'completed');
+    return completed
+      .filter((c) => {
+        if (selectedMemberFilter !== 'all' && c.completedByUserId && c.completedByUserId !== selectedMemberFilter) {
+          return false;
+        }
+        if (searchQuery.trim()) {
+          const q = searchQuery.toLowerCase();
+          const matchesTitle = 'weekly check-in deposit'.includes(q) || 'savings'.includes(q);
+          const matchesNotes = c.notes ? c.notes.toLowerCase().includes(q) : false;
+          const member = members.find((m) => m.userId === c.completedByUserId);
+          const matchesMember = member?.name.toLowerCase().includes(q) || (c.completedByName ? c.completedByName.toLowerCase().includes(q) : false);
+          const amount = getCheckInSavingsAmount(c);
+          const matchesAmount = amount.toString().includes(q);
+          if (!matchesTitle && !matchesNotes && !matchesMember && !matchesAmount) {
+            return false;
+          }
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        const timeA = a.timestamp || new Date(a.weekEndDate || a.weekStartDate).getTime();
+        const timeB = b.timestamp || new Date(b.weekEndDate || b.weekStartDate).getTime();
+        const amtA = getCheckInSavingsAmount(a);
+        const amtB = getCheckInSavingsAmount(b);
+        if (sortBy === 'date-desc') return timeB - timeA;
+        if (sortBy === 'date-asc') return timeA - timeB;
+        if (sortBy === 'amount-desc') return amtB - amtA;
+        if (sortBy === 'amount-asc') return amtA - amtB;
+        return 0;
+      });
+  }, [isSavingsCategory, checkIns, selectedMemberFilter, searchQuery, sortBy, members]);
+
+  // Filter & Sort expenses (completely ignore if activeCategory is Savings or selectedLedgerCategoryId is 'deposits')
   const filteredExpenses = useMemo(() => {
-    if (selectedLedgerCategoryId === 'deposits') return [];
+    if (selectedLedgerCategoryId === 'deposits' || isSavingsCategory) return [];
     return expenses
       .filter((exp) => {
         // Category filter
@@ -123,10 +186,11 @@ export const CategoryLedgerView: React.FC = () => {
         }
         return 0;
       });
-  }, [expenses, selectedLedgerCategoryId, selectedMemberFilter, searchQuery, sortBy, categories, members]);
+  }, [expenses, selectedLedgerCategoryId, isSavingsCategory, selectedMemberFilter, searchQuery, sortBy, categories, members]);
 
   // Filter & Sort One-off Deposits
   const filteredDeposits = useMemo(() => {
+    // Exclude deposits if a specific category is selected (deposits only show under 'All' or 'deposits' tab)
     if (selectedLedgerCategoryId && selectedLedgerCategoryId !== 'deposits') {
       return [];
     }
@@ -164,6 +228,11 @@ export const CategoryLedgerView: React.FC = () => {
     return filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
   }, [filteredExpenses]);
 
+  // Total savings deposit amount for Savings view (strictly from completed check-ins)
+  const totalSavingsDepositAmount = useMemo(() => {
+    return filteredSavingsCheckIns.reduce((sum, c) => sum + getCheckInSavingsAmount(c), 0);
+  }, [filteredSavingsCheckIns]);
+
   // Category specific budget stats:
   // - Month View: Statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month)
   // - Week View: Active weekly allocation (with active overrides/adjustments)
@@ -181,6 +250,16 @@ export const CategoryLedgerView: React.FC = () => {
       timeframeMode,
       weeksInMonth
     );
+
+    if (isSavingsCategory) {
+      const totalSaved = (checkIns || [])
+        .filter((c) => c.status === 'completed')
+        .reduce((sum, c) => sum + getCheckInSavingsAmount(c), 0);
+      const remaining = budgetForTimeframe - totalSaved;
+      const percentage = budgetForTimeframe > 0 ? Math.round((totalSaved / budgetForTimeframe) * 100) : 0;
+      return { budgetForTimeframe, totalSpent: totalSaved, count: filteredSavingsCheckIns.length, remaining, percentage };
+    }
+
     const { totalSpent, count } = calculateCategorySpending(
       expenses,
       activeCategory.id,
@@ -190,7 +269,7 @@ export const CategoryLedgerView: React.FC = () => {
     const remaining = budgetForTimeframe - totalSpent;
     const percentage = budgetForTimeframe > 0 ? Math.round((totalSpent / budgetForTimeframe) * 100) : 0;
     return { budgetForTimeframe, totalSpent, count, remaining, percentage };
-  }, [activeCategory, expenses, timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
+  }, [activeCategory, isSavingsCategory, checkIns, filteredSavingsCheckIns.length, expenses, timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
 
   const toggleComments = (expenseId: string) => {
     setExpandedComments((prev) => ({ ...prev, [expenseId]: !prev[expenseId] }));
@@ -252,17 +331,19 @@ export const CategoryLedgerView: React.FC = () => {
           </p>
         </div>
 
-        {/* Action Button */}
-        <div className="flex items-center gap-2.5">
-          <button
-            id="ledger-log-expense-btn"
-            onClick={() => openLogExpenseModal(activeCategory)}
-            className="flex items-center gap-2 px-4 sm:px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>{activeCategory ? `Log to ${activeCategory.name}` : 'Log Expense'}</span>
-          </button>
-        </div>
+        {/* Action Button - Hidden for Savings category */}
+        {!isSavingsCategory && (
+          <div className="flex items-center gap-2.5">
+            <button
+              id="ledger-log-expense-btn"
+              onClick={() => openLogExpenseModal(activeCategory)}
+              className="flex items-center gap-2 px-4 sm:px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>{activeCategory ? `Log to ${activeCategory.name}` : 'Log Expense'}</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* LATERAL NAVIGATION BAR (Horizontal Scrolling Category Chips) */}
@@ -307,17 +388,17 @@ export const CategoryLedgerView: React.FC = () => {
               onClick={() => setSelectedLedgerCategoryId('deposits')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all flex-shrink-0 cursor-pointer border ${
                 selectedLedgerCategoryId === 'deposits'
-                  ? 'bg-emerald-800 text-white border-emerald-800 shadow-sm'
-                  : 'bg-white text-emerald-900 hover:bg-emerald-50 border-emerald-200'
+                  ? 'bg-dark-green-800 text-white border-dark-green-800 shadow-sm'
+                  : 'bg-white text-dark-green-900 hover:bg-sage-50 border-sage-300'
               }`}
             >
-              <TrendingUp className="w-3.5 h-3.5 text-emerald-600" />
+              <TrendingUp className="w-3.5 h-3.5 text-sage-600" />
               <span>Income & Deposits</span>
               <span
                 className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
                   selectedLedgerCategoryId === 'deposits'
-                    ? 'bg-emerald-900 text-emerald-100'
-                    : 'bg-emerald-100 text-emerald-900'
+                    ? 'bg-dark-green-950 text-sage-200'
+                    : 'bg-sage-100 text-dark-green-900'
                 }`}
               >
                 {household?.oneOffDeposits?.length || 0}
@@ -328,7 +409,14 @@ export const CategoryLedgerView: React.FC = () => {
           {/* Individual Category Tabs */}
           {categories.map((cat) => {
             const isSelected = selectedLedgerCategoryId === cat.id;
-            const catCount = expenses.filter((e) => e.categoryId === cat.id).length;
+            const isCatSavings =
+              cat.id === 'cat_savings' ||
+              cat.type === 'savings' ||
+              cat.group?.toLowerCase() === 'savings' ||
+              cat.name.toLowerCase().includes('saving');
+            const catCount = isCatSavings
+              ? (checkIns || []).filter((c) => c.status === 'completed').length
+              : expenses.filter((e) => e.categoryId === cat.id).length;
 
             return (
               <button
@@ -358,117 +446,117 @@ export const CategoryLedgerView: React.FC = () => {
         </div>
       </div>
 
-      {/* CATEGORY DRILL-DOWN HERO CARD (If specific category is selected) */}
-      {activeCategory && categoryBudgetStats && (
-        <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-beige-100 pb-4">
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0">
-                <CategoryIcon name={activeCategory.name} group={activeCategory.group} icon={activeCategory.icon} className="w-6 h-6" />
+      {/* CATEGORY DRILL-DOWN TOP SECTION */}
+      {/* If active category is Savings: Display Savings Goals Dashboard directly at top, hiding default budget summary */}
+      {isSavingsCategory && activeCategory ? (
+        <SavingsGoalsLedgerSection category={activeCategory} />
+      ) : (
+        /* Standard Category Drill-Down Hero Card for Expense/Bills/Essentials Categories */
+        activeCategory && categoryBudgetStats && (
+          <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-beige-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0">
+                  <CategoryIcon name={activeCategory.name} group={activeCategory.group} icon={activeCategory.icon} className="w-6 h-6" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl font-black text-dark-green-900">
+                      {activeCategory.name}
+                    </h2>
+                    <span className="text-[10px] font-bold uppercase tracking-wider bg-sage-100 text-dark-green-900 px-2.5 py-0.5 rounded-full border border-sage-200">
+                      {activeCategory.group} Bucket
+                    </span>
+                  </div>
+                  <p className="text-xs text-brown-700">
+                    Weekly Baseline: <strong>{formatCurrency(activeCategory.baselineBudget)}</strong> &bull; Current Allocation: <strong>{formatCurrency(activeCategory.currentWeeklyBudget || activeCategory.baselineBudget)}</strong>
+                  </p>
+                </div>
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-xl font-black text-dark-green-900">
-                    {activeCategory.name}
-                  </h2>
-                  <span className="text-[10px] font-bold uppercase tracking-wider bg-sage-100 text-dark-green-900 px-2.5 py-0.5 rounded-full border border-sage-200">
-                    {activeCategory.group} Bucket
+
+              {/* Quick Metrics */}
+              <div className="flex items-center gap-4 text-xs">
+                <div className="bg-beige-50 border border-beige-200 px-3.5 py-2 rounded-2xl">
+                  <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
+                    {timeframeMode === 'week' ? 'Weekly Budget' : 'Monthly Budget'}
+                  </span>
+                  <span className="text-sm font-extrabold text-dark-green-900">
+                    {formatCurrency(categoryBudgetStats.budgetForTimeframe)}
                   </span>
                 </div>
-                <p className="text-xs text-brown-700">
-                  Weekly Baseline: <strong>{formatCurrency(activeCategory.baselineBudget)}</strong> &bull; Current Allocation: <strong>{formatCurrency(activeCategory.currentWeeklyBudget || activeCategory.baselineBudget)}</strong>
-                </p>
-              </div>
-            </div>
 
-            {/* Quick Metrics */}
-            <div className="flex items-center gap-4 text-xs">
-              <div className="bg-beige-50 border border-beige-200 px-3.5 py-2 rounded-2xl">
-                <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
-                  {timeframeMode === 'week' ? 'Weekly Budget' : 'Monthly Budget'}
-                </span>
-                <span className="text-sm font-extrabold text-dark-green-900">
-                  {formatCurrency(categoryBudgetStats.budgetForTimeframe)}
-                </span>
-              </div>
-
-              <div className="bg-beige-50 border border-beige-200 px-3.5 py-2 rounded-2xl">
-                <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
-                  Timeframe Spent
-                </span>
-                <span className="text-sm font-extrabold text-dark-green-900">
-                  {formatCurrency(categoryBudgetStats.totalSpent)}
-                </span>
-              </div>
-
-              <div
-                className={`px-3.5 py-2 rounded-2xl border ${
-                  categoryBudgetStats.remaining < 0
-                    ? 'bg-red-50 border-red-200 text-red-700'
-                    : 'bg-sage-50 border-sage-200 text-dark-green-900'
-                }`}
-              >
-                <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
-                  {categoryBudgetStats.remaining < 0 ? 'Over Budget' : 'Remaining'}
-                </span>
-                <span className="text-sm font-extrabold">
-                  {categoryBudgetStats.remaining < 0
-                    ? `-${formatCurrency(Math.abs(categoryBudgetStats.remaining))}`
-                    : `${formatCurrency(categoryBudgetStats.remaining)} left`}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Subcategories Tags (Only displayed in Category Drill-Down / History view) */}
-          {(() => {
-            const subList = (activeCategory.subcategories && activeCategory.subcategories.length > 0)
-              ? activeCategory.subcategories
-              : (activeCategory.description ? activeCategory.description.split(',').map((s) => s.trim()).filter(Boolean) : []);
-
-            if (subList.length === 0) return null;
-
-            return (
-              <div className="bg-beige-50/70 border border-beige-200 rounded-2xl p-3 space-y-1.5">
-                <div className="flex items-center gap-1.5 text-[11px] font-bold text-dark-green-900 uppercase tracking-wider">
-                  <Layers className="w-3.5 h-3.5 text-sage-700" />
-                  <span>Included Subcategories & Examples:</span>
+                <div className="bg-beige-50 border border-beige-200 px-3.5 py-2 rounded-2xl">
+                  <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
+                    Timeframe Spent
+                  </span>
+                  <span className="text-sm font-extrabold text-dark-green-900">
+                    {formatCurrency(categoryBudgetStats.totalSpent)}
+                  </span>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {subList.map((sub, idx) => (
-                    <span
-                      key={idx}
-                      className="text-xs px-2.5 py-0.5 bg-white border border-beige-300 rounded-lg text-brown-900 font-medium shadow-2xs"
-                    >
-                      {sub}
-                    </span>
-                  ))}
+
+                <div
+                  className={`px-3.5 py-2 rounded-2xl border ${
+                    categoryBudgetStats.remaining < 0
+                      ? 'bg-alert-red-50 border-alert-red-200 text-alert-red-700'
+                      : 'bg-sage-50 border-sage-200 text-dark-green-900'
+                  }`}
+                >
+                  <span className="text-[10px] uppercase font-bold text-dark-grey-600 block">
+                    {categoryBudgetStats.remaining < 0 ? 'Over Budget' : 'Remaining'}
+                  </span>
+                  <span className="text-sm font-extrabold">
+                    {categoryBudgetStats.remaining < 0
+                      ? `-${formatCurrency(Math.abs(categoryBudgetStats.remaining))}`
+                      : `${formatCurrency(categoryBudgetStats.remaining)} left`}
+                  </span>
                 </div>
               </div>
-            );
-          })()}
-
-          {/* Progress bar with Category Classification Color Logic */}
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-xs font-bold text-dark-green-900">
-              <span>Timeframe Consumption</span>
-              <span>{categoryBudgetStats.percentage}%</span>
             </div>
-            <BudgetProgressBar
-              spent={categoryBudgetStats.totalSpent}
-              budget={categoryBudgetStats.budgetForTimeframe}
-              categoryType={activeCategory.type || (activeCategory.group?.toLowerCase() === 'savings' ? 'savings' : 'expense')}
-              height="h-3"
-            />
+
+            {/* Subcategories Tags (Only displayed in Category Drill-Down / History view) */}
+            {(() => {
+              const subList = (activeCategory.subcategories && activeCategory.subcategories.length > 0)
+                ? activeCategory.subcategories
+                : (activeCategory.description ? activeCategory.description.split(',').map((s) => s.trim()).filter(Boolean) : []);
+
+              if (subList.length === 0) return null;
+
+              return (
+                <div className="bg-beige-50/70 border border-beige-200 rounded-2xl p-3 space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[11px] font-bold text-dark-green-900 uppercase tracking-wider">
+                    <Layers className="w-3.5 h-3.5 text-sage-700" />
+                    <span>Included Subcategories & Examples:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {subList.map((sub, idx) => (
+                      <span
+                        key={idx}
+                        className="text-xs px-2.5 py-0.5 bg-white border border-beige-300 rounded-lg text-brown-900 font-medium shadow-2xs"
+                      >
+                        {sub}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Progress bar with Category Classification Color Logic */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-bold text-dark-green-900">
+                <span>Timeframe Consumption</span>
+                <span>{categoryBudgetStats.percentage}%</span>
+              </div>
+              <BudgetProgressBar
+                spent={categoryBudgetStats.totalSpent}
+                budget={categoryBudgetStats.budgetForTimeframe}
+                categoryType={activeCategory.type || (activeCategory.group?.toLowerCase() === 'savings' ? 'savings' : 'expense')}
+                height="h-3"
+              />
+            </div>
           </div>
-        </div>
+        )
       )}
-
-      {/* SAVINGS GOALS SECTION (Only in Ledger Tab for Savings Categories) */}
-      {activeCategory &&
-        (activeCategory.type === 'savings' || activeCategory.group?.toLowerCase() === 'savings') && (
-          <SavingsGoalsLedgerSection category={activeCategory} />
-        )}
 
       {/* FILTER & SEARCH TOOLBAR */}
       <div className="bg-white border border-beige-200/90 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3.5">
@@ -478,7 +566,7 @@ export const CategoryLedgerView: React.FC = () => {
           <input
             id="ledger-search-input"
             type="text"
-            placeholder="Search description, category, member, or amount..."
+            placeholder={isSavingsCategory ? "Search deposits by notes, member, or amount..." : "Search description, category, member, or amount..."}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-9 pr-4 py-2 bg-beige-50 border border-beige-200 rounded-xl text-xs sm:text-sm text-dark-green-900 focus:outline-hidden focus:border-dark-green-700 focus:bg-white transition"
@@ -534,125 +622,226 @@ export const CategoryLedgerView: React.FC = () => {
       {/* SUMMARY BANNER */}
       <div className="flex items-center justify-between text-xs text-brown-700 px-1">
         <span>
-          Showing <strong>{filteredExpenses.length + filteredDeposits.length}</strong> {filteredExpenses.length + filteredDeposits.length === 1 ? 'record' : 'records'}
+          Showing <strong>{isSavingsCategory ? filteredSavingsCheckIns.length : (filteredExpenses.length + filteredDeposits.length)}</strong> {(isSavingsCategory ? filteredSavingsCheckIns.length : (filteredExpenses.length + filteredDeposits.length)) === 1 ? 'record' : 'records'}
         </span>
         <span>
-          Expenses: <strong className="text-dark-green-900 font-extrabold">{formatCurrency(totalSelectedAmount)}</strong>
-          {filteredDeposits.length > 0 && (
-            <span className="ml-2 text-emerald-700">
-              (Deposits: <strong>+{formatCurrency(filteredDeposits.reduce((s, d) => s + d.amount, 0))}</strong>)
+          {isSavingsCategory ? (
+            <span className="text-dark-green-900 font-bold">
+              Total Saved from Check-Ins: <strong className="font-extrabold font-mono text-dark-green-700">+{formatCurrency(totalSavingsDepositAmount)}</strong>
             </span>
+          ) : (
+            <>
+              Expenses: <strong className="text-dark-green-900 font-extrabold">{formatCurrency(totalSelectedAmount)}</strong>
+              {filteredDeposits.length > 0 && (
+                <span className="ml-2 text-dark-green-700">
+                  (Deposits: <strong>+{formatCurrency(filteredDeposits.reduce((s, d) => s + d.amount, 0))}</strong>)
+                </span>
+              )}
+            </>
           )}
         </span>
       </div>
 
-      {/* TRANSACTIONS & DEPOSITS LIST */}
-      {filteredExpenses.length === 0 && filteredDeposits.length === 0 ? (
-        <div className="bg-white border border-beige-200 rounded-3xl p-10 text-center space-y-4 shadow-xs">
-          <div className="w-14 h-14 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 mx-auto">
-            {activeCategory ? (
-              <CategoryIcon name={activeCategory.name} group={activeCategory.group} icon={activeCategory.icon} className="w-7 h-7" />
-            ) : selectedLedgerCategoryId === 'deposits' ? (
-              <TrendingUp className="w-7 h-7 text-emerald-800" />
-            ) : (
-              <Receipt className="w-7 h-7 text-dark-green-800" />
-            )}
+      {/* TRANSACTIONS, SAVINGS & DEPOSITS LIST */}
+      {isSavingsCategory ? (
+        // READ-ONLY SAVINGS CHECK-IN FEED
+        filteredSavingsCheckIns.length === 0 ? (
+          <div className="bg-white border border-beige-200 rounded-3xl p-10 text-center space-y-4 shadow-xs">
+            <div className="w-14 h-14 rounded-2xl bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900 mx-auto">
+              <TrendingUp className="w-7 h-7 text-dark-green-800" />
+            </div>
+            <div className="max-w-md mx-auto space-y-1">
+              <h3 className="text-base font-extrabold text-dark-green-900">
+                No savings deposits recorded yet
+              </h3>
+              <p className="text-xs text-brown-700">
+                {searchQuery
+                  ? `No savings deposit matches your search query "${searchQuery}".`
+                  : 'No savings deposits recorded yet. Complete a weekly check-in to bank your surplus.'}
+              </p>
+            </div>
           </div>
-          <div className="max-w-md mx-auto space-y-1">
-            <h3 className="text-base font-extrabold text-dark-green-900">
-              No transactions found
-            </h3>
-            <p className="text-xs text-brown-700">
-              {searchQuery
-                ? `No record matches your search query "${searchQuery}".`
-                : selectedLedgerCategoryId === 'deposits'
-                ? 'No one-off deposits have been logged yet.'
-                : activeCategory
-                ? `No transactions recorded for ${activeCategory.name} yet.`
-                : 'No expenses have been logged in the household budget yet.'}
-            </p>
-          </div>
-          {selectedLedgerCategoryId !== 'deposits' && (
-            <button
-              onClick={() => openLogExpenseModal(activeCategory)}
-              className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Log an Expense Now</span>
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3.5">
-          {/* RENDER ONE-OFF INCOME DEPOSITS */}
-          {filteredDeposits.map((dep) => {
-            const payer = members.find((m) => m.userId === dep.payerMemberId);
-            return (
-              <div
-                key={dep.id}
-                id={`deposit-card-${dep.id}`}
-                className="bg-white border border-emerald-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-emerald-300 transition-all space-y-3 bg-gradient-to-r from-emerald-50/40 via-white to-white"
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-start gap-3 min-w-0">
-                    <div className="w-10 h-10 rounded-xl bg-emerald-100 border border-emerald-200 flex items-center justify-center text-emerald-800 shrink-0">
-                      <DollarSign className="w-5 h-5" />
-                    </div>
+        ) : (
+          <div className="space-y-3.5">
+            {/* RENDER COMPLETED CHECK-IN DEPOSITS ONLY (READ-ONLY) */}
+            {filteredSavingsCheckIns.map((ci) => {
+              const payer = members.find((m) => m.userId === ci.completedByUserId);
+              const savingsAmt = getCheckInSavingsAmount(ci);
+              const displayDate = ci.weekEndDate || ci.weekStartDate;
 
-                    <div className="min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
-                          {dep.description}
-                        </h4>
-                        <span className="text-[10px] font-bold uppercase tracking-wider bg-emerald-100 text-emerald-900 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
-                          <TrendingUp className="w-3 h-3 text-emerald-700" />
-                          One-Off Income
-                        </span>
+              return (
+                <div
+                  key={ci.id}
+                  id={`savings-checkin-${ci.id}`}
+                  className="bg-white border border-sage-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-sage-300 transition-all space-y-3"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
+                        <TrendingUp className="w-5 h-5" />
                       </div>
 
-                      <div className="flex items-center gap-3 text-xs text-brown-700">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3.5 h-3.5" />
-                          {formatDateDisplay(dep.date)}
-                        </span>
-                        <span>&bull;</span>
-                        <div className="flex items-center gap-1.5">
-                          {payer?.avatarUrl ? (
-                            <img
-                              src={payer.avatarUrl}
-                              alt={payer.name}
-                              className="w-4 h-4 rounded-full object-cover border border-beige-300"
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : (
-                            <User className="w-3.5 h-3.5 text-brown-700" />
-                          )}
-                          <span className="font-medium">{payer?.name || 'Household Member'}</span>
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
+                            Weekly Check-In Deposit
+                          </h4>
+                          <span className="text-[10px] font-bold uppercase tracking-wider bg-sage-100 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <Check className="w-3 h-3 text-dark-green-700" />
+                            Completed Check-In
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3 text-xs text-brown-700">
+                          <span className="flex items-center gap-1">
+                            <Calendar className="w-3.5 h-3.5" />
+                            {formatDateDisplay(displayDate)}
+                          </span>
+                          <span>&bull;</span>
+                          <div className="flex items-center gap-1.5">
+                            {payer?.avatarUrl ? (
+                              <img
+                                src={payer.avatarUrl}
+                                alt={payer.name}
+                                className="w-4 h-4 rounded-full object-cover border border-beige-300"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <User className="w-3.5 h-3.5 text-brown-700" />
+                            )}
+                            <span className="font-medium">
+                              {ci.completedByName || payer?.name || 'Household Member'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {ci.notes && (
+                          <p className="text-xs text-dark-grey-600 bg-beige-50/70 border border-beige-200/80 rounded-lg px-2.5 py-1 mt-1">
+                            {ci.notes}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center sm:items-end justify-between sm:justify-center">
+                      <div className="text-lg sm:text-xl font-black text-dark-green-800 tracking-tight font-mono">
+                        +{formatCurrency(savingsAmt)}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : (
+        // STANDARD EXPENSE & DEPOSITS VIEW
+        filteredExpenses.length === 0 && filteredDeposits.length === 0 ? (
+          <div className="bg-white border border-beige-200 rounded-3xl p-10 text-center space-y-4 shadow-xs">
+            <div className="w-14 h-14 rounded-2xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 mx-auto">
+              {activeCategory ? (
+                <CategoryIcon name={activeCategory.name} group={activeCategory.group} icon={activeCategory.icon} className="w-7 h-7" />
+              ) : selectedLedgerCategoryId === 'deposits' ? (
+                <TrendingUp className="w-7 h-7 text-dark-green-800" />
+              ) : (
+                <Receipt className="w-7 h-7 text-dark-green-800" />
+              )}
+            </div>
+            <div className="max-w-md mx-auto space-y-1">
+              <h3 className="text-base font-extrabold text-dark-green-900">
+                No transactions found
+              </h3>
+              <p className="text-xs text-brown-700">
+                {searchQuery
+                  ? `No record matches your search query "${searchQuery}".`
+                  : selectedLedgerCategoryId === 'deposits'
+                  ? 'No one-off deposits have been logged yet.'
+                  : activeCategory
+                  ? `No transactions recorded for ${activeCategory.name} yet.`
+                  : 'No expenses have been logged in the household budget yet.'}
+              </p>
+            </div>
+            {selectedLedgerCategoryId !== 'deposits' && (
+              <button
+                onClick={() => openLogExpenseModal(activeCategory)}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Log an Expense Now</span>
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3.5">
+            {/* RENDER ONE-OFF INCOME DEPOSITS */}
+            {filteredDeposits.map((dep) => {
+              const payer = members.find((m) => m.userId === dep.payerMemberId);
+              return (
+                <div
+                  key={dep.id}
+                  id={`deposit-card-${dep.id}`}
+                  className="bg-white border border-sage-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-sage-300 transition-all space-y-3"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
+                        <DollarSign className="w-5 h-5" />
+                      </div>
+
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
+                            {dep.description}
+                          </h4>
+                          <span className="text-[10px] font-bold uppercase tracking-wider bg-sage-100 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                            <TrendingUp className="w-3 h-3 text-dark-green-700" />
+                            One-Off Income
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-3 text-xs text-brown-700">
+                          <span className="flex items-center gap-1">
+                            <Calendar className="w-3.5 h-3.5" />
+                            {formatDateDisplay(dep.date)}
+                          </span>
+                          <span>&bull;</span>
+                          <div className="flex items-center gap-1.5">
+                            {payer?.avatarUrl ? (
+                              <img
+                                src={payer.avatarUrl}
+                                alt={payer.name}
+                                className="w-4 h-4 rounded-full object-cover border border-beige-300"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <User className="w-3.5 h-3.5 text-brown-700" />
+                            )}
+                            <span className="font-medium">{payer?.name || 'Household Member'}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
-                    <div className="text-lg sm:text-xl font-black text-emerald-700 tracking-tight font-mono">
-                      +{formatCurrency(dep.amount)}
+                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
+                      <div className="text-lg sm:text-xl font-black text-dark-green-800 tracking-tight font-mono">
+                        +{formatCurrency(dep.amount)}
+                      </div>
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await deleteDeposit(dep.id);
+                        }}
+                        id={`del-dep-${dep.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
+                        title="Delete deposit"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
-                    <button
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        await deleteDeposit(dep.id);
-                      }}
-                      id={`del-dep-${dep.id}`}
-                      className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-brown-700 hover:text-red-700 border border-beige-300 transition cursor-pointer"
-                      title="Delete deposit"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
 
           {/* RENDER REGULAR EXPENSES */}
           {filteredExpenses.map((exp) => {
@@ -797,7 +986,7 @@ export const CategoryLedgerView: React.FC = () => {
                           await deleteExpense(exp.id);
                         }}
                         id={`del-exp-${exp.id}`}
-                        className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-brown-700 hover:text-red-700 border border-beige-300 transition cursor-pointer"
+                        className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
                         title="Delete transaction"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -889,6 +1078,7 @@ export const CategoryLedgerView: React.FC = () => {
             );
           })}
         </div>
+        )
       )}
 
       {/* RECEIPT IMAGE PREVIEW MODAL */}
@@ -1087,7 +1277,7 @@ export const CategoryLedgerView: React.FC = () => {
                     setEditingExpense(null);
                   }
                 }}
-                className="px-3.5 py-2 text-red-700 hover:text-red-800 hover:bg-red-50 text-xs font-bold rounded-xl transition flex items-center gap-1.5 border border-red-200 cursor-pointer"
+                className="px-3.5 py-2 text-alert-red-700 hover:text-alert-red-800 hover:bg-alert-red-50 text-xs font-bold rounded-xl transition flex items-center gap-1.5 border border-alert-red-200 cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Delete</span>
