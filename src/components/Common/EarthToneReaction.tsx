@@ -160,6 +160,16 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
   currentUserId,
   className = '',
 }) => {
+  const [animatingId, setAnimatingId] = React.useState<string | null>(null);
+
+  const handleReactionClick = (reactionId: string) => {
+    setAnimatingId(reactionId);
+    onReact(reactionId);
+    setTimeout(() => {
+      setAnimatingId((prev) => (prev === reactionId ? null : prev));
+    }, 500);
+  };
+
   // Aggregate reaction counts grouped by normalized reaction id
   const reactionMap = reactions.reduce<
     Record<
@@ -202,18 +212,22 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
         const userReacted = Boolean(data?.userReacted);
         const names = data?.names || [];
 
+        const isAnimating = animatingId === def.id;
+
         return (
           <button
             key={def.id}
             id={`reaction-btn-${def.id}`}
             type="button"
-            onClick={() => onReact(def.id)}
+            onClick={() => handleReactionClick(def.id)}
             title={
               count > 0
                 ? `${def.label} (${count}) by: ${names.join(', ')}`
                 : `React with ${def.label}`
             }
             className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border transition-all cursor-pointer shadow-2xs active:scale-95 ${
+              isAnimating ? 'scale-125 transition-transform duration-200 ease-out' : ''
+            } ${
               userReacted
                 ? `${def.activeBgClass} ${def.activeBorderClass} ${def.activeTextClass} ring-2 ring-dark-green-800/20 shadow-xs`
                 : count > 0
@@ -221,7 +235,7 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
                 : `bg-beige-50/70 hover:bg-beige-100/90 border-beige-200 text-dark-green-900/80 hover:border-beige-300`
             }`}
           >
-            <IconComponent className={`w-3.5 h-3.5 ${def.iconColor} shrink-0 transition-transform ${userReacted ? 'scale-110' : ''}`} />
+            <IconComponent className={`w-3.5 h-3.5 ${def.iconColor} shrink-0 transition-transform ${userReacted || isAnimating ? 'scale-115' : ''}`} />
             <span className="text-[11px] hidden sm:inline">{def.shortLabel}</span>
 
             {/* Numerical Badge / Count */}
@@ -233,7 +247,7 @@ export const EarthToneReaction: React.FC<EarthToneReactionProps> = ({
                     : 'bg-beige-200/80 text-dark-green-900'
                 }`}
               >
-                {count}
+                #{count}
               </span>
             )}
           </button>

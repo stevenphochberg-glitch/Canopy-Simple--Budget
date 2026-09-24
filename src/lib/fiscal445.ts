@@ -131,6 +131,52 @@ export function getFiscalMonthForDate(date: Date, fiscalYearEndMonth: number = 1
   return defaultMonths[0];
 }
 
+export interface FiscalQuarter {
+  quarterNumber: number;
+  quarterName: string;
+  startDate: Date;
+  endDate: Date;
+  months: FiscalMonth[];
+}
+
+/**
+ * Finds the Fiscal Quarter corresponding to any given date.
+ */
+export function getFiscalQuarterForDate(date: Date, fiscalYearEndMonth: number = 12): FiscalQuarter {
+  const targetTime = date.getTime();
+  const year = date.getFullYear();
+
+  for (const y of [year - 1, year, year + 1]) {
+    const fMonths = getFiscalYearMonths(y, fiscalYearEndMonth);
+    for (let q = 1; q <= 4; q++) {
+      const qMonths = fMonths.filter((m) => m.quarter === q);
+      if (qMonths.length > 0) {
+        const startDate = qMonths[0].startDate;
+        const endDate = qMonths[qMonths.length - 1].endDate;
+        if (targetTime >= startDate.getTime() && targetTime <= endDate.getTime()) {
+          return {
+            quarterNumber: q,
+            quarterName: `Q${q}`,
+            startDate,
+            endDate,
+            months: qMonths,
+          };
+        }
+      }
+    }
+  }
+
+  const defaultMonths = getFiscalYearMonths(year, fiscalYearEndMonth);
+  const q1Months = defaultMonths.slice(0, 3);
+  return {
+    quarterNumber: 1,
+    quarterName: 'Q1',
+    startDate: q1Months[0].startDate,
+    endDate: q1Months[q1Months.length - 1].endDate,
+    months: q1Months,
+  };
+}
+
 export interface FiscalTrackerInfo {
   quarter: number;
   weekOfFiscalMonth: number;
@@ -203,6 +249,61 @@ export function getFiscalTrackerInfo(
     weekOfFiscalYear,
     label,
   };
+}
+
+/**
+ * Formats the fiscal tracker record string in the strict 4-4-5 format:
+ * `W[Total Week] of Fiscal Year | W[Week of Month] of [Total Weeks in Month] for M[Month]`
+ * e.g., "W14 of Fiscal Year | W2 of 4 for M4"
+ */
+export function formatFiscalRecordTrackerString(
+  dateOrDateStr: Date | string | number | undefined | null,
+  fiscalYearEndMonth: number = 12
+): string {
+  if (!dateOrDateStr) return '';
+  let date: Date;
+  if (typeof dateOrDateStr === 'number') {
+    date = new Date(dateOrDateStr);
+  } else if (typeof dateOrDateStr === 'string') {
+    const parts = dateOrDateStr.split('T')[0].split('-');
+    if (parts.length === 3) {
+      date = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
+    } else {
+      date = new Date(dateOrDateStr);
+    }
+  } else {
+    date = dateOrDateStr;
+  }
+  if (isNaN(date.getTime())) return '';
+  const info = getFiscalTrackerInfo(date, fiscalYearEndMonth);
+  return `W${info.weekOfFiscalYear} of Fiscal Year | W${info.weekOfFiscalMonth} of ${info.monthWeekCount} for M${info.fiscalMonthNumber}`;
+}
+
+/**
+ * Generates a strict fiscal week identifier in the format `YYYY-W##` (e.g., `2026-W37`).
+ */
+export function getFiscalWeekId(
+  dateOrDateStr: Date | string | number | undefined | null,
+  fiscalYearEndMonth: number = 12
+): string {
+  if (!dateOrDateStr) return '';
+  let date: Date;
+  if (typeof dateOrDateStr === 'number') {
+    date = new Date(dateOrDateStr);
+  } else if (typeof dateOrDateStr === 'string') {
+    const parts = dateOrDateStr.split('T')[0].split('-');
+    if (parts.length === 3) {
+      date = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10), 12, 0, 0);
+    } else {
+      date = new Date(dateOrDateStr);
+    }
+  } else {
+    date = dateOrDateStr;
+  }
+  if (isNaN(date.getTime())) return '';
+  const info = getFiscalTrackerInfo(date, fiscalYearEndMonth);
+  const year = date.getFullYear();
+  return `${year}-W${info.weekOfFiscalYear}`;
 }
 
 /**

@@ -42,6 +42,7 @@ import {
   formatLocalDate,
   getTodayLocalDateString,
 } from '../lib/calculations';
+import { getFiscalWeekId } from '../lib/fiscal445';
 import { getReactionDef } from '../components/Common/EarthToneReaction';
 import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
@@ -151,9 +152,15 @@ export interface HouseholdContextType {
 
   // Log Expense Modal
   isLogExpenseModalOpen: boolean;
-  logExpenseInitialCategory: string | null;
-  openLogExpenseModal: (categoryId?: string) => void;
+  logExpenseInitialCategory: Category | string | null;
+  isCategoryLockedInModal: boolean;
+  openLogExpenseModal: (category?: Category | string | null, isLocked?: boolean) => void;
   closeLogExpenseModal: () => void;
+
+  // Tag CRUD with Cascading Database Updates
+  addCustomTag: (tag: string, categoryId?: string) => Promise<void>;
+  renameTag: (oldTag: string, newTag: string, categoryId?: string) => Promise<void>;
+  deleteTag: (tagToDelete: string, categoryId?: string) => Promise<void>;
 
   // CheckIn & Retrospective modals
   isWeeklyCheckInModalOpen: boolean;
@@ -176,6 +183,7 @@ export interface HouseholdContextType {
   }) => Promise<void>;
   deleteWeeklyCheckIn: (checkInId: string) => Promise<void>;
   updateCheckInNotes: (checkInId: string, notes: string) => Promise<void>;
+  updateCheckIn: (checkInId: string, updates: Partial<CheckIn>) => Promise<void>;
   triggerFreshStartAction: () => Promise<void>;
   executeMonthEndResetAction: () => Promise<void>;
 
@@ -233,6 +241,7 @@ export interface HouseholdContextType {
     payerMemberId?: string;
     notes?: string;
   }) => Promise<void>;
+  updateDeposit: (depositId: string, updates: Partial<OneOffDeposit>) => Promise<void>;
   deleteDeposit: (depositId: string) => Promise<void>;
   applyExtraPaycheckDecision: (decision: ExtraPaycheckDecision) => Promise<void>;
   resetHouseholdToOnboarding: () => void;
@@ -312,16 +321,35 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Log Expense Modal State
   const [isLogExpenseModalOpen, setIsLogExpenseModalOpen] = useState<boolean>(false);
-  const [logExpenseInitialCategory, setLogExpenseInitialCategory] = useState<string | null>(null);
+  const [logExpenseInitialCategory, setLogExpenseInitialCategory] = useState<Category | string | null>(null);
+  const [isCategoryLockedInModal, setIsCategoryLockedInModal] = useState<boolean>(false);
 
-  const openLogExpenseModal = (categoryId?: string) => {
-    setLogExpenseInitialCategory(categoryId || null);
+  const openLogExpenseModal = (category?: Category | string | null, isLocked: boolean = false) => {
+    if (typeof category === 'string') {
+      if (category === 'deposits' || category === 'cat_one_time_deposit') {
+        setLogExpenseInitialCategory({
+          id: 'cat_one_time_deposit',
+          name: 'Income & Deposits',
+          group: 'Savings',
+          type: 'savings',
+          baselineBudget: 0,
+          currentWeeklyBudget: 0,
+        });
+      } else {
+        const found = categories.find((c) => c.id === category);
+        setLogExpenseInitialCategory(found || category);
+      }
+    } else {
+      setLogExpenseInitialCategory(category || null);
+    }
+    setIsCategoryLockedInModal(isLocked);
     setIsLogExpenseModalOpen(true);
   };
 
   const closeLogExpenseModal = () => {
     setIsLogExpenseModalOpen(false);
     setLogExpenseInitialCategory(null);
+    setIsCategoryLockedInModal(false);
   };
 
   // CheckIn & Retrospective Modals State
@@ -595,10 +623,14 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const unsubCheckIns = onSnapshot(
       collection(db, 'households', householdId, 'checkins'),
       (snapshot) => {
-        const loadedCheckIns = snapshot.docs.map((d) => ({
-          ...(d.data() as CheckIn),
-          id: d.id,
-        }));
+        const loadedCheckIns = snapshot.docs.map((d) => {
+          const item = d.data() as CheckIn;
+          return {
+            ...item,
+            id: d.id,
+            fiscalWeekId: item.fiscalWeekId || getFiscalWeekId(item.weekStartDate || item.weekEndDate || item.timestamp, household?.fiscalYearEndMonth || 12),
+          };
+        });
         loadedCheckIns.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         setCheckIns(loadedCheckIns);
       },
@@ -1702,6 +1734,120 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast(`Deleted deposit "${target?.description || ''}" (${formatCurrency(target?.amount || 0)}).`);
   };
 
+  const updateDeposit = async (depositId: string, updates: Partial<OneOffDeposit>) => {
+    if (!household) return;
+    const currentDeposits = household.oneOffDeposits || [];
+    const target = currentDeposits.find((d) => d.id === depositId);
+    if (!target) return;
+
+    const oldAmount = target.amount || 0;
+    const newAmount = updates.amount !== undefined ? Number(updates.amount) : oldAmount;
+    const amountDiff = newAmount - oldAmount;
+
+    const oldDateStr = target.date || new Date().toISOString().split('T')[0];
+    const newDateStr = updates.date || oldDateStr;
+
+    const updatedDeposit: OneOffDeposit = {
+      ...target,
+      ...updates,
+      amount: newAmount,
+      date: newDateStr,
+      description: updates.description !== undefined ? updates.description.trim() : target.description,
+    };
+
+    const updatedDeposits = currentDeposits.map((d) => (d.id === depositId ? updatedDeposit : d));
+
+    // Handle weeklyOverrides adjustment if amount or date changed
+    const firstDay = household.firstDayOfWeek || 'Monday';
+    const oldWeekRange = getWeekRange(new Date(oldDateStr + 'T12:00:00'), firstDay, 0);
+    const oldWeekId = formatLocalDate(oldWeekRange.startDate);
+    const newWeekRange = getWeekRange(new Date(newDateStr + 'T12:00:00'), firstDay, 0);
+    const newWeekId = formatLocalDate(newWeekRange.startDate);
+
+    const savingsCat = categories.find(
+      (c) =>
+        c.id === 'cat_savings' ||
+        c.type === 'savings' ||
+        c.group?.toLowerCase() === 'savings' ||
+        c.name.toLowerCase().includes('saving')
+    );
+    const baselineSavings = savingsCat ? Number(savingsCat.baselineBudget) || 0 : 0;
+
+    const existingWeeklyOverrides = { ...(household.weeklyOverrides || {}) };
+
+    if (oldWeekId === newWeekId) {
+      if (amountDiff !== 0) {
+        const weekOverrides = { ...(existingWeeklyOverrides[newWeekId] || {}) };
+        const currentSavingsVal = weekOverrides.savings ?? (savingsCat ? weekOverrides[savingsCat.id] : baselineSavings);
+        const nextSavings = Math.max(baselineSavings, Number(currentSavingsVal) + amountDiff);
+        if (nextSavings <= baselineSavings) {
+          delete weekOverrides.savings;
+          if (savingsCat) delete weekOverrides[savingsCat.id];
+        } else {
+          weekOverrides.savings = nextSavings;
+          if (savingsCat) weekOverrides[savingsCat.id] = nextSavings;
+        }
+        if (Object.keys(weekOverrides).length === 0) {
+          delete existingWeeklyOverrides[newWeekId];
+        } else {
+          existingWeeklyOverrides[newWeekId] = weekOverrides;
+        }
+      }
+    } else {
+      // Deduct old from oldWeekId, add new to newWeekId
+      const oldWeekOverrides = { ...(existingWeeklyOverrides[oldWeekId] || {}) };
+      const curOldSavings = oldWeekOverrides.savings ?? (savingsCat ? oldWeekOverrides[savingsCat.id] : baselineSavings);
+      const nextOldSavings = Math.max(baselineSavings, Number(curOldSavings) - oldAmount);
+      if (nextOldSavings <= baselineSavings) {
+        delete oldWeekOverrides.savings;
+        if (savingsCat) delete oldWeekOverrides[savingsCat.id];
+      } else {
+        oldWeekOverrides.savings = nextOldSavings;
+        if (savingsCat) oldWeekOverrides[savingsCat.id] = nextOldSavings;
+      }
+      if (Object.keys(oldWeekOverrides).length === 0) {
+        delete existingWeeklyOverrides[oldWeekId];
+      } else {
+        existingWeeklyOverrides[oldWeekId] = oldWeekOverrides;
+      }
+
+      const newWeekOverrides = { ...(existingWeeklyOverrides[newWeekId] || {}) };
+      const curNewSavings = newWeekOverrides.savings ?? (savingsCat ? newWeekOverrides[savingsCat.id] : baselineSavings);
+      const nextNewSavings = Number(curNewSavings) + newAmount;
+      if (nextNewSavings > baselineSavings) {
+        newWeekOverrides.savings = nextNewSavings;
+        if (savingsCat) newWeekOverrides[savingsCat.id] = nextNewSavings;
+        existingWeeklyOverrides[newWeekId] = newWeekOverrides;
+      }
+    }
+
+    const updatedHousehold: Household = {
+      ...household,
+      oneOffDeposits: updatedDeposits,
+      weeklyOverrides: existingWeeklyOverrides,
+    };
+    setHousehold(updatedHousehold);
+
+    if (isFirebaseConfigured && db) {
+      try {
+        const householdRef = doc(db, 'households', household.id);
+        await updateDoc(
+          householdRef,
+          sanitizeFirestorePayload({
+            oneOffDeposits: updatedDeposits,
+            weeklyOverrides: existingWeeklyOverrides,
+            updatedAt: new Date().toISOString(),
+          })
+        );
+      } catch (err) {
+        console.error('Firestore updateDeposit error:', err);
+        handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}`);
+      }
+    }
+
+    showToast('Deposit updated.', 'success');
+  };
+
   // Category Mutations
   const createCategory = async (catData: Omit<Category, 'id'>) => {
     const newId = `cat_${catData.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}`;
@@ -2263,7 +2409,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast('Expense updated.');
   };
 
-  // Add Transaction Comment
+  // Add Transaction Comment (Expenses & Deposits)
   const addTransactionComment = async (expenseId: string, text: string) => {
     if (!text.trim()) return;
 
@@ -2274,7 +2420,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     };
 
     const targetExpense = expenses.find((e) => e.id === expenseId);
-    const cat = categories.find((c) => c.id === targetExpense?.categoryId);
+    const targetDeposit = !targetExpense ? (household?.oneOffDeposits || []).find((d) => d.id === expenseId) : undefined;
     const now = Date.now();
     const commentId = `comment_${now}_${Math.random().toString(36).substr(2, 4)}`;
 
@@ -2288,65 +2434,115 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       timestamp: now,
     };
 
-    let updatedComments: TransactionComment[] = [];
-    setExpenses((prev) =>
-      prev.map((e) => {
-        if (e.id === expenseId) {
-          const comments = e.comments ? [...e.comments, newComment] : [newComment];
-          updatedComments = comments;
-          return { ...e, comments };
-        }
-        return e;
-      })
-    );
-
-    const feedItemId = `feed_comment_${now}`;
-    const feedItem: FeedItem = {
-      id: feedItemId,
-      type: 'comment',
-      content: text.trim(),
-      authorId: activeMember.userId,
-      authorName: activeMember.name,
-      authorAvatar: activeMember.avatarUrl,
-      timestamp: now,
-      date: new Date(now).toISOString().split('T')[0],
-      linkedExpenseId: expenseId,
-      linkedExpense: targetExpense
-        ? {
-            id: targetExpense.id,
-            description: targetExpense.description,
-            categoryName: cat?.name || 'Category',
-            categoryIcon: cat?.icon || 'tag',
-            amount: targetExpense.amount,
-            date: targetExpense.date,
-            payerName: members.find((m) => m.userId === targetExpense.loggedByUserId)?.name || 'Member',
+    if (targetExpense) {
+      const cat = categories.find((c) => c.id === targetExpense?.categoryId);
+      let updatedComments: TransactionComment[] = [];
+      setExpenses((prev) =>
+        prev.map((e) => {
+          if (e.id === expenseId) {
+            const comments = e.comments ? [...e.comments, newComment] : [newComment];
+            updatedComments = comments;
+            return { ...e, comments };
           }
-        : undefined,
-    };
+          return e;
+        })
+      );
 
-    setFeedItems((prev) => [feedItem, ...prev]);
+      const feedItemId = `feed_comment_${now}`;
+      const feedItem: FeedItem = {
+        id: feedItemId,
+        type: 'comment',
+        content: text.trim(),
+        authorId: activeMember.userId,
+        authorName: activeMember.name,
+        authorAvatar: activeMember.avatarUrl,
+        timestamp: now,
+        date: new Date(now).toISOString().split('T')[0],
+        linkedExpenseId: expenseId,
+        linkedExpense: {
+          id: targetExpense.id,
+          description: targetExpense.description,
+          categoryName: cat?.name || 'Category',
+          categoryIcon: cat?.icon || 'tag',
+          amount: targetExpense.amount,
+          date: targetExpense.date,
+          payerName: members.find((m) => m.userId === targetExpense.loggedByUserId)?.name || 'Member',
+        },
+      };
 
-    if (isFirebaseConfigured && db && household?.id) {
-      try {
-        const batch = writeBatch(db);
-        const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-        batch.update(expRef, sanitizeFirestorePayload({ comments: updatedComments }));
+      setFeedItems((prev) => [feedItem, ...prev]);
 
-        const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
-        batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+      if (isFirebaseConfigured && db && household?.id) {
+        try {
+          const batch = writeBatch(db);
+          const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
+          batch.update(expRef, sanitizeFirestorePayload({ comments: updatedComments }));
 
-        await batch.commit();
-      } catch (err) {
-        console.error('Firestore Write Failed:', err);
-        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
-        showToast(`Error posting comment: ${err instanceof Error ? err.message : String(err)}`, 'error');
+          const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
+          batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+
+          await batch.commit();
+        } catch (err) {
+          console.error('Firestore Write Failed:', err);
+          handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
+          showToast(`Error posting comment: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        }
+      }
+    } else if (targetDeposit && household) {
+      const updatedDeposits = (household.oneOffDeposits || []).map((d) => {
+        if (d.id === expenseId) {
+          const comments = d.comments ? [...d.comments, newComment] : [newComment];
+          return { ...d, comments };
+        }
+        return d;
+      });
+
+      setHousehold((prev) => (prev ? { ...prev, oneOffDeposits: updatedDeposits } : prev));
+
+      const feedItemId = `feed_comment_${now}`;
+      const feedItem: FeedItem = {
+        id: feedItemId,
+        type: 'comment',
+        content: text.trim(),
+        authorId: activeMember.userId,
+        authorName: activeMember.name,
+        authorAvatar: activeMember.avatarUrl,
+        timestamp: now,
+        date: new Date(now).toISOString().split('T')[0],
+        linkedExpenseId: expenseId,
+        linkedExpense: {
+          id: targetDeposit.id,
+          description: targetDeposit.description,
+          categoryName: 'One-Off Deposit',
+          categoryIcon: 'dollar-sign',
+          amount: targetDeposit.amount,
+          date: targetDeposit.date,
+          payerName: members.find((m) => m.userId === targetDeposit.payerMemberId)?.name || 'Member',
+        },
+      };
+
+      setFeedItems((prev) => [feedItem, ...prev]);
+
+      if (isFirebaseConfigured && db) {
+        try {
+          const batch = writeBatch(db);
+          const hhRef = doc(db, 'households', household.id);
+          batch.update(hhRef, sanitizeFirestorePayload({ oneOffDeposits: updatedDeposits, updatedAt: new Date().toISOString() }));
+
+          const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
+          batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+
+          await batch.commit();
+        } catch (err) {
+          console.error('Firestore Write Failed for Deposit Comment:', err);
+        }
       }
     }
 
     showToast('Comment posted to activity feed!');
   };
 
-  // Add or Toggle Transaction Reaction
+  // Add or Toggle Transaction Reaction (Expenses & Deposits)
   const addTransactionReaction = async (expenseId: string, emoji: string) => {
     const activeMember = members.find((m) => m.userId === user?.userId) || members[0] || {
       userId: user?.userId || 'usr_self',
@@ -2359,15 +2555,113 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     let updatedReactionsForFirestore: TransactionReaction[] = [];
     let isAdding = true;
     let targetExpenseSnapshot: Expense | undefined;
+    const targetDepositSnapshot = (household?.oneOffDeposits || []).find((d) => d.id === expenseId);
 
-    // Atomic update of expenses state with function updater to prevent race conditions & disappearing reactions
-    setExpenses((prev) => {
-      const exp = prev.find((e) => e.id === expenseId);
-      if (!exp) return prev;
-      targetExpenseSnapshot = exp;
+    // Check if expense
+    const expExists = expenses.some((e) => e.id === expenseId);
 
-      const currentReactions = exp.reactions ? [...exp.reactions] : [];
-      const existingIdx = currentReactions.findIndex(
+    if (expExists) {
+      setExpenses((prev) => {
+        const exp = prev.find((e) => e.id === expenseId);
+        if (!exp) return prev;
+        targetExpenseSnapshot = exp;
+
+        const currentReactions = exp.reactions ? [...exp.reactions] : [];
+        const existingIdx = currentReactions.findIndex(
+          (r) =>
+            r.authorId === activeMember.userId &&
+            (r.emoji === targetDef.id || getReactionDef(r.emoji).id === targetDef.id)
+        );
+
+        if (existingIdx >= 0) {
+          isAdding = false;
+          updatedReactionsForFirestore = currentReactions.filter((_, idx) => idx !== existingIdx);
+        } else {
+          isAdding = true;
+          const newReaction: TransactionReaction = {
+            id: `react_${now}_${Math.random().toString(36).substring(2, 6)}`,
+            expenseId,
+            authorId: activeMember.userId,
+            authorName: activeMember.name,
+            authorAvatar: activeMember.avatarUrl,
+            emoji: targetDef.id,
+            timestamp: now,
+          };
+          updatedReactionsForFirestore = [...currentReactions, newReaction];
+        }
+
+        return prev.map((e) => {
+          if (e.id === expenseId) {
+            return { ...e, reactions: updatedReactionsForFirestore };
+          }
+          return e;
+        });
+      });
+
+      const cat = categories.find((c) => c.id === targetExpenseSnapshot?.categoryId);
+
+      if (isAdding) {
+        const feedItemId = `feed_reaction_${now}`;
+        const amountFormatted = targetExpenseSnapshot?.amount !== undefined ? formatCurrency(targetExpenseSnapshot.amount) : '$0.00';
+        const feedItem: FeedItem = {
+          id: feedItemId,
+          type: 'reaction',
+          emoji: targetDef.id,
+          content: `${activeMember.name} reacted with ${targetDef.label} to ${targetExpenseSnapshot?.description || 'expense'} (${amountFormatted})`,
+          authorId: activeMember.userId,
+          authorName: activeMember.name,
+          authorAvatar: activeMember.avatarUrl,
+          timestamp: now,
+          date: new Date(now).toISOString().split('T')[0],
+          linkedExpenseId: expenseId,
+          linkedExpense: targetExpenseSnapshot
+            ? {
+                id: targetExpenseSnapshot.id,
+                description: targetExpenseSnapshot.description,
+                categoryName: cat?.name || 'Category',
+                categoryIcon: cat?.icon || 'tag',
+                amount: targetExpenseSnapshot.amount,
+                date: targetExpenseSnapshot.date,
+                payerName: members.find((m) => m.userId === targetExpenseSnapshot?.loggedByUserId)?.name || 'Member',
+              }
+            : undefined,
+        };
+
+        setFeedItems((prev) => [feedItem, ...prev]);
+
+        if (isFirebaseConfigured && db && household?.id) {
+          try {
+            const batch = writeBatch(db);
+            const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
+            batch.update(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
+
+            const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
+            batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+
+            await batch.commit();
+          } catch (err) {
+            console.error('Firestore Write Failed:', err);
+            handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
+            showToast(`Error adding reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
+          }
+        }
+      } else {
+        if (isFirebaseConfigured && db && household?.id) {
+          try {
+            const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
+            await updateDoc(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
+          } catch (err) {
+            console.error('Firestore Write Failed:', err);
+            handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/expenses/${expenseId}`);
+            showToast(`Error updating reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
+          }
+        }
+      }
+    } else if (targetDepositSnapshot && household) {
+      // Toggle reaction on deposit
+      let updatedDeposits: OneOffDeposit[] = [];
+      const curReactions = targetDepositSnapshot.reactions ? [...targetDepositSnapshot.reactions] : [];
+      const existingIdx = curReactions.findIndex(
         (r) =>
           r.authorId === activeMember.userId &&
           (r.emoji === targetDef.id || getReactionDef(r.emoji).id === targetDef.id)
@@ -2375,8 +2669,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       if (existingIdx >= 0) {
         isAdding = false;
-        // Toggle off: remove only this specific reaction by this author, preserving all others
-        updatedReactionsForFirestore = currentReactions.filter((_, idx) => idx !== existingIdx);
+        updatedReactionsForFirestore = curReactions.filter((_, idx) => idx !== existingIdx);
       } else {
         isAdding = true;
         const newReaction: TransactionReaction = {
@@ -2388,73 +2681,63 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           emoji: targetDef.id,
           timestamp: now,
         };
-        // Append new reaction, keeping all existing reactions from this author and all other household members
-        updatedReactionsForFirestore = [...currentReactions, newReaction];
+        updatedReactionsForFirestore = [...curReactions, newReaction];
       }
 
-      return prev.map((e) => {
-        if (e.id === expenseId) {
-          return { ...e, reactions: updatedReactionsForFirestore };
+      updatedDeposits = (household.oneOffDeposits || []).map((d) =>
+        d.id === expenseId ? { ...d, reactions: updatedReactionsForFirestore } : d
+      );
+
+      setHousehold((prev) => (prev ? { ...prev, oneOffDeposits: updatedDeposits } : prev));
+
+      if (isAdding) {
+        const feedItemId = `feed_reaction_${now}`;
+        const feedItem: FeedItem = {
+          id: feedItemId,
+          type: 'reaction',
+          emoji: targetDef.id,
+          content: `${activeMember.name} reacted with ${targetDef.label} to deposit "${targetDepositSnapshot.description}" (${formatCurrency(targetDepositSnapshot.amount)})`,
+          authorId: activeMember.userId,
+          authorName: activeMember.name,
+          authorAvatar: activeMember.avatarUrl,
+          timestamp: now,
+          date: new Date(now).toISOString().split('T')[0],
+          linkedExpenseId: expenseId,
+          linkedExpense: {
+            id: targetDepositSnapshot.id,
+            description: targetDepositSnapshot.description,
+            categoryName: 'One-Off Deposit',
+            categoryIcon: 'dollar-sign',
+            amount: targetDepositSnapshot.amount,
+            date: targetDepositSnapshot.date,
+            payerName: members.find((m) => m.userId === targetDepositSnapshot.payerMemberId)?.name || 'Member',
+          },
+        };
+
+        setFeedItems((prev) => [feedItem, ...prev]);
+
+        if (isFirebaseConfigured && db) {
+          try {
+            const batch = writeBatch(db);
+            const hhRef = doc(db, 'households', household.id);
+            batch.update(hhRef, sanitizeFirestorePayload({ oneOffDeposits: updatedDeposits, updatedAt: new Date().toISOString() }));
+
+            const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
+            batch.set(feedRef, sanitizeFirestorePayload(feedItem));
+
+            await batch.commit();
+          } catch (err) {
+            console.error('Firestore Write Failed for Deposit Reaction:', err);
+          }
         }
-        return e;
-      });
-    });
-
-    const cat = categories.find((c) => c.id === targetExpenseSnapshot?.categoryId);
-
-    if (isAdding) {
-      const feedItemId = `feed_reaction_${now}`;
-      const feedItem: FeedItem = {
-        id: feedItemId,
-        type: 'reaction',
-        emoji: targetDef.id,
-        content: `${activeMember.name} reacted with ${targetDef.label} to ${targetExpenseSnapshot?.description || 'expense'}`,
-        authorId: activeMember.userId,
-        authorName: activeMember.name,
-        authorAvatar: activeMember.avatarUrl,
-        timestamp: now,
-        date: new Date(now).toISOString().split('T')[0],
-        linkedExpenseId: expenseId,
-        linkedExpense: targetExpenseSnapshot
-          ? {
-              id: targetExpenseSnapshot.id,
-              description: targetExpenseSnapshot.description,
-              categoryName: cat?.name || 'Category',
-              categoryIcon: cat?.icon || 'tag',
-              amount: targetExpenseSnapshot.amount,
-              date: targetExpenseSnapshot.date,
-              payerName: members.find((m) => m.userId === targetExpenseSnapshot?.loggedByUserId)?.name || 'Member',
-            }
-          : undefined,
-      };
-
-      setFeedItems((prev) => [feedItem, ...prev]);
-
-      if (isFirebaseConfigured && db && household?.id) {
-        try {
-          const batch = writeBatch(db);
-          const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          batch.update(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
-
-          const feedRef = doc(db, 'households', household.id, 'feed', feedItemId);
-          batch.set(feedRef, sanitizeFirestorePayload(feedItem));
-
-          await batch.commit();
-        } catch (err) {
-          console.error('Firestore Write Failed:', err);
-          handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/feed/${feedItemId}`);
-          showToast(`Error adding reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
-        }
-      }
-    } else {
-      if (isFirebaseConfigured && db && household?.id) {
-        try {
-          const expRef = doc(db, 'households', household.id, 'expenses', expenseId);
-          await updateDoc(expRef, sanitizeFirestorePayload({ reactions: updatedReactionsForFirestore }));
-        } catch (err) {
-          console.error('Firestore Write Failed:', err);
-          handleFirestoreError(err, OperationType.UPDATE, `households/${household.id}/expenses/${expenseId}`);
-          showToast(`Error updating reaction: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      } else {
+        if (isFirebaseConfigured && db) {
+          try {
+            const hhRef = doc(db, 'households', household.id);
+            await updateDoc(hhRef, sanitizeFirestorePayload({ oneOffDeposits: updatedDeposits, updatedAt: new Date().toISOString() }));
+          } catch (err) {
+            console.error('Firestore Write Failed for Deposit Reaction:', err);
+          }
         }
       }
     }
@@ -2515,6 +2798,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const checkInId = `checkin_${now}`;
     const newCheckIn: CheckIn = {
       id: checkInId,
+      fiscalWeekId: getFiscalWeekId(data.weekStartDate, household?.fiscalYearEndMonth || 12),
       weekStartDate: data.weekStartDate,
       weekEndDate: data.weekEndDate,
       completedByUserId: user?.userId || 'usr_self',
@@ -2747,6 +3031,32 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  // Update check-in record values (e.g. from post-checkin transaction mutation)
+  const updateCheckIn = async (checkInId: string, updates: Partial<CheckIn>) => {
+    if (!household) return;
+
+    // Optimistically update local check-in
+    setCheckIns((prev) =>
+      prev.map((c) => (c.id === checkInId ? { ...c, ...updates } : c))
+    );
+
+    if (isFirebaseConfigured && db && household?.id) {
+      try {
+        const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
+        await updateDoc(
+          checkinRef,
+          sanitizeFirestorePayload({
+            ...updates,
+            updatedAt: new Date().toISOString(),
+          })
+        );
+      } catch (err) {
+        console.error('Failed to update check-in in Firestore:', err);
+        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/checkins/${checkInId}`);
+      }
+    }
+  };
+
   // Trigger Fresh Start (Resolves missed weeks with $0 on-budget expenses)
   const triggerFreshStartAction = async () => {
     if (!household) return;
@@ -2759,6 +3069,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     const freshCheckIn: CheckIn = {
       id: `checkin_fresh_${now}`,
+      fiscalWeekId: getFiscalWeekId(todayStr, household.fiscalYearEndMonth || 12),
       weekStartDate: todayStr,
       weekEndDate: todayStr,
       completedByUserId: user?.userId || 'usr_self',
@@ -3018,6 +3329,162 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsOnboarding(true);
   };
 
+  // Tag CRUD & Cascading DB Updates
+  const addCustomTag = async (tag: string, categoryId?: string) => {
+    const trimmed = tag.trim();
+    if (!trimmed) return;
+    if (categoryId) {
+      const cat = categories.find((c) => c.id === categoryId);
+      if (cat) {
+        const existing = cat.subcategories || [];
+        if (!existing.some((t) => t.toLowerCase() === trimmed.toLowerCase())) {
+          const updated = [...existing, trimmed];
+          await updateCategory(categoryId, { subcategories: updated });
+        }
+      }
+    }
+    showToast(`Added tag "${trimmed}"`, 'success');
+  };
+
+  const renameTag = async (oldTag: string, newTag: string, categoryId?: string) => {
+    const trimmedOld = oldTag.trim();
+    const trimmedNew = newTag.trim();
+    if (!trimmedOld || !trimmedNew || trimmedOld.toLowerCase() === trimmedNew.toLowerCase()) return;
+
+    // 1. Atomic local state update for immediate reactive UI
+    setExpenses((prev) =>
+      prev.map((exp) => {
+        if (!exp.tags || !exp.tags.some((t) => t.trim().toLowerCase() === trimmedOld.toLowerCase())) {
+          return exp;
+        }
+        return {
+          ...exp,
+          tags: exp.tags.map((t) => (t.trim().toLowerCase() === trimmedOld.toLowerCase() ? trimmedNew : t)),
+        };
+      })
+    );
+
+    setCategories((prev) =>
+      prev.map((cat) => {
+        if (!cat.subcategories || !cat.subcategories.some((t) => t.trim().toLowerCase() === trimmedOld.toLowerCase())) {
+          return cat;
+        }
+        return {
+          ...cat,
+          subcategories: cat.subcategories.map((t) =>
+            t.trim().toLowerCase() === trimmedOld.toLowerCase() ? trimmedNew : t
+          ),
+        };
+      })
+    );
+
+    // 2. Cascading Batch Update in Firestore across all historical transaction documents
+    if (household?.id && isFirebaseConfigured && db) {
+      try {
+        const batch = writeBatch(db);
+        const affectedExpenses = expenses.filter((e) =>
+          e.tags?.some((t) => t.trim().toLowerCase() === trimmedOld.toLowerCase())
+        );
+
+        affectedExpenses.forEach((exp) => {
+          const updatedTags = (exp.tags || []).map((t) =>
+            t.trim().toLowerCase() === trimmedOld.toLowerCase() ? trimmedNew : t
+          );
+          const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
+          batch.update(expRef, sanitizeFirestorePayload({ tags: updatedTags }));
+        });
+
+        // Also update subcategories array on categories
+        categories.forEach((cat) => {
+          if (cat.subcategories && cat.subcategories.some((t) => t.trim().toLowerCase() === trimmedOld.toLowerCase())) {
+            const updatedSubs = cat.subcategories.map((t) =>
+              t.trim().toLowerCase() === trimmedOld.toLowerCase() ? trimmedNew : t
+            );
+            const catRef = doc(db, 'households', household.id, 'categories', cat.id);
+            batch.update(catRef, sanitizeFirestorePayload({ subcategories: updatedSubs }));
+          }
+        });
+
+        await batch.commit();
+        showToast(`Renamed tag "${trimmedOld}" to "${trimmedNew}" across all transactions!`, 'success');
+      } catch (err) {
+        console.error('Firestore tag rename batch failed:', err);
+        showToast('Error updating historical transactions', 'error');
+      }
+    } else {
+      showToast(`Renamed tag "${trimmedOld}" to "${trimmedNew}"!`, 'success');
+    }
+  };
+
+  const deleteTag = async (tagToDelete: string, categoryId?: string) => {
+    const trimmed = tagToDelete.trim();
+    if (!trimmed) return;
+
+    // 1. Atomic local state update for immediate reactive UI
+    setExpenses((prev) =>
+      prev.map((exp) => {
+        if (!exp.tags || !exp.tags.some((t) => t.trim().toLowerCase() === trimmed.toLowerCase())) {
+          return exp;
+        }
+        return {
+          ...exp,
+          tags: exp.tags.filter((t) => t.trim().toLowerCase() !== trimmed.toLowerCase()),
+        };
+      })
+    );
+
+    setCategories((prev) =>
+      prev.map((cat) => {
+        if (!cat.subcategories || !cat.subcategories.some((t) => t.trim().toLowerCase() === trimmed.toLowerCase())) {
+          return cat;
+        }
+        return {
+          ...cat,
+          subcategories: cat.subcategories.filter(
+            (t) => t.trim().toLowerCase() !== trimmed.toLowerCase()
+          ),
+        };
+      })
+    );
+
+    // 2. Cascading Batch Update in Firestore across all historical transaction documents
+    if (household?.id && isFirebaseConfigured && db) {
+      try {
+        const batch = writeBatch(db);
+        const affectedExpenses = expenses.filter((e) =>
+          e.tags?.some((t) => t.trim().toLowerCase() === trimmed.toLowerCase())
+        );
+
+        affectedExpenses.forEach((exp) => {
+          const updatedTags = (exp.tags || []).filter(
+            (t) => t.trim().toLowerCase() !== trimmed.toLowerCase()
+          );
+          const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
+          batch.update(expRef, sanitizeFirestorePayload({ tags: updatedTags }));
+        });
+
+        // Also remove from category subcategories
+        categories.forEach((cat) => {
+          if (cat.subcategories && cat.subcategories.some((t) => t.trim().toLowerCase() === trimmed.toLowerCase())) {
+            const updatedSubs = cat.subcategories.filter(
+              (t) => t.trim().toLowerCase() !== trimmed.toLowerCase()
+            );
+            const catRef = doc(db, 'households', household.id, 'categories', cat.id);
+            batch.update(catRef, sanitizeFirestorePayload({ subcategories: updatedSubs }));
+          }
+        });
+
+        await batch.commit();
+        showToast(`Removed tag "${trimmed}" from all transactions!`, 'info');
+      } catch (err) {
+        console.error('Firestore tag delete batch failed:', err);
+        showToast('Error removing tag from transactions', 'error');
+      }
+    } else {
+      showToast(`Removed tag "${trimmed}"!`, 'info');
+    }
+  };
+
   return (
     <HouseholdContext.Provider
       value={{
@@ -3061,8 +3528,12 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
         isLogExpenseModalOpen,
         logExpenseInitialCategory,
+        isCategoryLockedInModal,
         openLogExpenseModal,
         closeLogExpenseModal,
+        addCustomTag,
+        renameTag,
+        deleteTag,
 
         isWeeklyCheckInModalOpen,
         openWeeklyCheckInModal,
@@ -3076,6 +3547,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         completeWeeklyCheckIn,
         deleteWeeklyCheckIn,
         updateCheckInNotes,
+        updateCheckIn,
         triggerFreshStartAction,
         executeMonthEndResetAction,
 
@@ -3110,6 +3582,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         updateHousehold,
         updateMemberIncome,
         addOneOffDeposit,
+        updateDeposit,
         deleteDeposit,
         applyExtraPaycheckDecision,
         resetHouseholdToOnboarding,

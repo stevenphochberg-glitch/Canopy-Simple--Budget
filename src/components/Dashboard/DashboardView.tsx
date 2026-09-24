@@ -22,6 +22,8 @@ import { ExtraPaycheckBanner } from './ExtraPaycheckBanner';
 import { RunwayVisualizer } from './RunwayVisualizer';
 import { calculateCheckInStatus } from '../../lib/checkInCalculations';
 import { CheckInReviewModal } from '../CheckIn/CheckInReviewModal';
+import { CheckInImpactModal } from '../CheckIn/CheckInImpactModal';
+import { getFiscalWeekId } from '../../lib/fiscal445';
 import {
   Plus,
   ChevronLeft,
@@ -63,11 +65,89 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     openMonthlyRetroModal,
     deleteExpense,
     deleteWeeklyCheckIn,
+    updateCheckIn,
+    showToast,
   } = useHousehold();
 
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+
+  // Interception Modal State for Post-Check-In Transactions (Directive 1 & 2)
+  const [impactModalState, setImpactModalState] = useState<{
+    isOpen: boolean;
+    targetExpense: any;
+    actionType: 'edit' | 'delete';
+    checkIn: any;
+  }>({
+    isOpen: false,
+    targetExpense: null,
+    actionType: 'delete',
+    checkIn: null,
+  });
+
+  const getCompletedPastCheckInForExpense = (exp: any) => {
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const expDateStr = exp.date || (exp.timestamp ? new Date(exp.timestamp).toISOString().split('T')[0] : '');
+    if (!expDateStr) return null;
+
+    const expFiscalWeekId = getFiscalWeekId(expDateStr, fiscalYearEnd);
+    if (!expFiscalWeekId) return null;
+
+    const currentActiveWeekRange = getWeekRange(new Date(), household?.firstDayOfWeek || 'Monday', 0);
+    const currentActiveWeekId = getFiscalWeekId(currentActiveWeekRange.startDate, fiscalYearEnd);
+    if (expFiscalWeekId === currentActiveWeekId) {
+      return null;
+    }
+
+    const matchingCheckIn = (checkIns || []).find((ci) => {
+      if (ci.status !== 'completed') return false;
+      const ciWeekId = ci.fiscalWeekId || getFiscalWeekId(ci.weekStartDate || ci.weekEndDate || ci.timestamp, fiscalYearEnd);
+      return ciWeekId === expFiscalWeekId;
+    });
+
+    return matchingCheckIn || null;
+  };
+
+  const handleDeleteExpenseClick = async (exp: any) => {
+    const completedCheckIn = getCompletedPastCheckInForExpense(exp);
+    if (completedCheckIn) {
+      setImpactModalState({
+        isOpen: true,
+        targetExpense: exp,
+        actionType: 'delete',
+        checkIn: completedCheckIn,
+      });
+      return;
+    }
+    await deleteExpense(exp.id);
+  };
+
+  const handleConfirmImpact = async (simulatedValues: {
+    bankedSavings: number;
+    totalSpent: number;
+    totalBudget: number;
+    decisions: any[];
+  }) => {
+    if (!impactModalState.targetExpense || !impactModalState.checkIn) return;
+    const target = impactModalState.targetExpense;
+    const ci = impactModalState.checkIn;
+
+    const weekStart = new Date(ci.weekStartDate + (ci.weekStartDate.length === 10 ? 'T12:00:00' : ''));
+    const trackerInfo = getFiscalTrackerInfo(weekStart, household?.fiscalYearEndMonth || 12);
+    const weekLabel = `W${trackerInfo.weekOfFiscalMonth}`;
+
+    await deleteExpense(target.id);
+
+    await updateCheckIn(ci.id, {
+      totalSaved: simulatedValues.bankedSavings,
+      totalSpent: simulatedValues.totalSpent,
+      totalBudget: simulatedValues.totalBudget,
+      decisions: simulatedValues.decisions,
+    });
+
+    showToast(`Transaction updated and ${weekLabel} check-in successfully rebalanced.`, 'success');
+  };
 
   // 1. Calculate 4-4-5 Fiscal Month & Tracker Coordinates & Extra Paycheck Detection
   const fiscalMonth = useMemo(() => {
@@ -837,7 +917,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                     </div>
 
                     <button
-                      onClick={() => deleteExpense(exp.id)}
+                      onClick={() => handleDeleteExpenseClick(exp)}
                       className="p-1.5 text-brown-700 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
                       title="Delete expense"
                     >
@@ -857,6 +937,28 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           isOpen={isReviewModalOpen}
           onClose={() => setIsReviewModalOpen(false)}
           checkIn={historicalCheckIn}
+        />
+      )}
+
+      {/* Historical Check-In Impact Interception Modal */}
+      {impactModalState.isOpen && impactModalState.targetExpense && impactModalState.checkIn && (
+        <CheckInImpactModal
+          isOpen={impactModalState.isOpen}
+          onClose={() =>
+            setImpactModalState({
+              isOpen: false,
+              targetExpense: null,
+              actionType: 'delete',
+              checkIn: null,
+            })
+          }
+          targetExpense={impactModalState.targetExpense}
+          actionType={impactModalState.actionType}
+          checkIn={impactModalState.checkIn}
+          categories={categories}
+          expenses={expenses}
+          household={household}
+          onConfirm={handleConfirmImpact}
         />
       )}
     </div>

@@ -68,6 +68,8 @@ export interface OneOffDeposit {
   date: string; // YYYY-MM-DD
   payerMemberId?: string;
   notes?: string;
+  comments?: TransactionComment[];
+  reactions?: TransactionReaction[];
 }
 
 export interface VariableIncomeState {
@@ -276,6 +278,7 @@ export interface CategoryRolloverDecision {
 
 export interface CheckIn {
   id: string;
+  fiscalWeekId?: string;
   weekStartDate: string;
   weekEndDate: string;
   status: 'completed' | 'past-due' | 'pending';

@@ -47,6 +47,7 @@ const MainLayout: React.FC = () => {
     openStagingModal,
     isLogExpenseModalOpen,
     logExpenseInitialCategory,
+    isCategoryLockedInModal,
     openLogExpenseModal,
     closeLogExpenseModal,
     isWeeklyCheckInModalOpen,
@@ -158,6 +159,7 @@ const MainLayout: React.FC = () => {
         isOpen={isLogExpenseModalOpen}
         onClose={closeLogExpenseModal}
         initialCategory={logExpenseInitialCategory}
+        isCategoryLocked={isCategoryLockedInModal}
       />
 
       {/* Universal Staging & Confirmation Modal */}

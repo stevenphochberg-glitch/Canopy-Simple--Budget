@@ -693,9 +693,32 @@ export const FeedView: React.FC = () => {
 
                 {/* Content Message */}
                 <div className="pl-13 space-y-3">
-                  <p className="text-xs sm:text-sm text-dark-green-950 leading-relaxed font-medium">
-                    {item.content}
-                  </p>
+                  {isReaction ? (
+                    <div className="text-xs sm:text-sm text-dark-green-950 font-medium">
+                      <span className="font-extrabold text-dark-green-900">{item.authorName || 'Member'}</span>{' '}
+                      reacted with{' '}
+                      {(() => {
+                        const def = getReactionDef(item.emoji);
+                        const IconComp = def.icon;
+                        return (
+                          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs font-bold border ${def.bgClass} ${def.borderClass} ${def.textClass} align-middle mx-1`}>
+                            <IconComp className={`w-3.5 h-3.5 ${def.iconColor}`} />
+                            <span>{def.label}</span>
+                          </span>
+                        );
+                      })()}{' '}
+                      to <span className="font-bold text-dark-green-900">{item.linkedExpense?.description || 'transaction'}</span>{' '}
+                      {item.linkedExpense?.amount !== undefined && (
+                        <span className="font-mono font-extrabold text-dark-green-900">
+                          ({formatCurrency(item.linkedExpense.amount)})
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-xs sm:text-sm text-dark-green-950 leading-relaxed font-medium">
+                      {item.content}
+                    </p>
+                  )}
 
                   {/* LINKED TRANSACTION GRAPHIC / CARD */}
                   {item.linkedExpense && (

@@ -34,13 +34,15 @@ type LogTab = 'manual' | 'quicknote' | 'scan';
 interface LogExpenseModalProps {
   isOpen: boolean;
   onClose: () => void;
-  initialCategory?: Category | null;
+  initialCategory?: Category | string | null;
+  isCategoryLocked?: boolean;
 }
 
 export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   isOpen,
   onClose,
   initialCategory,
+  isCategoryLocked = false,
 }) => {
   const {
     categories,
@@ -135,6 +137,29 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     const currentWeekRange = getWeekRange(today, firstDay, 0);
     return getWeekId(currentWeekRange, firstDay);
   }, [household?.firstDayOfWeek]);
+
+  // Keep category selection synced when modal opens or initialCategory changes
+  useEffect(() => {
+    if (isOpen) {
+      if (initialCategory) {
+        if (typeof initialCategory === 'object' && initialCategory.id) {
+          if (isSavingsCategory(initialCategory)) {
+            setManualCategoryId('cat_one_time_deposit');
+          } else {
+            setManualCategoryId(initialCategory.id);
+          }
+        } else if (typeof initialCategory === 'string') {
+          if (initialCategory === 'deposits' || initialCategory === 'cat_one_time_deposit') {
+            setManualCategoryId('cat_one_time_deposit');
+          } else {
+            setManualCategoryId(initialCategory);
+          }
+        }
+      } else if (!isCategoryLocked) {
+        setManualCategoryId((prev) => (prev ? prev : availableExpenseCategories[0]?.id || 'cat_one_time_deposit'));
+      }
+    }
+  }, [isOpen, initialCategory, isCategoryLocked, availableExpenseCategories]);
 
   // Keep selectedGoalId synced with savingsGoals
   useEffect(() => {
@@ -656,15 +681,27 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
 
                 {/* Field 3: Category Dropdown */}
                 <div className="space-y-1">
-                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
-                    <Tag className="w-3.5 h-3.5 text-sage-700" />
-                    Category Selection
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center justify-between">
+                    <span className="flex items-center gap-1">
+                      <Tag className="w-3.5 h-3.5 text-sage-700" />
+                      Category Selection
+                    </span>
+                    {isCategoryLocked && (
+                      <span className="text-[10px] font-bold text-brown-700 bg-beige-200 px-2 py-0.5 rounded-full">
+                        Locked to Tab
+                      </span>
+                    )}
                   </label>
                   <select
                     id="manual-select-category"
                     value={manualCategoryId}
                     onChange={(e) => setManualCategoryId(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
+                    disabled={isCategoryLocked}
+                    className={`w-full px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-bold transition ${
+                      isCategoryLocked
+                        ? 'bg-beige-200/70 border border-beige-300 text-dark-grey-700 cursor-not-allowed opacity-90'
+                        : 'bg-beige-50 border border-beige-300 text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white'
+                    }`}
                   >
                     {availableExpenseCategories.map((cat) => {
                       const effectiveWeekly = getCategoryEffectiveWeeklyBudget(cat, activeWeekId, household);

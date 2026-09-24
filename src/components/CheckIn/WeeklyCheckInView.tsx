@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange, getCategoryEffectiveWeeklyBudget, getWeekId } from '../../lib/calculations';
 import { calculateCheckInStatus } from '../../lib/checkInCalculations';
+import { formatFiscalRecordTrackerString } from '../../lib/fiscal445';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   Clock,
@@ -368,12 +369,15 @@ export const WeeklyCheckInView: React.FC = () => {
                     <CheckCircle2 className="w-5 h-5 text-sage-700" />
                   </div>
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-bold text-dark-green-900">
                         Check-In: {item.weekStartDate} to {item.weekEndDate}
                       </span>
                       <span className="text-[10px] font-bold text-sage-800 bg-sage-100 px-2 py-0.2 rounded">
                         Completed
+                      </span>
+                      <span className="text-[10px] font-mono font-bold text-dark-green-900 bg-sage-50 border border-sage-200/90 px-2 py-0.5 rounded">
+                        {formatFiscalRecordTrackerString(item.weekStartDate || item.weekEndDate || (item.timestamp ? new Date(item.timestamp) : new Date()), household?.fiscalYearEndMonth || 12)}
                       </span>
                     </div>
                     {item.notes && (
