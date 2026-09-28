@@ -61,7 +61,7 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
   }
 
   return (
-    <div className="bg-sage-50/70 border-2 border-sage-300 rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
+    <div className="bg-sage-50/70 border-2 border-brown-800/80 rounded-2xl sm:rounded-3xl p-5 sm:p-6 shadow-sm space-y-4">
       {/* Top Banner Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="flex items-start gap-3">

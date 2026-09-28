@@ -16,6 +16,7 @@ import {
   getCategoryEffectiveWeeklyBudget,
   getWeekId,
 } from './calculations';
+import { getFiscalWeekId, getFiscalTrackerInfo, getFiscalYearStartMonday } from './fiscal445';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Sunday',
@@ -82,22 +83,14 @@ export function calculateCheckInStatus(
   const targetCheckInIndex = DAY_INDEX_MAP[lastDay] ?? 0;
 
   // Calculate days until check-in day
-  let daysUntil = (targetCheckInIndex - currentDayIndex + 7) % 7;
+  const daysUntil = (targetCheckInIndex - currentDayIndex + 7) % 7;
   const isToday = daysUntil === 0;
 
-  // 2. Check if household is in First-Week Grace Period
-  let isFirstWeekGracePeriod = false;
-  if (household?.createdAt) {
-    const createdDate = new Date(household.createdAt);
-    const msDiff = refDate.getTime() - createdDate.getTime();
-    const daysSinceCreation = msDiff / (1000 * 60 * 60 * 24);
-    // If created within the last 7 days or during current week
-    if (daysSinceCreation < 7) {
-      isFirstWeekGracePeriod = true;
-    }
-  }
+  // Fiscal week IDs for robust matching
+  const currentFiscalWeekId = getFiscalWeekId(currentWeekRange.startDate, household?.fiscalYearEndMonth || 12);
+  const prevFiscalWeekId = getFiscalWeekId(prevWeekRange.startDate, household?.fiscalYearEndMonth || 12);
 
-  // 3. Find check-in records for current and previous weeks
+  // 2. Find check-in records for current and previous weeks
   const currentWeekStartStr = formatLocalDate(currentWeekRange.startDate);
   const currentWeekEndStr = formatLocalDate(currentWeekRange.endDate);
   const prevWeekStartStr = formatLocalDate(prevWeekRange.startDate);
@@ -108,7 +101,8 @@ export function calculateCheckInStatus(
       c.status === 'completed' &&
       (c.weekEndDate === currentWeekEndStr ||
         c.weekStartDate === currentWeekStartStr ||
-        c.id.includes(currentWeekStartStr))
+        c.id.includes(currentWeekStartStr) ||
+        (c.fiscalWeekId && c.fiscalWeekId === currentFiscalWeekId))
   );
 
   const prevWeekCheckIn = checkIns.find(
@@ -116,7 +110,8 @@ export function calculateCheckInStatus(
       c.status === 'completed' &&
       (c.weekEndDate === prevWeekEndStr ||
         c.weekStartDate === prevWeekStartStr ||
-        c.id.includes(prevWeekStartStr))
+        c.id.includes(prevWeekStartStr) ||
+        (c.fiscalWeekId && c.fiscalWeekId === prevFiscalWeekId))
   );
 
   const lastCompletedCheckIn =
@@ -124,28 +119,23 @@ export function calculateCheckInStatus(
       .filter((c) => c.status === 'completed')
       .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))[0] || null;
 
-  // 4. Evaluate status:
+  // 3. Evaluate status:
   // - If completed for current week -> 'completed'
-  // - If today is lastDayOfWeek and not checked in -> 'pending' (ACTIVE CTA)
-  // - If past lastDayOfWeek (new week began) and previous week was not checked in -> 'past-due'
-  // - Otherwise -> 'upcoming' (not yet check-in day, but can view preview)
+  // - If previous week was not completed -> 'past-due' (Action Required!)
+  // - If today is lastDayOfWeek (check-in day) and current week not completed -> 'pending' (Check-in Ready!)
+  // - Otherwise -> 'upcoming'
   let status: 'pending' | 'past-due' | 'completed' | 'upcoming' = 'upcoming';
   let isPastDue = false;
 
   if (currentWeekCheckIn) {
     status = 'completed';
+  } else if (!prevWeekCheckIn) {
+    status = 'past-due';
+    isPastDue = true;
   } else if (isToday) {
     status = 'pending';
   } else {
-    // We are on another day of the week.
-    // Check if the previous week was completed.
-    // If not completed AND not protected by first week grace period -> past-due!
-    if (!prevWeekCheckIn && !isFirstWeekGracePeriod) {
-      status = 'past-due';
-      isPastDue = true;
-    } else {
-      status = 'upcoming';
-    }
+    status = 'upcoming';
   }
 
   const remainingWeeksInMonth = getRemainingWeeksInMonth(refDate);
@@ -166,7 +156,7 @@ export function calculateCheckInStatus(
     status,
     isLastDayOfWeek: isToday,
     isPastDue,
-    isFirstWeekGracePeriod,
+    isFirstWeekGracePeriod: false,
     daysUntilCheckIn: daysUntil,
     checkInDayName,
     lastCompletedCheckIn,
@@ -174,6 +164,101 @@ export function calculateCheckInStatus(
     missedWeeksCount,
     remainingWeeksInMonth,
   };
+}
+
+export interface PastDueWeekInfo {
+  range: DateRange;
+  weekStartStr: string;
+  weekEndStr: string;
+  fiscalWeekId: string;
+  weekNumber: number;
+  fiscalWeekLabel: string;
+}
+
+/**
+ * Returns all past fiscal weeks that have ended but do not have a completed check-in,
+ * ordered chronologically (oldest first).
+ */
+export function getAllPastDueCheckInWeeks(
+  household: Household | null,
+  checkIns: CheckIn[],
+  refDate: Date = new Date()
+): PastDueWeekInfo[] {
+  if (!household) return [];
+  const firstDay = household.firstDayOfWeek || 'Monday';
+  const fiscalYearEndMonth = household.fiscalYearEndMonth || 12;
+
+  // Anchor: find start of search range.
+  // Prioritize the household's creation date so we only search for past-due check-ins that occurred
+  // since the creation date of the household.
+  let searchStart: Date;
+  if (household.createdAt) {
+    const created = new Date(household.createdAt);
+    if (!isNaN(created.getTime())) {
+      searchStart = new Date(created);
+    } else {
+      searchStart = getFiscalYearStartMonday(refDate.getFullYear(), fiscalYearEndMonth);
+    }
+  } else {
+    searchStart = getFiscalYearStartMonday(refDate.getFullYear(), fiscalYearEndMonth);
+  }
+
+  // Align searchStart to firstDayOfWeek
+  const initialWeek = getWeekRange(searchStart, firstDay, 0);
+  let currentWeekStart = new Date(initialWeek.startDate);
+
+  // A week is considered elapsed and eligible for check-in if its entire period ended strictly before refDate
+  const pastDueWeeks: PastDueWeekInfo[] = [];
+
+  while (currentWeekStart.getTime() + 7 * 24 * 60 * 60 * 1000 <= refDate.getTime()) {
+    const weekRange = getWeekRange(currentWeekStart, firstDay, 0);
+    const weekStartStr = formatLocalDate(weekRange.startDate);
+    const weekEndStr = formatLocalDate(weekRange.endDate);
+    const fiscalWeekId = getFiscalWeekId(weekRange.startDate, fiscalYearEndMonth);
+    const trackerInfo = getFiscalTrackerInfo(weekRange.startDate, fiscalYearEndMonth);
+    const weekNumber = trackerInfo.weekOfFiscalYear;
+    const fiscalWeekLabel = `W${weekNumber}`;
+
+    // Check if this week has a completed check-in
+    const isCompleted = (checkIns || []).some((c) => {
+      if (c.status !== 'completed') return false;
+      return (
+        c.weekEndDate === weekEndStr ||
+        c.weekStartDate === weekStartStr ||
+        c.id.includes(weekStartStr) ||
+        (c.fiscalWeekId && c.fiscalWeekId === fiscalWeekId)
+      );
+    });
+
+    if (!isCompleted) {
+      pastDueWeeks.push({
+        range: weekRange,
+        weekStartStr,
+        weekEndStr,
+        fiscalWeekId,
+        weekNumber,
+        fiscalWeekLabel,
+      });
+    }
+
+    currentWeekStart = new Date(currentWeekStart.getTime() + 7 * 24 * 60 * 60 * 1000);
+  }
+
+  // Sort chronologically (oldest first)
+  pastDueWeeks.sort((a, b) => a.range.startDate.getTime() - b.range.startDate.getTime());
+  return pastDueWeeks;
+}
+
+/**
+ * Returns the oldest past-due check-in week that requires completion first.
+ */
+export function getOldestPastDueCheckInWeek(
+  household: Household | null,
+  checkIns: CheckIn[],
+  refDate: Date = new Date()
+): PastDueWeekInfo | null {
+  const weeks = getAllPastDueCheckInWeeks(household, checkIns, refDate);
+  return weeks.length > 0 ? weeks[0] : null;
 }
 
 /**

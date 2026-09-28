@@ -16,6 +16,7 @@ import { getSavingsProgressFillColor } from '../Common/BudgetProgressBar';
 import {
   calculateCheckInStatus,
   getRemainingWeeksInMonth,
+  getOldestPastDueCheckInWeek,
 } from '../../lib/checkInCalculations';
 import {
   Clock,
@@ -90,15 +91,22 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const [inlineLoggedBy, setInlineLoggedBy] = useState<string>(user?.userId || 'usr_self');
   const [isSavingInline, setIsSavingInline] = useState<boolean>(false);
 
-  // Compute status info for current week
+  // Compute status info for current week and oldest past due week
   const statusInfo = useMemo(() => {
     return calculateCheckInStatus(household, checkIns, expenses);
   }, [household, checkIns, expenses]);
+
+  const oldestPastDueWeek = useMemo(() => {
+    return getOldestPastDueCheckInWeek(household, checkIns);
+  }, [household, checkIns]);
 
   // Selected week range for check-in: allows historical navigation
   const [selectedWeekRange, setSelectedWeekRange] = useState<DateRange>(() => {
     if (timeframeMode === 'week' && timeframeOffset < 0) {
       return activeDateRange;
+    }
+    if (oldestPastDueWeek) {
+      return oldestPastDueWeek.range;
     }
     return statusInfo.activeWeekRange;
   });
@@ -108,6 +116,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     if (isOpen) {
       if (timeframeMode === 'week' && timeframeOffset < 0) {
         setSelectedWeekRange(activeDateRange);
+      } else if (oldestPastDueWeek) {
+        setSelectedWeekRange(oldestPastDueWeek.range);
       } else {
         setSelectedWeekRange(statusInfo.activeWeekRange);
       }
@@ -116,7 +126,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       setUnderspendChoices({});
       setOverspendInputs({});
     }
-  }, [isOpen, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange]);
+  }, [isOpen, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange, oldestPastDueWeek]);
 
   // Navigate week forward or backward directly inside modal
   const navigateModalWeek = (direction: -1 | 1) => {

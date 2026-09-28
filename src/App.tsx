@@ -7,6 +7,7 @@ import { HouseholdProvider, useHousehold } from './context/HouseholdContext';
 import { LoginPage } from './components/LoginPage';
 import { SetupWizard } from './components/SetupWizard/SetupWizard';
 import { Navbar } from './components/Navbar';
+import { GlobalReviewDueBanner } from './components/Common/GlobalReviewDueBanner';
 import { DashboardView } from './components/Dashboard/DashboardView';
 import { CategoryLedgerView } from './components/Ledger/CategoryLedgerView';
 import { WeeklyCheckInView } from './components/CheckIn/WeeklyCheckInView';
@@ -134,8 +135,11 @@ const MainLayout: React.FC = () => {
       {/* Top Navbar */}
       <Navbar onOpenProfileModal={() => setIsProfileModalOpen(true)} />
 
+      {/* Global Header-Anchored Review Notification Banner */}
+      <GlobalReviewDueBanner />
+
       {/* Main Content Area */}
-      <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 pb-24 lg:pb-8">
+      <div className="flex-1 max-w-7xl mx-auto w-full px-2 sm:px-3 pt-3 sm:pt-4 pb-24 lg:pb-8">
         {/* Dynamic Main View */}
         <main className="w-full min-w-0">
           {activeTab === 'dashboard' && (

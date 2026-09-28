@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useHousehold } from '../context/HouseholdContext';
 import { ActiveTab } from '../types';
 import { calculateCheckInStatus } from '../lib/checkInCalculations';
-import { getFiscalMonthForDate } from '../lib/fiscal445';
+import { getFiscalMonthForDate, getFiscalTrackerInfo } from '../lib/fiscal445';
 import {
   LayoutDashboard,
   Receipt,
@@ -49,10 +49,44 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     joinHouseholdWithSyncCode,
     getHouseholdBySyncCode,
     leaveHousehold,
+    timeframeMode,
+    activeDateRange,
   } = useHousehold();
   const [copiedSync, setCopiedSync] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+
+  // Track if Dashboard Timeframe Selector has scrolled out of frame
+  const [isTimeframeScrolledOutOfView, setIsTimeframeScrolledOutOfView] = useState(false);
+
+  useEffect(() => {
+    const handleScroll = () => {
+      const el = document.getElementById('dashboard-timeframe-header');
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        // Out of frame when top card is scrolled above the header
+        setIsTimeframeScrolledOutOfView(rect.bottom <= 60);
+      } else {
+        setIsTimeframeScrolledOutOfView(false);
+      }
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    handleScroll();
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [activeTab]);
+
+  // Formatted timeframe indicator text for global header
+  const headerTimeframeText = useMemo(() => {
+    if (!activeDateRange?.startDate) return '';
+    if (timeframeMode === 'week') {
+      const fiscalTracker = getFiscalTrackerInfo(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
+      return `Week View W${fiscalTracker.weekOfFiscalYear}`;
+    } else {
+      const monthAbbr = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short' });
+      return `Month View ${monthAbbr}`;
+    }
+  }, [timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
 
   // Click-outside listener for the Account dropdown
   useEffect(() => {
@@ -194,9 +228,9 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     <>
       {/* Top Header Bar (Desktop & Mobile) */}
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-beige-200 px-4 sm:px-6 py-2.5">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 relative">
           {/* Logo on the far left - Routes directly to My Budget */}
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
             <button
               onClick={() => setActiveTab('dashboard')}
               aria-label="Household Dashboard"
@@ -209,6 +243,16 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
               />
             </button>
           </div>
+
+          {/* Timeframe Filter Indicator centered in global header when scrolled out of view */}
+          {isTimeframeScrolledOutOfView && headerTimeframeText && (
+            <div
+              id="global-header-timeframe-filter"
+              className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3.5 py-1 bg-beige-100 border border-beige-300 rounded-xl text-xs font-black text-dark-green-950 animate-in fade-in zoom-in-95 duration-150 shadow-2xs z-20 whitespace-nowrap"
+            >
+              <span>{headerTimeframeText}</span>
+            </div>
+          )}
 
           {/* Center-Aligned Navigation Tabs (Desktop / Tablet) */}
           <nav className="hidden md:flex items-center gap-1 bg-beige-100/80 p-1 rounded-2xl border border-beige-200">
@@ -242,18 +286,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             })}
           </nav>
 
-          {/* Right Header Elements: + Log Transaction & Account Menu */}
+          {/* Right Header Elements: Account Menu */}
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-            {/* Primary Log Transaction CTA Button */}
-            <button
-              id="header-log-transaction-btn"
-              onClick={() => openLogExpenseModal()}
-              className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-98 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Log Transaction</span>
-            </button>
-
             {/* Account & Administrative Dropdown Menu */}
             <div ref={accountMenuRef} className="relative">
               <button

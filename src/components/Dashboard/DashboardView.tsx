@@ -26,6 +26,7 @@ import { CheckInImpactModal } from '../CheckIn/CheckInImpactModal';
 import { getFiscalWeekId } from '../../lib/fiscal445';
 import {
   Plus,
+  SlidersHorizontal,
   ChevronLeft,
   ChevronRight,
   RotateCcw,
@@ -325,9 +326,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     } else {
       const startShort = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
       const endShort = activeDateRange.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-      const yearStr = activeDateRange.endDate.getFullYear();
-      const weekTitle = `${startShort} - ${endShort}, ${yearStr}`;
-      const weekSub = `W${fiscalTracker.weekOfFiscalYear} of Fiscal Year | W${fiscalTracker.weekOfFiscalMonth} of ${fiscalTracker.monthWeekCount} for M${fiscalTracker.fiscalMonthNumber}`;
+      const weekTitle = `W${fiscalTracker.weekOfFiscalYear}: ${startShort} - ${endShort}`;
+      const weekSub = `W${fiscalTracker.weekOfFiscalMonth} of ${fiscalTracker.monthWeekCount} for M${fiscalTracker.fiscalMonthNumber}`;
       return { title: weekTitle, sub: weekSub };
     }
   }, [timeframeMode, activeDateRange, fiscalMonth, fiscalTracker]);
@@ -402,74 +402,15 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   }, [household, checkIns, expenses]);
 
   return (
-    <div className="space-y-6 pb-20 lg:pb-8">
-      {/* Prominent Actionable Review Due Element */}
-      {reviewDueStatus.isDue && (
-        <div
-          id="dashboard-review-due-alert"
-          className="bg-white border-2 border-alert-red-500 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
-        >
-          <div className="flex items-start sm:items-center gap-3.5">
-            <div className="relative flex-shrink-0">
-              <div className="w-12 h-12 rounded-2xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-600">
-                <CheckCircle className="w-6 h-6" />
-              </div>
-              {/* Solid Red Dot - Red is strictly reserved for actionable alerts and past-due notifications */}
-              <span
-                id="dashboard-review-notification-dot"
-                className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-alert-red-600 rounded-full ring-2 ring-white"
-                title="Actionable alert"
-                aria-label="Actionable alert"
-              />
-            </div>
-
-            <div className="space-y-0.5 min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-alert-red-700 bg-alert-red-100/90 px-2.5 py-0.5 rounded-full">
-                  <span className="w-2 h-2 rounded-full bg-alert-red-600" />
-                  Action Required &bull; {reviewDueStatus.type === 'monthly' ? 'Monthly Retrospective' : 'Weekly Check-In'}
-                </span>
-                {reviewDueStatus.isPastDue && (
-                  <span className="text-[10px] font-bold text-alert-red-600 bg-alert-red-50 border border-alert-red-200 px-2 py-0.5 rounded-full">
-                    Past Due
-                  </span>
-                )}
-              </div>
-
-              <h3 className="text-base sm:text-lg font-black text-dark-green-950">
-                {reviewDueStatus.title}
-              </h3>
-              <p className="text-xs text-brown-700 max-w-xl">
-                {reviewDueStatus.description}
-              </p>
-            </div>
-          </div>
-
-          <button
-            id="dashboard-start-review-cta"
-            onClick={() => {
-              if (reviewDueStatus.type === 'monthly') {
-                openMonthlyRetroModal();
-              } else {
-                openWeeklyCheckInModal();
-              }
-            }}
-            className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
-          >
-            <span>{reviewDueStatus.type === 'monthly' ? 'Start Monthly Retro' : 'Complete Check-In'}</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
-        </div>
-      )}
-
+    <div className="space-y-3.5 sm:space-y-4 border-2 border-brown-900 rounded-[1.75rem] sm:rounded-[2rem] p-1 sm:p-1.5 shadow-xs ring-1 ring-brown-950/10">
       {/* Timeframe Selector & Navigation Bar */}
-      <div className="bg-white border border-beige-200/90 rounded-3xl p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        {/* Left: Timeframe Toggle (Week / Month) */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-dark-green-900 hidden md:inline">
+      <div id="dashboard-timeframe-header" className="bg-white border-2 border-brown-800/80 rounded-[1.35rem] sm:rounded-[1.5rem] p-4 sm:p-5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 w-full">
+        {/* Left: Timeframe Title & Toggle (Week / Month) */}
+        <div className="flex items-start justify-between gap-3 w-full sm:w-auto">
+          <h2 className="text-xs sm:text-sm font-extrabold text-dark-green-900 shrink-0 self-start pt-1.5">
             Timeframe:
-          </span>
-          <div className="inline-flex p-1 bg-beige-100/80 rounded-2xl border border-beige-200">
+          </h2>
+          <div className="inline-flex p-1 bg-beige-100/80 rounded-2xl border border-beige-200 ml-auto sm:ml-2">
             <button
               id="toggle-timeframe-week"
               onClick={() => {
@@ -502,18 +443,18 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
 
         {/* Center/Right: Timeframe Arrow Navigation (<, Date Range Label, >) */}
-        <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end">
-          <div className="flex items-center gap-1 bg-beige-50 border border-beige-200/80 rounded-2xl p-1">
+        <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end w-full sm:w-auto">
+          <div className="flex items-center justify-between sm:justify-center gap-1 bg-beige-50 border border-beige-200/80 rounded-2xl p-1 w-full sm:w-auto flex-1 sm:flex-initial">
             <button
               onClick={() => setTimeframeOffset((prev) => prev - 1)}
               id="nav-timeframe-prev"
               title={`Previous ${timeframeMode}`}
-              className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer"
+              className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer shrink-0"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
 
-            <div className="px-3 sm:px-4 py-1 text-center min-w-[170px] sm:min-w-[240px]">
+            <div className="px-3 sm:px-4 py-1 text-center flex-1 sm:flex-initial min-w-[170px] sm:min-w-[240px]">
               <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
                 {timeframeNavDisplay.title}
               </span>
@@ -526,7 +467,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               onClick={() => setTimeframeOffset((prev) => prev + 1)}
               id="nav-timeframe-next"
               title={`Next ${timeframeMode}`}
-              className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer"
+              className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer shrink-0"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -554,7 +495,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       {timeframeMode === 'week' && timeframeOffset < 0 && (
         <div
           id="dashboard-historical-checkin-banner"
-          className="bg-white border-2 border-sage-300 rounded-3xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
+          className="bg-white border-2 border-brown-800/80 rounded-[1.35rem] sm:rounded-[1.5rem] p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
         >
           <div className="space-y-1.5 min-w-0">
             <h3 className="text-base sm:text-lg font-black text-dark-green-950">
@@ -606,15 +547,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         </div>
       )}
 
-      {/* Executive Budget Summary Card - Compact, Low Visual Weight */}
-      <div className="bg-white border border-beige-200/80 rounded-xl p-3 sm:p-3.5 shadow-2xs space-y-2.5">
+      {/* Executive Budget Summary Card - Sage border */}
+      <div className="bg-white border-2 border-sage-300 rounded-[1.35rem] sm:rounded-[1.5rem] p-4 sm:p-5 shadow-xs space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 border-b border-beige-100 pb-1.5">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[9px] font-extrabold uppercase tracking-wider text-dark-green-800 bg-sage-100/80 px-2 py-0.5 rounded-md">
-              {timeframeMode === 'week' ? 'Weekly' : 'Monthly Normalized'}
-            </span>
             <h2 className="text-xs sm:text-sm font-extrabold text-dark-green-900">
-              {timeframeNavDisplay.title} Spending Summary
+              Spending Summary &bull; {timeframeNavDisplay.title}
             </h2>
           </div>
 
@@ -625,17 +563,17 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         </div>
 
-        {/* 3 Metric Columns - Low-Weight Streamlined */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-2.5">
-          <div className="p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5">
-            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
-              Budget Set ({timeframeMode === 'week' ? 'Weekly' : 'Monthly'})
+        {/* 3 Metric Columns - Horizontal layout */}
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5">
+          <div className="p-2 sm:p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5 min-w-0">
+            <span className="text-[8px] sm:text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block truncate">
+              Budget
             </span>
-            <div className="text-lg sm:text-xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1.5 flex-wrap">
+            <div className="text-sm sm:text-lg lg:text-xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1 sm:gap-1.5 flex-wrap">
               {hasAnyWeeklyOverride ? (
                 <>
                   <span
-                    className="line-through text-dark-grey-600/70 text-xs sm:text-sm font-semibold"
+                    className="line-through text-dark-grey-600/70 text-[10px] sm:text-xs font-semibold"
                     title={`Global Baseline: ${formatCurrency(totalWeeklyBaseline)}`}
                   >
                     {formatCurrency(totalWeeklyBaseline)}
@@ -651,58 +589,58 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                     {formatCurrency(totalTimeframeBudget)}
                   </span>
                   <span
-                    className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded border ${
+                    className={`text-[8px] sm:text-[9px] font-extrabold px-1 py-0.2 rounded border ${
                       isDepositExpansion
                         ? 'bg-sage-100 text-dark-green-900 border-sage-300'
                         : 'bg-sky-blue-100 text-sky-blue-900 border-sky-blue-300'
                     }`}
                   >
-                    {isDepositExpansion ? 'One-Time Deposit' : 'Prorated'}
+                    {isDepositExpansion ? 'Deposit' : 'Prorated'}
                   </span>
                 </>
               ) : (
                 formatCurrency(totalTimeframeBudget)
               )}
             </div>
-            <p className="text-[10px] text-brown-700 truncate">
+            <p className="text-[9px] sm:text-[10px] text-brown-700 truncate">
               {hasAnyWeeklyOverride
                 ? isDepositExpansion
-                  ? `Expanded via one-time deposit (+${formatCurrency(
+                  ? `Expanded (+${formatCurrency(
                       depositTotalThisWeek > 0
                         ? depositTotalThisWeek
                         : totalTimeframeBudget - totalWeeklyBaseline
                     )})`
-                  : `Prorated from check-in (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(
+                  : `Prorated (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(
                       totalTimeframeBudget - totalWeeklyBaseline
                     )})`
-                : `Across ${visibleCategories.length} ${timeframeMode === 'week' ? 'weekly categories' : 'categories'}`}
+                : `${visibleCategories.length} ${timeframeMode === 'week' ? 'weekly buckets' : 'buckets'}`}
             </p>
           </div>
 
-          <div className="p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5">
-            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
-              Total Logged
+          <div className="p-2 sm:p-2.5 bg-beige-50/50 border border-beige-200/60 rounded-lg space-y-0.5 min-w-0">
+            <span className="text-[8px] sm:text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block truncate">
+              Logged
             </span>
-            <div className="text-lg sm:text-xl font-black font-mono text-dark-green-900 tracking-tight">
+            <div className="text-sm sm:text-lg lg:text-xl font-black font-mono text-dark-green-900 tracking-tight">
               {formatCurrency(totalTimeframeSpent)}
             </div>
-            <p className="text-[10px] text-brown-700 truncate">
-              {overallPercentage}% of allocated budget spent
+            <p className="text-[9px] sm:text-[10px] text-brown-700 truncate">
+              {overallPercentage}% spent
             </p>
           </div>
 
           <div
-            className={`p-2.5 border rounded-lg space-y-0.5 ${
+            className={`p-2 sm:p-2.5 border rounded-lg space-y-0.5 min-w-0 ${
               isNetOverBudget
                 ? 'bg-alert-red-50/70 border-alert-red-200'
                 : 'bg-sage-50/60 border-sage-200'
             }`}
           >
-            <span className="text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block">
-              {isNetOverBudget ? 'Net Over Budget' : 'Safe Remaining'}
+            <span className="text-[8px] sm:text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block truncate">
+              {isNetOverBudget ? 'Net Over' : 'Safe Remaining'}
             </span>
             <div
-              className={`text-lg sm:text-xl font-black font-mono tracking-tight ${
+              className={`text-sm sm:text-lg lg:text-xl font-black font-mono tracking-tight ${
                 isNetOverBudget ? 'text-alert-red-600' : 'text-sage-900'
               }`}
             >
@@ -710,11 +648,6 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 ? `-${formatCurrency(Math.abs(netRemaining))}`
                 : formatCurrency(netRemaining)}
             </div>
-            <p className="text-[10px] text-brown-700 truncate">
-              {isNetOverBudget
-                ? 'Exceeded total allocated budget'
-                : 'Available before next reset'}
-            </p>
           </div>
         </div>
 
@@ -751,13 +684,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
       {/* Top-Level Budget Buckets Section (Flattened) */}
       <div className="space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-beige-200 pb-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-beige-200 pb-2 px-4 sm:px-5">
           <div>
             <h2 className="text-xl font-extrabold text-dark-green-900">
               Budget Buckets
             </h2>
             <p className="text-xs text-brown-700">
-              Top-level spending categories. Click any card to drill down into transaction history.
+              Click any card to drill down into transaction history.
             </p>
           </div>
 
@@ -766,7 +699,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               onClick={() => openAllocationModal()}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl border border-beige-300 transition cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
+              <SlidersHorizontal className="w-3.5 h-3.5" />
               <span>Add / Manage Buckets</span>
             </button>
           </div>
@@ -816,23 +749,24 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
       {/* Timeframe Recent Expenses Ledger Table / List */}
       <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
-        <div className="flex items-center justify-between border-b border-beige-100 pb-3">
-          <div>
-            <h3 className="text-base font-extrabold text-dark-green-900">
-              Transactions in Active Timeframe ({timeframeExpenses.length})
-            </h3>
-            <p className="text-xs text-brown-700">
-              {activeDateRange.label} &bull; Verified in household ledger
-            </p>
-          </div>
+        <div className="border-b border-beige-100 pb-3 space-y-1">
+          <h3 className="text-base font-extrabold text-dark-green-900">
+            Timeframe Transactions ({timeframeExpenses.length})
+          </h3>
 
-          <button
-            onClick={() => openLogExpenseModal()}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer border border-beige-300"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>Log Transaction</span>
-          </button>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-brown-700">
+              {activeDateRange.label}
+            </p>
+
+            <button
+              onClick={() => openLogExpenseModal()}
+              className="flex items-center justify-start text-left gap-1.5 px-3 py-1.5 bg-beige-100 hover:bg-dark-green-800 hover:text-white text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer border border-beige-300 flex-shrink-0"
+            >
+              <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="text-left leading-tight">Log Transaction</span>
+            </button>
+          </div>
         </div>
 
         {timeframeExpenses.length === 0 ? (
@@ -883,9 +817,16 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       </div>
 
                       <div className="flex items-center gap-2 text-[11px] text-dark-grey-600">
-                        <span>{exp.date || new Date(exp.timestamp).toLocaleDateString()}</span>
+                        <span>
+                          {(() => {
+                            const d = exp.date ? new Date(exp.date + 'T12:00:00') : new Date(exp.timestamp);
+                            return !isNaN(d.getTime())
+                              ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                              : exp.date;
+                          })()}
+                        </span>
                         <span>&bull;</span>
-                        <span>Paid by {payer?.name || 'Member'}</span>
+                        <span>{payer?.name || 'Member'}</span>
                       </div>
                     </div>
                   </div>
