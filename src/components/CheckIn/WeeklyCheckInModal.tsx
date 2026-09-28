@@ -163,6 +163,21 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     });
   }, [expenses, selectedWeekRange]);
 
+  // Filter one-off deposits for this check-in week
+  const weekDeposits = useMemo(() => {
+    const deps = household?.oneOffDeposits || [];
+    const startT = selectedWeekRange.startDate.getTime();
+    const endT = selectedWeekRange.endDate.getTime();
+    return deps.filter((dep) => {
+      const depTime = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : '')).getTime();
+      return depTime >= startT && depTime <= endT;
+    });
+  }, [household?.oneOffDeposits, selectedWeekRange]);
+
+  const totalDepositsThisWeek = useMemo(() => {
+    return weekDeposits.reduce((sum, dep) => sum + (Number(dep.amount) || 0), 0);
+  }, [weekDeposits]);
+
   // Calculate remaining weeks in month relative to selected week
   const targetRemainingWeeks = useMemo(() => {
     if (isHistoricalWeek) {
@@ -196,23 +211,28 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   }, [savingsCategories]);
 
   // Derive "This week" Savings budget strictly from weeklyOverrides map (e.g. expanded by one-off deposits)
-  // or fall back to global baseline budget ($550).
+  // or fall back to global baseline budget ($550) + one-off deposits for this week.
   const thisWeekSavingsTarget = useMemo(() => {
+    let target = baselineSavingsTarget + totalDepositsThisWeek;
     if (activeWeekId && household?.weeklyOverrides && household.weeklyOverrides[activeWeekId]) {
       const weekOverrides = household.weeklyOverrides[activeWeekId];
+      let overrideSavings: number | undefined;
       if (weekOverrides.savings !== undefined && weekOverrides.savings !== null && !isNaN(Number(weekOverrides.savings))) {
-        return Number(weekOverrides.savings);
+        overrideSavings = Number(weekOverrides.savings);
+      } else {
+        const savingsCat = savingsCategories.find(isSavingsCategory);
+        if (savingsCat && weekOverrides[savingsCat.id] !== undefined && !isNaN(Number(weekOverrides[savingsCat.id]))) {
+          overrideSavings = Number(weekOverrides[savingsCat.id]);
+        } else if (weekOverrides['cat_savings'] !== undefined && !isNaN(Number(weekOverrides['cat_savings']))) {
+          overrideSavings = Number(weekOverrides['cat_savings']);
+        }
       }
-      const savingsCat = savingsCategories.find(isSavingsCategory);
-      if (savingsCat && weekOverrides[savingsCat.id] !== undefined && !isNaN(Number(weekOverrides[savingsCat.id]))) {
-        return Number(weekOverrides[savingsCat.id]);
-      }
-      if (weekOverrides['cat_savings'] !== undefined && !isNaN(Number(weekOverrides['cat_savings']))) {
-        return Number(weekOverrides['cat_savings']);
+      if (overrideSavings !== undefined) {
+        target = Math.max(overrideSavings, baselineSavingsTarget + totalDepositsThisWeek);
       }
     }
-    return baselineSavingsTarget;
-  }, [activeWeekId, household?.weeklyOverrides, baselineSavingsTarget, savingsCategories]);
+    return target;
+  }, [activeWeekId, household?.weeklyOverrides, baselineSavingsTarget, savingsCategories, totalDepositsThisWeek]);
 
   // Dynamic Pacing Calculations for Step 2
   const categoryPacings = useMemo(() => {
@@ -843,59 +863,151 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               )}
 
               {/* Transactions List */}
-              {weekExpenses.length === 0 ? (
+              {weekExpenses.length === 0 && weekDeposits.length === 0 ? (
                 <div className="p-8 text-center bg-beige-50/50 border border-dashed border-beige-200 rounded-2xl space-y-2">
                   <Receipt className="w-8 h-8 mx-auto text-brown-700" />
                   <h4 className="text-sm font-bold text-dark-green-900">
                     No transactions logged for this week
                   </h4>
                   <p className="text-xs text-brown-700 max-w-sm mx-auto">
-                    If you spent money on groceries, bills, or dining, log them now before calculating your rollover budgets.
+                    If you spent money on groceries, bills, or dining, or received income deposits, log them now before calculating your rollover budgets.
                   </p>
                 </div>
               ) : (
-                <div className="border border-beige-200 rounded-2xl overflow-hidden divide-y divide-beige-100 max-h-72 overflow-y-auto">
-                  {weekExpenses.map((exp) => {
-                    const cat = categories.find((c) => c.id === exp.categoryId);
-                    const payer = members.find((m) => m.userId === exp.loggedByUserId);
-
-                    return (
-                      <div
-                        key={exp.id}
-                        className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-beige-50/50 transition"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
-                            <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-dark-green-900 truncate">
-                                {exp.description}
-                              </span>
-                              <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-1.5 py-0.2 rounded">
-                                {cat?.name || 'Uncategorized'}
-                              </span>
-                            </div>
-                            <span className="text-[10px] text-dark-grey-600 block">
-                              {exp.date} &bull; Paid by {payer?.name || 'Member'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <span className="text-xs font-black text-dark-green-900">
-                          {formatCurrency(exp.amount)}
+                <div className="space-y-3.5">
+                  {/* One-Off Deposits / Inflows Section */}
+                  {weekDeposits.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-black uppercase tracking-wider text-sage-900 bg-sage-100 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 border border-sage-300">
+                          <DollarSign className="w-3.5 h-3.5 text-sage-700" />
+                          One-Off Deposits & Inflows ({weekDeposits.length})
+                        </span>
+                        <span className="text-xs font-black text-sage-800">
+                          +{formatCurrency(totalDepositsThisWeek)}
                         </span>
                       </div>
-                    );
-                  })}
+
+                      <div className="border border-sage-200 rounded-2xl overflow-hidden divide-y divide-sage-100 bg-sage-50/40">
+                        {weekDeposits.map((dep) => {
+                          const payer = members.find((m) => m.userId === dep.payerMemberId);
+
+                          return (
+                            <div
+                              key={dep.id}
+                              className="p-3 bg-white/80 flex items-center justify-between gap-3 hover:bg-sage-50/70 transition"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 text-dark-green-900 flex items-center justify-center shrink-0">
+                                  <DollarSign className="w-4 h-4 text-dark-green-800" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-dark-green-900 truncate">
+                                      {dep.description || 'One-Off Deposit'}
+                                    </span>
+                                    <span className="text-[10px] font-semibold text-sage-900 bg-sage-200 px-1.5 py-0.2 rounded">
+                                      Deposit / Inflow
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-dark-grey-600 block">
+                                    {dep.date} &bull; Contributed by {payer?.name || 'Household'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <span className="text-xs font-black text-sage-800">
+                                +{formatCurrency(dep.amount)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Expenses Section */}
+                  {weekExpenses.length > 0 ? (
+                    <div className="space-y-2">
+                      {weekDeposits.length > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-black uppercase tracking-wider text-brown-900 bg-beige-100 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1.5 border border-beige-300">
+                            <Receipt className="w-3.5 h-3.5 text-brown-700" />
+                            Logged Expenses ({weekExpenses.length})
+                          </span>
+                          <span className="text-xs font-black text-dark-green-900">
+                            {formatCurrency(totalSpent)}
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="border border-beige-200 rounded-2xl overflow-hidden divide-y divide-beige-100 max-h-72 overflow-y-auto">
+                        {weekExpenses.map((exp) => {
+                          const cat = categories.find((c) => c.id === exp.categoryId);
+                          const payer = members.find((m) => m.userId === exp.loggedByUserId);
+
+                          return (
+                            <div
+                              key={exp.id}
+                              className="p-3 bg-white flex items-center justify-between gap-3 hover:bg-beige-50/50 transition"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-8 h-8 rounded-xl bg-beige-100 border border-beige-200 flex items-center justify-center flex-shrink-0">
+                                  <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold text-dark-green-900 truncate">
+                                      {exp.description}
+                                    </span>
+                                    <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-1.5 py-0.2 rounded">
+                                      {cat?.name || 'Uncategorized'}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-dark-grey-600 block">
+                                    {exp.date} &bull; Paid by {payer?.name || 'Member'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <span className="text-xs font-black text-dark-green-900">
+                                {formatCurrency(exp.amount)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ) : weekDeposits.length > 0 && (
+                    <div className="p-4 text-center bg-beige-50/40 border border-dashed border-beige-200 rounded-2xl">
+                      <span className="text-xs text-dark-grey-600 font-medium">
+                        No expenses logged for this week ({weekDeposits.length} deposit recorded).
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
 
               {/* Total Logged Summary Bar */}
-              <div className="p-3.5 bg-beige-100/70 rounded-2xl flex items-center justify-between text-xs font-bold text-dark-green-900">
-                <span>Total Logged This Week ({weekExpenses.length} items):</span>
-                <span className="text-sm font-black">{formatCurrency(totalSpent)}</span>
+              <div className="p-3.5 bg-beige-100/70 rounded-2xl flex items-center justify-between text-xs font-bold text-dark-green-900 flex-wrap gap-2">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span>
+                    Spent: <strong className="font-black text-dark-green-950">{formatCurrency(totalSpent)}</strong> ({weekExpenses.length} items)
+                  </span>
+                  {totalDepositsThisWeek > 0 && (
+                    <>
+                      <span>&bull;</span>
+                      <span className="text-sage-800">
+                        Deposits: <strong className="font-black">+{formatCurrency(totalDepositsThisWeek)}</strong> ({weekDeposits.length} items)
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="font-mono text-xs">
+                  Net Cash: <strong className={totalDepositsThisWeek >= totalSpent ? 'text-sage-800' : 'text-alert-red-600'}>
+                    {totalDepositsThisWeek >= totalSpent ? '+' : ''}{formatCurrency(totalDepositsThisWeek - totalSpent)}
+                  </strong>
+                </div>
               </div>
             </div>
           )}
@@ -1129,6 +1241,15 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                             <Sparkles className="w-3 h-3 text-sage-600 shrink-0" />
                             <span>
                               Expanded budget: <strong>+{formatCurrency(savingsExpandedBonus)}</strong> bonus from Transfer Pot
+                            </span>
+                          </div>
+                        )}
+
+                        {totalDepositsThisWeek > 0 && (
+                          <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
+                            <DollarSign className="w-3 h-3 text-dark-green-800 shrink-0" />
+                            <span>
+                              Includes <strong>+{formatCurrency(totalDepositsThisWeek)}</strong> from {weekDeposits.length} one-off deposit{weekDeposits.length > 1 ? 's' : ''} received this week
                             </span>
                           </div>
                         )}
@@ -1683,12 +1804,15 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                   {savingsSavedThisWeek >= savingsBudgetThisWeek ? (
                     <span>
                       🎉 <strong>Savings Goal Secured:</strong> You have banked{' '}
-                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into your savings pot this week (including a {formatCurrency(savingsExpandedBonus)} transfer pot surplus expansion).
+                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into your savings pot this week
+                      {totalDepositsThisWeek > 0 ? ` (including +${formatCurrency(totalDepositsThisWeek)} from one-off deposits)` : ''}
+                      {savingsExpandedBonus > 0 ? ` with a +${formatCurrency(savingsExpandedBonus)} transfer pot surplus expansion` : ''}.
                     </span>
                   ) : (
                     <span>
                       ⚠️ <strong>Savings Adjusted:</strong> You deposited{' '}
-                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into savings after covering {formatCurrency(totalSavingsPulledForDeficits)} in category overspends.
+                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into savings after covering {formatCurrency(totalSavingsPulledForDeficits)} in category overspends
+                      {totalDepositsThisWeek > 0 ? ` (including +${formatCurrency(totalDepositsThisWeek)} from one-off deposits)` : ''}.
                     </span>
                   )}
                 </p>
