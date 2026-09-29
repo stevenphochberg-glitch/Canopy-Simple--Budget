@@ -180,7 +180,7 @@ export const ShortcutBar: React.FC = () => {
               <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-1 sm:pt-0 pl-12 sm:pl-0">
                 <button
                   id="dashboard-start-review-cta"
-                  onClick={() => openWeeklyCheckInModal()}
+                  onClick={() => openWeeklyCheckInModal(oldestPastDueWeek ? oldestPastDueWeek.range : undefined)}
                   className="flex items-center justify-start text-left gap-1.5 px-4 py-2 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
                 >
                   <span>Complete Check-In</span>

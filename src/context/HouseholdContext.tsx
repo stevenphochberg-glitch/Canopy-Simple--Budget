@@ -164,7 +164,8 @@ export interface HouseholdContextType {
 
   // CheckIn & Retrospective modals
   isWeeklyCheckInModalOpen: boolean;
-  openWeeklyCheckInModal: () => void;
+  weeklyCheckInTargetRange: DateRange | null;
+  openWeeklyCheckInModal: (targetRange?: DateRange | null) => void;
   closeWeeklyCheckInModal: () => void;
   isMonthlyRetroModalOpen: boolean;
   openMonthlyRetroModal: () => void;
@@ -354,11 +355,18 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // CheckIn & Retrospective Modals State
   const [isWeeklyCheckInModalOpen, setIsWeeklyCheckInModalOpen] = useState<boolean>(false);
+  const [weeklyCheckInTargetRange, setWeeklyCheckInTargetRange] = useState<DateRange | null>(null);
   const [isMonthlyRetroModalOpen, setIsMonthlyRetroModalOpen] = useState<boolean>(false);
   const [isAllocationModalOpen, setIsAllocationModalOpen] = useState<boolean>(false);
 
-  const openWeeklyCheckInModal = () => setIsWeeklyCheckInModalOpen(true);
-  const closeWeeklyCheckInModal = () => setIsWeeklyCheckInModalOpen(false);
+  const openWeeklyCheckInModal = (targetRange?: DateRange | null) => {
+    setWeeklyCheckInTargetRange(targetRange || null);
+    setIsWeeklyCheckInModalOpen(true);
+  };
+  const closeWeeklyCheckInModal = () => {
+    setIsWeeklyCheckInModalOpen(false);
+    setWeeklyCheckInTargetRange(null);
+  };
   const openMonthlyRetroModal = () => setIsMonthlyRetroModalOpen(true);
   const closeMonthlyRetroModal = () => setIsMonthlyRetroModalOpen(false);
   const openAllocationModal = () => setIsAllocationModalOpen(true);
@@ -3536,6 +3544,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         deleteTag,
 
         isWeeklyCheckInModalOpen,
+        weeklyCheckInTargetRange,
         openWeeklyCheckInModal,
         closeWeeklyCheckInModal,
         isMonthlyRetroModalOpen,

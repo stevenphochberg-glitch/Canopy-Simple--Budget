@@ -59,6 +59,20 @@ export const CheckInReviewModal: React.FC<CheckInReviewModalProps> = ({
   const totalSpent = Number(checkIn.totalSpent) || 0;
   const totalBudget = Number(checkIn.totalBudget) || 0;
 
+  const formatDateWithoutYear = (dateStr?: string) => {
+    if (!dateStr) return '';
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    const date = new Date(dateStr);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+    return dateStr;
+  };
+
   return (
     <div
       id="checkin-review-modal"
@@ -72,17 +86,17 @@ export const CheckInReviewModal: React.FC<CheckInReviewModalProps> = ({
               <CheckCircle2 className="w-5 h-5 text-sage-700" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <h2 className="text-xl font-extrabold text-dark-green-900">
+                Check-In Review
+              </h2>
+              <div className="flex items-center gap-2 mt-0.5">
                 <span className="text-[10px] font-bold uppercase tracking-wider text-sage-800 bg-sage-100 px-2.5 py-0.5 rounded-full">
-                  Read-Only Summary
+                  Read-Only
                 </span>
                 <span className="text-xs text-dark-grey-600">
-                  {checkIn.weekStartDate} – {checkIn.weekEndDate}
+                  {formatDateWithoutYear(checkIn.weekStartDate)} – {formatDateWithoutYear(checkIn.weekEndDate)}
                 </span>
               </div>
-              <h2 className="text-xl font-extrabold text-dark-green-900 mt-0.5">
-                Weekly Check-In Review
-              </h2>
             </div>
           </div>
 
@@ -98,40 +112,28 @@ export const CheckInReviewModal: React.FC<CheckInReviewModalProps> = ({
         {/* Content Body */}
         <div className="p-6 overflow-y-auto space-y-6 flex-1">
           {/* Hero Metrics Card */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="bg-beige-50/80 border border-beige-200 rounded-2xl p-4 text-center">
-              <span className="text-[11px] font-bold text-brown-700 uppercase tracking-wider block">
-                Total Spent
+          <div className="grid grid-cols-2 gap-2 sm:gap-3">
+            <div className="bg-beige-50/80 border border-beige-200 rounded-2xl p-3 sm:p-4 text-center min-w-0">
+              <span className="text-[10px] sm:text-[11px] font-bold text-brown-700 uppercase tracking-wider block truncate">
+                SPENT
               </span>
-              <span className="text-xl font-black text-dark-green-900 mt-0.5 block">
+              <span className="text-base sm:text-xl font-black text-dark-green-900 mt-0.5 block truncate">
                 {formatCurrency(totalSpent)}
               </span>
-              <span className="text-[10px] text-dark-grey-600 mt-1 block">
+              <span className="text-[9px] sm:text-[10px] text-dark-grey-600 mt-1 block truncate">
                 of {formatCurrency(totalBudget)} budget
               </span>
             </div>
 
-            <div className="bg-sage-50/80 border border-sage-200 rounded-2xl p-4 text-center">
-              <span className="text-[11px] font-bold text-sage-800 uppercase tracking-wider block">
-                Banked to Savings
+            <div className="bg-sage-50/80 border border-sage-200 rounded-2xl p-3 sm:p-4 text-center min-w-0">
+              <span className="text-[10px] sm:text-[11px] font-bold text-sage-800 uppercase tracking-wider block truncate">
+                SAVINGS
               </span>
-              <span className="text-xl font-black text-dark-green-900 mt-0.5 block">
+              <span className="text-base sm:text-xl font-black text-dark-green-900 mt-0.5 block truncate">
                 +{formatCurrency(totalSaved)}
               </span>
-              <span className="text-[10px] text-sage-700 mt-1 block">
-                protected & added
-              </span>
-            </div>
-
-            <div className="bg-sage-50/80 border border-sage-200 rounded-2xl p-4 text-center">
-              <span className="text-[11px] font-bold text-sage-800 uppercase tracking-wider block">
-                Completed By
-              </span>
-              <span className="text-sm font-bold text-dark-green-900 mt-1 truncate block">
-                {checkIn.completedByName || 'Household'}
-              </span>
-              <span className="text-[10px] text-dark-grey-600 mt-1 block">
-                {checkIn.timestamp ? new Date(checkIn.timestamp).toLocaleDateString() : 'Recorded'}
+              <span className="text-[9px] sm:text-[10px] text-sage-700 mt-1 block truncate">
+                banked
               </span>
             </div>
           </div>
@@ -150,18 +152,23 @@ export const CheckInReviewModal: React.FC<CheckInReviewModalProps> = ({
                 {checkIn.decisions.map((dec, idx) => {
                   const isUnderspent = dec.difference > 0;
                   const isOverspent = dec.difference < 0;
+                  const isSavings = dec.categoryName?.toLowerCase().includes('savings') || dec.categoryId === 'cat_savings';
 
-                  let choiceBadge = 'On Budget';
+                  let choiceBadge: string | null = 'On Budget';
                   let choiceClass = 'bg-beige-100 text-brown-800 border-beige-200';
 
-                  if (dec.choice === 'savings') {
-                    choiceBadge = `+$${dec.savingsContribution || dec.difference} to Savings`;
+                  if (isSavings) {
+                    choiceBadge = null;
+                  } else if (dec.choice === 'savings') {
+                    const contrib = Number(dec.savingsContribution || dec.difference).toFixed(2);
+                    choiceBadge = `+$${contrib} to Savings`;
                     choiceClass = 'bg-sage-100 text-dark-green-900 border-sage-300';
                   } else if (dec.choice === 'rollover') {
                     choiceBadge = 'Prorated to Remaining Weeks';
                     choiceClass = 'bg-sky-blue-100 text-sky-blue-900 border-sky-blue-300';
                   } else if (dec.choice === 'deduct_savings') {
-                    choiceBadge = `Deducted from Savings (-$${dec.savingsDeduction || Math.abs(dec.difference)})`;
+                    const deduction = Number(dec.savingsDeduction || Math.abs(dec.difference)).toFixed(2);
+                    choiceBadge = `Covered by Savings (-$${deduction})`;
                     choiceClass = 'bg-gold-100 text-gold-900 border-gold-300';
                   } else if (dec.choice === 'reduce_future') {
                     choiceBadge = 'Reduced Future Weekly Budgets';
@@ -173,38 +180,53 @@ export const CheckInReviewModal: React.FC<CheckInReviewModalProps> = ({
                       key={idx}
                       className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 hover:bg-beige-50/40 transition"
                     >
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-2">
+                      <div className="space-y-1">
+                        <div>
                           <span className="text-xs font-bold text-dark-green-900">
                             {dec.categoryName}
                           </span>
-                          <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${choiceClass}`}
-                          >
-                            {choiceBadge}
-                          </span>
                         </div>
                         <div className="flex items-center gap-3 text-[11px] text-dark-grey-600">
-                          <span>Budget: {formatCurrency(dec.budget)}</span>
+                          <span>
+                            {isSavings ? 'Goal' : 'Budget'}: {formatCurrency(dec.budget)}
+                          </span>
                           <span>&bull;</span>
-                          <span>Spent: {formatCurrency(dec.spent)}</span>
+                          <span>
+                            {isSavings ? 'Banked' : 'Spent'}: {formatCurrency(dec.spent)}
+                          </span>
                           <span>&bull;</span>
                           <span
                             className={
                               isUnderspent
                                 ? 'text-sage-800 font-bold'
                                 : isOverspent
-                                ? 'text-alert-red-600 font-bold'
+                                ? isSavings
+                                  ? 'text-brown-900 font-bold'
+                                  : 'text-alert-red-600 font-bold'
                                 : 'text-brown-700'
                             }
                           >
                             {isUnderspent
                               ? `+${formatCurrency(dec.difference)} surplus`
                               : isOverspent
-                              ? `-${formatCurrency(Math.abs(dec.difference))} deficit`
+                              ? isSavings
+                                ? `-${formatCurrency(Math.abs(dec.difference))} missed`
+                                : `-${formatCurrency(Math.abs(dec.difference))} deficit`
                               : 'Balanced'}
                           </span>
                         </div>
+
+                        {choiceBadge && (
+                          <div className="pt-0.5">
+                            <span
+                              title="Action"
+                              className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border ${choiceClass}`}
+                            >
+                              <ArrowRight className="w-3 h-3 shrink-0" />
+                              <span>{choiceBadge}</span>
+                            </span>
+                          </div>
+                        )}
                       </div>
 
                       {dec.newWeeklyBudget !== undefined && dec.newWeeklyBudget !== dec.previousWeeklyBudget && (

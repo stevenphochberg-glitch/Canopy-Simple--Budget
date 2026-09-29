@@ -61,6 +61,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     members,
     user,
     checkIns,
+    weeklyCheckInTargetRange,
     completeWeeklyCheckIn,
     addExpense,
     showToast,
@@ -102,11 +103,14 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
 
   // Selected week range for check-in: allows historical navigation
   const [selectedWeekRange, setSelectedWeekRange] = useState<DateRange>(() => {
-    if (timeframeMode === 'week' && timeframeOffset < 0) {
-      return activeDateRange;
+    if (weeklyCheckInTargetRange) {
+      return weeklyCheckInTargetRange;
     }
     if (oldestPastDueWeek) {
       return oldestPastDueWeek.range;
+    }
+    if (timeframeMode === 'week' && timeframeOffset < 0) {
+      return activeDateRange;
     }
     return statusInfo.activeWeekRange;
   });
@@ -114,10 +118,12 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   // Whenever modal opens or activeDateRange changes, sync selectedWeekRange
   useEffect(() => {
     if (isOpen) {
-      if (timeframeMode === 'week' && timeframeOffset < 0) {
-        setSelectedWeekRange(activeDateRange);
+      if (weeklyCheckInTargetRange) {
+        setSelectedWeekRange(weeklyCheckInTargetRange);
       } else if (oldestPastDueWeek) {
         setSelectedWeekRange(oldestPastDueWeek.range);
+      } else if (timeframeMode === 'week' && timeframeOffset < 0) {
+        setSelectedWeekRange(activeDateRange);
       } else {
         setSelectedWeekRange(statusInfo.activeWeekRange);
       }
@@ -126,7 +132,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       setUnderspendChoices({});
       setOverspendInputs({});
     }
-  }, [isOpen, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange, oldestPastDueWeek]);
+  }, [isOpen, weeklyCheckInTargetRange, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange, oldestPastDueWeek]);
 
   // Navigate week forward or backward directly inside modal
   const navigateModalWeek = (direction: -1 | 1) => {

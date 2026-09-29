@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { Category, CategoryGroup } from '../../types';
+import { Category, CategoryGroup, Expense, OneOffDeposit } from '../../types';
 import {
   formatCurrency,
   getCategoryBudgetForTimeframe,
@@ -40,6 +40,7 @@ import {
   X,
   PiggyBank,
   ShieldCheck,
+  MessageSquare,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -67,12 +68,14 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     deleteExpense,
     deleteWeeklyCheckIn,
     updateCheckIn,
+    deleteDeposit,
     showToast,
   } = useHousehold();
 
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
+  const [areAllCardsExpanded, setAreAllCardsExpanded] = useState(false);
 
   // Interception Modal State for Post-Check-In Transactions (Directive 1 & 2)
   const [impactModalState, setImpactModalState] = useState<{
@@ -175,6 +178,26 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     );
   }, [timeframeMode, timeframeOffset, activeDateRange, checkIns]);
 
+  const historicalSavingsDeducted = useMemo(() => {
+    if (!historicalCheckIn?.decisions) return 0;
+    return historicalCheckIn.decisions.reduce((sum, d) => {
+      const deduction = Number(d.savingsDeduction) || (d.choice === 'deduct_savings' ? Math.abs(d.difference) : 0);
+      return sum + deduction;
+    }, 0);
+  }, [historicalCheckIn]);
+
+  const historicalDeposits = useMemo(() => {
+    if (!historicalCheckIn) return [];
+    return (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
+    });
+  }, [household?.oneOffDeposits, activeDateRange, historicalCheckIn]);
+
+  const historicalDepositTotal = useMemo(() => {
+    return historicalDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+  }, [historicalDeposits]);
+
   // Helper to identify Bills categories
   const isBillsCategory = (c: { group?: string; name?: string; id?: string }) =>
     c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills' || c.id === 'cat_bills';
@@ -198,17 +221,33 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     return visibleCategories.reduce((sum, c) => sum + (Number(c.baselineBudget) || 0), 0);
   }, [visibleCategories]);
 
+  // Check for one-time deposits in the active week / timeframe
+  const depositsThisWeek = useMemo(() => {
+    return (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
+    });
+  }, [household?.oneOffDeposits, activeDateRange]);
+
+  const depositTotalThisWeek = useMemo(() => {
+    return depositsThisWeek.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+  }, [depositsThisWeek]);
+
   // 3. Executive Overview Spending Summary Calculations:
-  // - Week View: Budget Set sums only weekly allocations of Essentials, Fun Money, and Savings (non-Bills), resolving weeklyOverrides[activeWeekId] if present.
-  // - Month View: Total Monthly Budget is a statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month).
+  // - Week View: Budget Set sums weekly allocations of Essentials, Fun Money, and Savings (non-Bills), plus any one-time deposit expansion.
+  // - Month View: Total Monthly Budget is a statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month) + one-time deposits.
   const { totalTimeframeBudget, hasAnyWeeklyOverride } = useMemo(() => {
     if (timeframeMode === 'week') {
       let sum = 0;
       let overridePresent = false;
       visibleCategories.forEach((c) => {
         const { budget, isOverridden } = getCategoryEffectiveWeeklyBudget(c, activeWeekId, household);
-        sum += budget;
-        if (isOverridden) {
+        const isSavings = c.type === 'savings' || c.group?.toLowerCase() === 'savings';
+        const effective = isSavings
+          ? Math.max(budget, (Number(c.baselineBudget) || 0) + depositTotalThisWeek)
+          : budget;
+        sum += effective;
+        if (isOverridden || (isSavings && depositTotalThisWeek > 0)) {
           overridePresent = true;
         }
       });
@@ -219,8 +258,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       (sum, c) => sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth),
       0
     );
-    return { totalTimeframeBudget: monthSum, hasAnyWeeklyOverride: false };
-  }, [timeframeMode, visibleCategories, categories, weeksInFiscalMonth, activeWeekId, household]);
+    return {
+      totalTimeframeBudget: monthSum + depositTotalThisWeek,
+      hasAnyWeeklyOverride: depositTotalThisWeek > 0,
+    };
+  }, [timeframeMode, visibleCategories, categories, weeksInFiscalMonth, activeWeekId, household, depositTotalThisWeek]);
 
   // Total spent in active timeframe:
   // In Week View, completely exclude Bills transactions from calculations.
@@ -262,25 +304,33 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   const isCurrentTimeframe = timeframeOffset === 0;
 
-  // Check for one-time deposits in the active week
-  const depositsThisWeek = useMemo(() => {
-    if (timeframeMode !== 'week') return [];
-    return (household?.oneOffDeposits || []).filter((dep) => {
-      const depDate = new Date(dep.date + 'T12:00:00');
-      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
-    });
-  }, [timeframeMode, household?.oneOffDeposits, activeDateRange]);
+  // Unified timeframe transactions list (combining expenses and one-time deposits)
+  const unifiedTimeframeTransactions = useMemo(() => {
+    const list: Array<
+      | { type: 'expense'; data: Expense; date: Date; id: string }
+      | { type: 'deposit'; data: OneOffDeposit; date: Date; id: string }
+    > = [];
 
-  const depositTotalThisWeek = useMemo(() => {
-    return depositsThisWeek.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
-  }, [depositsThisWeek]);
+    timeframeExpenses.forEach((exp) => {
+      const d = exp.date ? new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : '')) : new Date(exp.timestamp);
+      list.push({ type: 'expense', data: exp, date: d, id: exp.id });
+    });
+
+    depositsThisWeek.forEach((dep) => {
+      const d = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      list.push({ type: 'deposit', data: dep, date: d, id: dep.id });
+    });
+
+    list.sort((a, b) => b.date.getTime() - a.date.getTime());
+    return list;
+  }, [timeframeExpenses, depositsThisWeek]);
 
   const isDepositExpansion = useMemo(() => {
-    if (!hasAnyWeeklyOverride) return false;
     if (depositTotalThisWeek > 0) return true;
+    if (!hasAnyWeeklyOverride) return false;
     const activeWeekStartStr = formatLocalDate(activeDateRange.startDate);
     const hasMatchingDeposit = (household?.oneOffDeposits || []).some((dep) => {
-      const depDate = new Date(dep.date + 'T12:00:00');
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
       const targetRange = getWeekRange(depDate, household?.firstDayOfWeek || 'Monday', 0);
       return formatLocalDate(targetRange.startDate) === activeWeekStartStr;
     });
@@ -497,30 +547,88 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           id="dashboard-historical-checkin-banner"
           className="bg-white border-2 border-brown-800/80 rounded-[1.35rem] sm:rounded-[1.5rem] p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative overflow-hidden"
         >
-          <div className="space-y-1.5 min-w-0">
-            <h3 className="text-base sm:text-lg font-black text-dark-green-950">
-              {historicalCheckIn ? 'Past Weekly Check-In Recorded' : 'Execute Historical Weekly Check-In'}
-            </h3>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-dark-green-900 bg-sage-100 px-2.5 py-0.5 rounded-full">
-                Historical Week &bull; {timeframeNavDisplay.title}
-              </span>
+          <div className="space-y-2 min-w-0 flex-1">
+            <div className="flex items-center gap-2.5 flex-nowrap">
+              <h3 className="text-base sm:text-lg font-black text-dark-green-950 whitespace-nowrap">
+                {historicalCheckIn ? `W${fiscalTracker.weekOfFiscalYear} Check-in Details` : `Execute W${fiscalTracker.weekOfFiscalYear} Weekly Check-In`}
+              </h3>
               {historicalCheckIn ? (
-                <span className="text-[12px] font-black text-dark-green-900 bg-sage-100 border border-sage-300 px-3 py-1 rounded-full flex items-center gap-1.5 font-mono">
+                <span className="text-[12px] font-black text-dark-green-900 bg-sage-100 border border-sage-300 px-3 py-1 rounded-full inline-flex items-center gap-1.5 shrink-0 whitespace-nowrap">
                   <CheckCircle2 className="w-4 h-4 text-dark-green-700 shrink-0" />
-                  <span>{formatCurrency(historicalCheckIn.totalSaved)} saved</span>
+                  <span>complete</span>
                 </span>
               ) : (
-                <span className="text-[10px] font-extrabold text-brown-900 bg-brown-100 border border-brown-300 px-2.5 py-0.5 rounded-full">
+                <span className="text-[10px] font-extrabold text-brown-900 bg-brown-100 border border-brown-300 px-2.5 py-0.5 rounded-full shrink-0 whitespace-nowrap">
                   Check-In Not Yet Executed
                 </span>
               )}
             </div>
-            <p className="text-xs text-brown-700 max-w-xl">
-              {historicalCheckIn
-                ? `Weekly check-in recorded for ${timeframeNavDisplay.title}. You can review the breakdown and reflection notes at any time.`
-                : `Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for ${timeframeNavDisplay.title}.`}
-            </p>
+
+            {historicalCheckIn ? (
+              <div className="flex flex-col lg:flex-row items-stretch gap-2.5 max-w-4xl">
+                <div className="flex-1 min-w-0 flex items-start gap-2 bg-beige-50/80 border border-beige-200/90 rounded-xl p-2.5 text-xs text-brown-900">
+                  {historicalSavingsDeducted > 0 ? (
+                    <>
+                      <svg
+                        className="w-3.5 h-3.5 shrink-0 mt-0.5"
+                        viewBox="0 0 24 24"
+                        fill="#F5EFEB"
+                        stroke="#8C6239"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                        <line x1="12" y1="9" x2="12" y2="13" stroke="#8C6239" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
+                      </svg>
+                      <div className="space-y-0.5 min-w-0">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-brown-700 block">
+                          SAVINGS ADJUSTED:
+                        </span>
+                        <p className="text-brown-800 text-xs leading-relaxed">
+                          You deposited{' '}
+                          <strong>{formatCurrency(historicalCheckIn.totalSaved || 0)}</strong> into savings after covering {formatCurrency(historicalSavingsDeducted)} in category overspends
+                          {historicalDepositTotal > 0 ? ` (including +${formatCurrency(historicalDepositTotal)} from one-off deposits)` : ''}.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5 text-sage-700 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5 min-w-0">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-brown-700 block">
+                          SAVINGS GOAL SECURED:
+                        </span>
+                        <p className="text-brown-800 text-xs leading-relaxed">
+                          You have banked{' '}
+                          <strong>{formatCurrency(historicalCheckIn.totalSaved || 0)}</strong> into your savings pot this week
+                          {historicalDepositTotal > 0 ? ` (including +${formatCurrency(historicalDepositTotal)} from one-off deposits)` : ''}.
+                        </p>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {historicalCheckIn.notes && (
+                  <div className="flex-1 min-w-0 flex items-start gap-2 bg-beige-50/80 border border-beige-200/90 rounded-xl p-2.5 text-xs text-brown-900">
+                    <MessageSquare className="w-3.5 h-3.5 text-sage-700 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5 min-w-0">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-brown-700 block">
+                        Check-In Comments:
+                      </span>
+                      <p className="italic text-brown-800 text-xs leading-relaxed">
+                        "{historicalCheckIn.notes}"
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-brown-700 max-w-xl">
+                Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for {timeframeNavDisplay.title}.
+              </p>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5 flex-wrap sm:flex-nowrap">
@@ -558,7 +666,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
           <div className="flex items-center gap-2">
             <span className="text-[10px] text-brown-700 font-medium">
-              {timeframeExpenses.length} {timeframeExpenses.length === 1 ? 'transaction' : 'transactions'}
+              {unifiedTimeframeTransactions.length} {unifiedTimeframeTransactions.length === 1 ? 'transaction' : 'transactions'}
             </span>
           </div>
         </div>
@@ -637,7 +745,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             }`}
           >
             <span className="text-[8px] sm:text-[9px] uppercase font-bold tracking-wider text-dark-grey-600 block truncate">
-              {isNetOverBudget ? 'Net Over' : 'Safe Remaining'}
+              {isNetOverBudget ? 'Net Over' : historicalCheckIn ? 'Banked Savings' : 'Safe Remaining'}
             </span>
             <div
               className={`text-sm sm:text-lg lg:text-xl font-black font-mono tracking-tight ${
@@ -646,7 +754,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             >
               {isNetOverBudget
                 ? `-${formatCurrency(Math.abs(netRemaining))}`
-                : formatCurrency(netRemaining)}
+                : formatCurrency(
+                    historicalCheckIn
+                      ? (historicalCheckIn.totalSaved !== undefined
+                          ? historicalCheckIn.totalSaved
+                          : netRemaining)
+                      : netRemaining
+                  )}
             </div>
           </div>
         </div>
@@ -741,6 +855,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 timeframeMode={timeframeMode}
                 dateRange={activeDateRange}
                 onQuickLog={(category) => openLogExpenseModal(category)}
+                isExpanded={areAllCardsExpanded}
+                onToggleExpand={() => setAreAllCardsExpanded((prev) => !prev)}
               />
             ))}
           </div>
@@ -751,7 +867,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
         <div className="border-b border-beige-100 pb-3 space-y-1">
           <h3 className="text-base font-extrabold text-dark-green-900">
-            Timeframe Transactions ({timeframeExpenses.length})
+            Timeframe Transactions ({unifiedTimeframeTransactions.length})
           </h3>
 
           <div className="flex items-center justify-between gap-3">
@@ -769,7 +885,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         </div>
 
-        {timeframeExpenses.length === 0 ? (
+        {unifiedTimeframeTransactions.length === 0 ? (
           <div className="py-12 text-center space-y-3 bg-beige-50/50 rounded-2xl border border-dashed border-beige-200">
             <div className="w-12 h-12 mx-auto bg-beige-100 rounded-full flex items-center justify-center text-brown-700">
               <Receipt className="w-6 h-6" />
@@ -792,7 +908,75 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           </div>
         ) : (
           <div className="divide-y divide-beige-100">
-            {timeframeExpenses.map((exp) => {
+            {unifiedTimeframeTransactions.map((item) => {
+              if (item.type === 'deposit') {
+                const dep = item.data;
+                const payer = members.find((m) => m.userId === dep.payerMemberId);
+
+                return (
+                  <div
+                    key={dep.id}
+                    id={`deposit-card-${dep.id}`}
+                    className="py-3 sm:py-3.5 flex items-center justify-between gap-3 hover:bg-beige-50/60 px-2 rounded-xl transition bg-sage-50/30"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900 flex-shrink-0">
+                        <PiggyBank className="w-5 h-5" />
+                      </div>
+
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-dark-green-900 text-sm truncate">
+                            {dep.description || 'One-Time Deposit'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-[11px] text-dark-grey-600">
+                          <span>
+                            {item.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                          </span>
+                          <span>&bull;</span>
+                          <span>
+                            {payer?.name || dep.contributor || 'Household Deposit'}
+                          </span>
+                          {dep.notes && (
+                            <>
+                              <span>&bull;</span>
+                              <span className="truncate italic text-brown-700 max-w-[200px]">{dep.notes}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <span className="text-sm sm:text-base font-black text-dark-green-900">
+                          +{formatCurrency(dep.amount)}
+                        </span>
+                        <span className="block text-[9px] font-bold text-sage-800">
+                          Deposit
+                        </span>
+                      </div>
+
+                      <button
+                        onClick={async () => {
+                          if (deleteDeposit) {
+                            await deleteDeposit(dep.id);
+                            showToast('Deposit removed', 'info');
+                          }
+                        }}
+                        className="p-1.5 text-brown-700 hover:text-red-600 hover:bg-red-50 rounded-lg transition cursor-pointer"
+                        title="Delete deposit"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              const exp = item.data;
               const cat = categories.find((c) => c.id === exp.categoryId);
               const payer = members.find((m) => m.userId === exp.loggedByUserId);
 
@@ -819,7 +1003,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       <div className="flex items-center gap-2 text-[11px] text-dark-grey-600">
                         <span>
                           {(() => {
-                            const d = exp.date ? new Date(exp.date + 'T12:00:00') : new Date(exp.timestamp);
+                            const d = exp.date ? new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : '')) : new Date(exp.timestamp);
                             return !isNaN(d.getTime())
                               ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
                               : exp.date;

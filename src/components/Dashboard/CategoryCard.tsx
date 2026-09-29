@@ -10,7 +10,7 @@ import {
   formatLocalDate,
 } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
-import { Plus, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, ShieldCheck, PiggyBank } from 'lucide-react';
+import { Plus, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, ShieldCheck, PiggyBank, MoreHorizontal } from 'lucide-react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { BudgetProgressBar } from '../Common/BudgetProgressBar';
@@ -21,6 +21,8 @@ interface CategoryCardProps {
   timeframeMode: TimeframeMode;
   dateRange: DateRange;
   onQuickLog: (category: Category) => void;
+  isExpanded?: boolean;
+  onToggleExpand?: () => void;
 }
 
 export const CategoryCard: React.FC<CategoryCardProps> = ({
@@ -29,9 +31,30 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   timeframeMode,
   dateRange,
   onQuickLog,
+  isExpanded: propIsExpanded,
+  onToggleExpand,
 }) => {
   const { household, navigateToCategoryLedger, checkIns, categories } = useHousehold();
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [localIsExpanded, setLocalIsExpanded] = useState(false);
+  const isExpanded = propIsExpanded !== undefined ? propIsExpanded : localIsExpanded;
+
+  const handleToggleExpand = () => {
+    if (onToggleExpand) {
+      onToggleExpand();
+    } else {
+      setLocalIsExpanded((prev) => !prev);
+    }
+  };
+
+  const [coverageMode, setCoverageMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+  const [protectedMode, setProtectedMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+  const [depositMode, setDepositMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+
+  const cycleMode = (current: 'desc' | 'amount' | 'percent') => {
+    if (current === 'desc') return 'amount';
+    if (current === 'amount') return 'percent';
+    return 'desc';
+  };
 
   const isSavings = category.type === 'savings' || category.group === 'Savings';
   const categoryType = isSavings ? 'savings' : 'expense';
@@ -213,7 +236,21 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     };
   }, [isSavings, remaining, totalTransferPot, potUsedForCoverage]);
 
-  // 4. For Savings Category:
+  // 4. For overspent expense categories:
+  const { categoryTransfersCovered, categorySavingsCovered } = useMemo(() => {
+    if (isSavings || remaining >= 0) {
+      return { categoryTransfersCovered: 0, categorySavingsCovered: 0 };
+    }
+    const def = Math.abs(remaining);
+    const transfersShare = totalDeficit > 0 ? (def / totalDeficit) * potUsedForCoverage : 0;
+    const savingsShare = Math.max(0, def - transfersShare);
+    return {
+      categoryTransfersCovered: transfersShare,
+      categorySavingsCovered: savingsShare,
+    };
+  }, [isSavings, remaining, totalDeficit, potUsedForCoverage]);
+
+  // 5. For Savings Category:
   // savingsDeducted is strictly the net deficit (after Transfer Pot absorbs deficits)
   const savingsDeducted = useMemo(() => {
     if (!isSavings) return 0;
@@ -254,7 +291,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   } else if (category.group === 'Bills' || category.color === 'brown') {
     iconBg = 'bg-beige-100 text-brown-800 border-beige-300';
   } else if (isSavings) {
-    iconBg = 'bg-sage-200 text-dark-green-900 border-sage-400 shadow-xs';
+    iconBg = 'bg-dark-green-100 text-dark-green-900 border-dark-green-300';
   }
 
   return (
@@ -327,7 +364,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setIsExpanded((prev) => !prev);
+              handleToggleExpand();
             }}
             id={`toggle-metrics-${category.id}`}
             title={isExpanded ? 'Collapse budget metrics' : 'Expand budget metrics'}
@@ -355,12 +392,21 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                 </span>
                 <div className="text-base sm:text-xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1 flex-wrap">
                   {isSavings ? (
-                    <>
-                      <span>{formatCurrency(amountActuallyBanked)}</span>
-                      <span className="text-xs font-normal text-brown-700 ml-1">
-                        / {formatCurrency(targetBudget)}
-                      </span>
-                    </>
+                    hasThisWeekCheckIn ? (
+                      <>
+                        <span>{formatCurrency(amountActuallyBanked)}</span>
+                        <span className="text-xs font-normal text-brown-700 ml-1">
+                          / {formatCurrency(targetBudget)}
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span>{formatCurrency(targetBudget)}</span>
+                        <span className="text-xs font-normal text-brown-700 ml-1">
+                          allocated
+                        </span>
+                      </>
+                    )
                   ) : (
                     <>
                       <span>{formatCurrency(effectiveSpent)}</span>
@@ -397,19 +443,135 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                 </span>
                 <div className="flex items-center justify-end gap-1.5">
                   {isSavings ? (
-                    <div className="flex items-center justify-end gap-1.5 text-dark-green-900 font-semibold text-xs sm:text-sm">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-sage-700 flex-shrink-0" />
-                      <span>{formatCurrency(amountActuallyBanked)} Banked</span>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
+                        {hasThisWeekCheckIn ? (
+                          <>
+                            <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
+                            <span>{formatCurrency(amountActuallyBanked)} Banked</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg
+                              className="w-3.5 h-3.5 text-sage-600 shrink-0"
+                              viewBox="0 0 24 24"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="2"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            >
+                              <rect x="2" y="5" width="20" height="14" rx="7" />
+                              <circle cx="8" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                              <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                              <circle cx="16" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                            </svg>
+                            <span>{formatCurrency(targetBudget)} Allocated</span>
+                          </>
+                        )}
+                      </div>
+                      {hasThisWeekCheckIn && savingsDeducted > 0 && (
+                        <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
+                          <svg
+                            className="w-3.5 h-3.5 shrink-0"
+                            viewBox="0 0 24 24"
+                            fill="#F5EFEB"
+                            stroke="#8C6239"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                            <line x1="12" y1="9" x2="12" y2="13" stroke="#8C6239" />
+                            <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
+                          </svg>
+                          <span>
+                            {formatCurrency(savingsDeducted)} used in coverage
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ) : isOverBudget ? (
-                    <div className="flex items-center justify-end gap-1 text-alert-red-700 font-semibold text-xs sm:text-sm">
-                      <AlertCircle className="w-3.5 h-3.5 text-alert-red-600 flex-shrink-0" />
-                      <span>Exceeded by {formatCurrency(Math.abs(remaining))}</span>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <div className="flex items-center justify-end gap-1 text-alert-red-700 font-bold text-[11px]">
+                        <AlertCircle className="w-3.5 h-3.5 text-alert-red-600 flex-shrink-0" />
+                        <span>Exceeded by {formatCurrency(Math.abs(remaining))}</span>
+                      </div>
+                      {hasThisWeekCheckIn && (
+                        <>
+                          {categoryTransfersCovered > 0 && (
+                            <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
+                              <svg
+                                className="w-3.5 h-3.5 shrink-0"
+                                viewBox="0 0 24 24"
+                                fill="#F5EFEB"
+                                stroke="#8C6239"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                                <line x1="12" y1="9" x2="12" y2="13" stroke="#8C6239" />
+                                <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
+                              </svg>
+                              <span>
+                                {formatCurrency(categoryTransfersCovered)} covered from transfers
+                              </span>
+                            </div>
+                          )}
+                          {categorySavingsCovered > 0 && (
+                            <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
+                              <svg
+                                className="w-3.5 h-3.5 shrink-0"
+                                viewBox="0 0 24 24"
+                                fill="#F5EFEB"
+                                stroke="#8C6239"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                                <line x1="12" y1="9" x2="12" y2="13" stroke="#8C6239" />
+                                <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
+                              </svg>
+                              <span>
+                                {formatCurrency(categorySavingsCovered)} covered from savings
+                              </span>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
                   ) : (
-                    <div className="flex items-center justify-end gap-1 text-sage-800 font-semibold text-xs sm:text-sm">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
-                      <span>On track ({formatCurrency(remaining)} unspent)</span>
+                    <div className="flex flex-col items-end gap-0.5">
+                      <div className="flex items-center justify-end gap-1 text-sage-800 font-bold text-[11px]">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
+                        <span>
+                          {hasThisWeekCheckIn
+                            ? `${formatCurrency(remaining)} unspent`
+                            : `On track (${formatCurrency(remaining)} unspent)`}
+                        </span>
+                      </div>
+                      {hasThisWeekCheckIn && categoryOverspendCoverage > 0 && (
+                        <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
+                          <svg
+                            className="w-3.5 h-3.5 shrink-0"
+                            viewBox="0 0 24 24"
+                            fill="#F5EFEB"
+                            stroke="#8C6239"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          >
+                            <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+                            <line x1="12" y1="9" x2="12" y2="13" stroke="#8C6239" />
+                            <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
+                          </svg>
+                          <span>
+                            {formatCurrency(categoryOverspendCoverage)} used in coverage
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -420,61 +582,97 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
 
         {/* Div 2: Progress Bar & Allocation Metrics - Always visible */}
         <div className="space-y-1.5 pt-0.5">
-            {isSavings && (hasThisWeekCheckIn || savingsDeducted > 0 || depositAmount > 0) ? (
-              /* Segmented flex container for Savings in post-check-in / deposit state */
-              <div
-                className="w-full h-5 sm:h-5.5 rounded-full overflow-hidden flex bg-beige-100 border border-beige-300 relative shadow-inner p-0"
-                title={`Target: ${formatCurrency(targetBudget)} | Banked: ${formatCurrency(amountActuallyBanked)} | Covered Overspend: ${formatCurrency(savingsDeducted)}`}
-              >
-                {/* Segment 1 (Overspend Coverage) */}
-                {savingsDeducted > 0 && (
-                  <div
-                    style={{ width: `${(savingsDeducted / totalPool) * 100}%` }}
-                    className="h-full bg-brown-700 text-white flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1 overflow-hidden whitespace-nowrap transition-all duration-300"
-                    title={`Overspend coverage: ${formatCurrency(savingsDeducted)}`}
-                  >
-                    <span className="truncate drop-shadow-xs">Overspend coverage</span>
-                  </div>
-                )}
+            {isSavings ? (
+              hasThisWeekCheckIn || savingsDeducted > 0 || depositAmount > 0 ? (
+                /* Segmented flex container for Savings in post-check-in / deposit state with surrounding border */
+                <div
+                  className="w-full h-5 sm:h-5.5 rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1.5 sm:gap-2 relative shadow-2xs"
+                  title={`Target: ${formatCurrency(targetBudget)} | ${hasThisWeekCheckIn ? 'Banked' : 'Allocated'}: ${formatCurrency(hasThisWeekCheckIn ? amountActuallyBanked : targetBudget)} | Covered Overspend: ${formatCurrency(savingsDeducted)}`}
+                >
+                  {/* Segment 1 (Overspend Coverage Pill) */}
+                  {savingsDeducted > 0 && (
+                    <div
+                      style={{ width: `${(savingsDeducted / totalPool) * 100}%` }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCoverageMode((prev) => cycleMode(prev));
+                      }}
+                      className="h-full bg-brown-700 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 flex-shrink-0 cursor-pointer hover:brightness-110 active:scale-95 select-none"
+                      title={`Overspend coverage: ${formatCurrency(savingsDeducted)} (${Math.round((savingsDeducted / totalPool) * 100)}%) - Click to toggle display`}
+                    >
+                      <span className="truncate text-[#F5F5DC] drop-shadow-xs">
+                        {coverageMode === 'desc'
+                          ? 'Coverage'
+                          : coverageMode === 'amount'
+                          ? formatCurrency(savingsDeducted)
+                          : `${Math.round((savingsDeducted / totalPool) * 100)}%`}
+                      </span>
+                    </div>
+                  )}
 
-                {/* The "Total Saved" Grouping Outline */}
-                {(protectedSavings > 0 || depositAmount > 0) && (
-                  <div
-                    style={{ width: `${((protectedSavings + depositAmount) / totalPool) * 100}%` }}
-                    className={`h-full flex overflow-hidden border border-dark-green-800 relative z-10 ${
-                      savingsDeducted === 0 ? 'rounded-full' : 'rounded-r-full'
-                    }`}
-                  >
-                    {/* Segment 2 (Protected Savings) */}
-                    {protectedSavings > 0 && (
-                      <div
-                        style={{ width: `${(protectedSavings / (protectedSavings + depositAmount)) * 100}%` }}
-                        className="h-full bg-dark-green-900 text-white flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1 overflow-hidden whitespace-nowrap transition-all duration-300"
-                        title={`Protected savings: ${formatCurrency(protectedSavings)}`}
-                      >
-                        <span className="truncate drop-shadow-xs">Protected</span>
-                      </div>
-                    )}
+                  {/* 1st Selected Div: Segment 2 (Protected / Allocated Savings Pill) */}
+                  {protectedSavings > 0 && (
+                    <div
+                      style={{ width: `${(protectedSavings / totalPool) * 100}%` }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProtectedMode((prev) => cycleMode(prev));
+                      }}
+                      className="h-full bg-dark-green-900 text-sage-200 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 cursor-pointer hover:brightness-110 active:scale-95 select-none"
+                      title={`${hasThisWeekCheckIn ? 'Protected savings' : 'Allocated savings'}: ${formatCurrency(protectedSavings)} (${Math.round((protectedSavings / totalPool) * 100)}%) - Click to toggle display`}
+                    >
+                      <span className="truncate text-sage-200 drop-shadow-xs">
+                        {protectedMode === 'desc'
+                          ? '$'
+                          : protectedMode === 'amount'
+                          ? formatCurrency(protectedSavings)
+                          : `${Math.round((protectedSavings / totalPool) * 100)}%`}
+                      </span>
+                    </div>
+                  )}
 
-                    {/* Segment 3 (One-Time Deposit) */}
-                    {depositAmount > 0 && (
-                      <div
-                        style={{ width: `${(depositAmount / (protectedSavings + depositAmount)) * 100}%` }}
-                        className="h-full bg-sage-400 text-dark-green-950 flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1 overflow-hidden whitespace-nowrap border-l border-dark-green-800/40 transition-all duration-300"
-                        title={`One-time deposit: ${formatCurrency(depositAmount)}`}
-                      >
-                        <span className="truncate">One-time deposit</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+                  {/* 2nd Selected Div: Segment 3 (One-Time Deposit Pill) */}
+                  {depositAmount > 0 && (
+                    <div
+                      style={{ width: `${(depositAmount / totalPool) * 100}%` }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDepositMode((prev) => cycleMode(prev));
+                      }}
+                      className="h-full bg-sage-400 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 cursor-pointer hover:brightness-105 active:scale-95 select-none"
+                      title={`One-time deposit: ${formatCurrency(depositAmount)} (${Math.round((depositAmount / totalPool) * 100)}%) - Click to toggle display`}
+                    >
+                      <span className="truncate text-sage-950 font-bold">
+                        {depositMode === 'desc'
+                          ? 'One-time deposit'
+                          : depositMode === 'amount'
+                          ? formatCurrency(depositAmount)
+                          : `${Math.round((depositAmount / totalPool) * 100)}%`}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                /* Pre-Check-In 100% Allocated Hashed Progress Bar */
+                <div
+                  className="w-full h-5 sm:h-5.5 rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 relative shadow-2xs"
+                  title={`Target: ${formatCurrency(targetBudget)} | Allocated: ${formatCurrency(targetBudget)} (100% allocated)`}
+                >
+                  <div
+                    style={{
+                      backgroundImage:
+                        'repeating-linear-gradient(45deg, #6B9F6D, #6B9F6D 6px, #EDE4DC 6px, #EDE4DC 12px)',
+                    }}
+                    className="w-full h-full rounded-full border border-sage-500/80 transition-all duration-300"
+                  />
+                </div>
+              )
             ) : (
               <BudgetProgressBar
                 categoryType={categoryType}
                 spent={effectiveSpent}
                 budget={budgetForTimeframe}
-                heightClass="h-2.5"
+                heightClass="h-5 sm:h-5.5"
                 showSurplusSplit={!isSavings && hasThisWeekCheckIn && categoryDecision !== null && (categoryOverspendCoverage > 0 || categoryLeftoverSurplus > 0)}
                 surplusChoice={
                   categoryDecision?.choice === 'rollover'
@@ -491,14 +689,20 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
             <div className="flex items-center justify-between text-[11px]">
               <span className="text-dark-grey-600 font-medium">
                 {isSavings
-                  ? `${Math.round((amountActuallyBanked / (targetBudget || 1)) * 100)}% of target allocation`
+                  ? hasThisWeekCheckIn
+                    ? `${Math.round((amountActuallyBanked / (targetBudget || 1)) * 100)}% of target banked`
+                    : `${Math.round((targetBudget / (targetBudget || 1)) * 100)}% of target allocated`
                   : `${percentage}% of ${timeframeMode === 'week' ? 'weekly' : 'monthly'} allocation`}
               </span>
               <span className="text-brown-800 font-medium">
                 {isSavings
-                  ? depositAmount > 0
+                  ? hasThisWeekCheckIn
+                    ? depositAmount > 0
+                      ? `+${formatCurrency(depositAmount)} deposit`
+                      : `${formatCurrency(amountActuallyBanked)} banked`
+                    : depositAmount > 0
                     ? `+${formatCurrency(depositAmount)} deposit`
-                    : `${formatCurrency(amountActuallyBanked)} banked`
+                    : `${formatCurrency(targetBudget)} allocated`
                   : `${count} ${count === 1 ? 'entry' : 'entries'}`}
               </span>
             </div>

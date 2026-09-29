@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { CategoryType } from '../../types';
+import { formatCurrency } from '../../lib/calculations';
 
 interface BudgetProgressBarProps {
   categoryType: CategoryType;
@@ -38,7 +39,7 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
   categoryType,
   spent,
   budget,
-  heightClass = 'h-2.5',
+  heightClass = 'h-5 sm:h-5.5',
   className = '',
   showSurplusSplit = false,
   surplusChoice = null,
@@ -47,6 +48,17 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
   overspendCoverageAmount,
   leftoverSurplusAmount,
 }) => {
+  const [spentMode, setSpentMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+  const [coverageMode, setCoverageMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+  const [surplusMode, setSurplusMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+  const [standardMode, setStandardMode] = useState<'desc' | 'amount' | 'percent'>('desc');
+
+  const cycleMode = (current: 'desc' | 'amount' | 'percent') => {
+    if (current === 'desc') return 'amount';
+    if (current === 'amount') return 'percent';
+    return 'desc';
+  };
+
   const isSavings = categoryType === 'savings';
   const percentage = budget > 0 ? (spent / budget) * 100 : 0;
   const isOverBudget = !isSavings && (percentage >= 100 || spent > budget);
@@ -70,26 +82,34 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
   const savingsFillColor = getSavingsProgressFillColor(percentage);
 
   // Container styling:
-  let containerBorderClass = 'border border-beige-300/80 bg-beige-100';
+  let containerBorderClass = 'border border-beige-300/90 bg-beige-100/60 p-0.5 shadow-2xs';
   if (isOverBudget) {
-    // Overbudget red outline
-    containerBorderClass = 'border-2 border-alert-red-500 ring-2 ring-alert-red-500/20 bg-alert-red-100/40';
+    // Overbudget red outline matching regular red
+    containerBorderClass = 'border-2 border-alert-red-500 ring-2 ring-alert-red-500/20 bg-alert-red-100/40 p-0.5';
   } else if (isSavings && isAchievedSavings) {
     // 100% (Goal Met): Retains full solid background fill AND receives a thick, solid green border/outline.
-    containerBorderClass = 'border-2 border-dark-green-800 ring-2 ring-dark-green-800/30 bg-beige-100';
+    containerBorderClass = 'border-2 border-dark-green-800 ring-2 ring-dark-green-800/30 bg-beige-100 p-0.5';
   }
 
   // 1. OVERBUDGET EXPENSE STATE:
-  // If spent > budget (or percentage >= 100), fill to 100% width with solid semantic red
+  // If spent > budget (or percentage >= 100), fill to 100% width with regular semantic red
   if (isOverBudget) {
     return (
       <div
-        className={`w-full ${heightClass} rounded-full overflow-hidden relative ${containerBorderClass} ${className}`}
-        title={`Over budget: ${Math.round(percentage)}% (${spent}/${budget})`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setStandardMode((prev) => cycleMode(prev));
+        }}
+        className={`w-full ${heightClass} rounded-full overflow-hidden relative ${containerBorderClass} ${className} cursor-pointer hover:brightness-105 active:scale-98 select-none`}
+        title={`Over budget: ${Math.round(percentage)}% (${formatCurrency(spent)}/${formatCurrency(budget)}) - Click to toggle display`}
       >
-        <div
-          className="h-full w-full bg-alert-red-600 rounded-full transition-all duration-500 ease-out"
-        />
+        <div className="h-full w-full bg-alert-red-600 rounded-full transition-all duration-500 ease-out flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-brown-100 px-1">
+          {standardMode === 'amount' ? (
+            <span className="truncate text-brown-100 drop-shadow-xs font-black">{formatCurrency(spent)}</span>
+          ) : standardMode === 'percent' ? (
+            <span className="truncate text-brown-100 drop-shadow-xs font-black">{Math.round(percentage)}%</span>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -116,46 +136,74 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
 
     return (
       <div
-        className={`w-full ${activeHeight} rounded-full overflow-hidden flex relative ${containerBorderClass} ${className}`}
+        className={`w-full ${activeHeight} rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1.5 sm:gap-2 relative shadow-2xs ${className}`}
       >
-        {/* Spent portion (Sage Green) */}
-        <div
-          className="h-full bg-sage-600 transition-all duration-300 relative flex items-center justify-center"
-          style={{ width: `${spentPercent}%` }}
-          title={`Spent: ${spentPercent.toFixed(1)}%`}
-        />
-
-        {/* Overspend Coverage Portion (Brown) */}
-        {coveragePercent > 0 && (
+        {/* Spent portion Pill */}
+        {spentPercent > 0 && (
           <div
-            className="h-full bg-brown-700 text-beige-100 transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1 tracking-tight truncate overflow-hidden whitespace-nowrap"
-            style={{ width: `${coveragePercent}%` }}
-            title={`Overspend coverage: ${coveragePercent.toFixed(1)}%`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSpentMode((prev) => cycleMode(prev));
+            }}
+            className="h-full bg-sage-600 text-brown-100 rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none"
+            style={{ width: `${spentPercent}%` }}
+            title={`Spent: ${formatCurrency(spent)} (${spentPercent.toFixed(1)}%) - Click to toggle display`}
           >
-            {coveragePercent >= 12 && (
-              <span className="truncate drop-shadow-xs select-none">
-                Overspend coverage
-              </span>
-            )}
+            <span className="truncate text-brown-100 drop-shadow-xs select-none">
+              {spentMode === 'desc'
+                ? 'Spent'
+                : spentMode === 'amount'
+                ? formatCurrency(spent)
+                : `${Math.round(spentPercent)}%`}
+            </span>
           </div>
         )}
 
-        {/* Surplus Portion (Dark Green or Sky Blue) */}
+        {/* Overspend Coverage Portion (Brown Pill) */}
+        {coveragePercent > 0 && (
+          <div
+            onClick={(e) => {
+              e.stopPropagation();
+              setCoverageMode((prev) => cycleMode(prev));
+            }}
+            className="h-full bg-brown-700 text-[#F5F5DC] rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 tracking-tight truncate overflow-hidden whitespace-nowrap flex-shrink-0 cursor-pointer hover:brightness-110 active:scale-95 select-none"
+            style={{ width: `${coveragePercent}%` }}
+            title={`Overspend coverage: ${formatCurrency(overspendCoverageAmount || 0)} (${coveragePercent.toFixed(1)}%) - Click to toggle display`}
+          >
+            <span className="truncate text-[#F5F5DC] drop-shadow-xs select-none">
+              {coverageMode === 'desc'
+                ? 'Coverage'
+                : coverageMode === 'amount'
+                ? formatCurrency(overspendCoverageAmount || 0)
+                : `${Math.round(coveragePercent)}%`}
+            </span>
+          </div>
+        )}
+
+        {/* Surplus Portion Pill */}
         {leftoverPercent > 0 && (
           <div
-            className={`h-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white px-1 tracking-tight truncate overflow-hidden whitespace-nowrap ${
+            onClick={(e) => {
+              e.stopPropagation();
+              setSurplusMode((prev) => cycleMode(prev));
+            }}
+            className={`h-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white px-1.5 rounded-full tracking-tight truncate overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none ${
               surplusChoice === 'rollover'
-                ? 'bg-sky-blue-500 shadow-inner'
-                : 'bg-dark-green-800 shadow-inner'
+                ? 'bg-sky-blue-500'
+                : 'bg-dark-green-800'
             }`}
             style={{ width: `${leftoverPercent}%` }}
-            title={surplusChoice === 'rollover' ? prorateLabel : savingsLabel}
+            title={`${surplusChoice === 'rollover' ? prorateLabel : savingsLabel}: ${formatCurrency(leftoverSurplusAmount || 0)} (${leftoverPercent.toFixed(1)}%) - Click to toggle display`}
           >
-            {leftoverPercent >= 12 && (
-              <span className="truncate drop-shadow-xs select-none">
-                {surplusChoice === 'rollover' ? prorateLabel : savingsLabel}
-              </span>
-            )}
+            <span className="truncate drop-shadow-xs select-none">
+              {surplusMode === 'desc'
+                ? surplusChoice === 'rollover'
+                  ? prorateLabel
+                  : savingsLabel
+                : surplusMode === 'amount'
+                ? formatCurrency(leftoverSurplusAmount || 0)
+                : `${Math.round(leftoverPercent)}%`}
+            </span>
           </div>
         )}
       </div>
@@ -165,16 +213,27 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
   // 3. STANDARD SOLID PROGRESS BAR (Savings & Expense):
   return (
     <div
-      className={`w-full ${heightClass} rounded-full overflow-hidden relative ${containerBorderClass} ${className}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        setStandardMode((prev) => cycleMode(prev));
+      }}
+      className={`w-full ${heightClass} rounded-full overflow-hidden relative ${containerBorderClass} ${className} cursor-pointer hover:brightness-105 active:scale-98 select-none`}
+      title={`${categoryType === 'savings' ? 'Savings' : 'Spent'}: ${formatCurrency(spent)} / ${formatCurrency(budget)} (${Math.round(percentage)}%) - Click to toggle display`}
     >
       <div
-        className={`h-full transition-all duration-500 ease-out rounded-full ${
+        className={`h-full transition-all duration-500 ease-out rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white px-1 ${
           isSavings ? savingsFillColor : expenseFillColor
         }`}
         style={{
           width: `${Math.min(100, Math.max(0, percentage))}%`,
         }}
-      />
+      >
+        {standardMode === 'amount' ? (
+          <span className="truncate drop-shadow-xs">{formatCurrency(spent)}</span>
+        ) : standardMode === 'percent' ? (
+          <span className="truncate drop-shadow-xs">{Math.round(percentage)}%</span>
+        ) : null}
+      </div>
     </div>
   );
 };
