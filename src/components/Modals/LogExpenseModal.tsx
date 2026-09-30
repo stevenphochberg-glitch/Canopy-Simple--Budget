@@ -7,6 +7,7 @@ import {
   getWeekId,
   getCategoryEffectiveWeeklyBudget,
 } from '../../lib/calculations';
+import { getFiscalYearMonths } from '../../lib/fiscal445';
 import { parseQuickNoteWithGemini, scanReceiptWithGemini } from '../../lib/geminiApi';
 import {
   X,
@@ -26,6 +27,8 @@ import {
   ArrowRight,
   Loader2,
   Image as ImageIcon,
+  Calendar,
+  Users,
 } from 'lucide-react';
 
 const LAST_TAB_STORAGE_KEY = 'canopy_last_log_tab';
@@ -56,14 +59,20 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
   } = useHousehold();
 
   // Remember & default to user's last selected tab
-  const [activeTab, setActiveTab] = useState<LogTab>(() => {
-    const saved = localStorage.getItem(LAST_TAB_STORAGE_KEY) as LogTab;
-    return saved === 'manual' || saved === 'quicknote' || saved === 'scan' ? saved : 'manual';
-  });
+  const [activeTab, setActiveTab] = useState<LogTab>('manual');
+  const [comingSoonMessage, setComingSoonMessage] = useState<string | null>(null);
 
   const handleTabChange = (tab: LogTab) => {
-    setActiveTab(tab);
-    localStorage.setItem(LAST_TAB_STORAGE_KEY, tab);
+    if (tab === 'quicknote') {
+      setComingSoonMessage('Quick Note (AI) is coming soon! Please use Manual Entry.');
+      return;
+    }
+    if (tab === 'scan') {
+      setComingSoonMessage('Scan Receipt is coming soon! Please use Manual Entry.');
+      return;
+    }
+    setActiveTab('manual');
+    localStorage.setItem(LAST_TAB_STORAGE_KEY, 'manual');
   };
 
   // Available expense categories (strictly exclude savings categories)
@@ -108,6 +117,67 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     user?.userId || 'usr_self'
   );
   const [manualBillFrequency, setManualBillFrequency] = useState<BillFrequency>('monthly');
+
+  // Generate fiscal weeks list for custom date range picker (current year + next year)
+  const fiscalWeekOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const years = [currentYear, currentYear + 1];
+    const options: { id: string; label: string; startDate: string; endDate: string }[] = [];
+
+    years.forEach((year) => {
+      const months = getFiscalYearMonths(year);
+      let weekOfYear = 1;
+
+      months.forEach((m) => {
+        const start = new Date(m.startDate);
+        for (let w = 0; w < m.weekCount; w++) {
+          const weekStart = new Date(start);
+          weekStart.setDate(weekStart.getDate() + w * 7);
+          const weekEnd = new Date(weekStart);
+          weekEnd.setDate(weekEnd.getDate() + 6);
+
+          const startStr = weekStart.toISOString().split('T')[0];
+          const endStr = weekEnd.toISOString().split('T')[0];
+          const startMonth = weekStart.toLocaleDateString('en-US', { month: 'short' });
+          const startDay = weekStart.getDate();
+          const endMonth = weekEnd.toLocaleDateString('en-US', { month: 'short' });
+          const endDay = weekEnd.getDate();
+          const weekOfMonth = w + 1;
+
+          const yearSuffix = year !== currentYear ? ` '${String(year).slice(-2)}` : '';
+          const label = `W${weekOfYear} (${startMonth} ${startDay} - ${endMonth} ${endDay}${yearSuffix}) W${weekOfMonth}`;
+
+          options.push({
+            id: `FY${year}-W${weekOfYear}-${startStr}`,
+            label,
+            startDate: startStr,
+            endDate: endStr,
+          });
+
+          weekOfYear++;
+        }
+      });
+    });
+
+    return options;
+  }, []);
+
+  const [manualBillStartDate, setManualBillStartDate] = useState<string>(() => {
+    const today = new Date();
+    const day = today.getDay();
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + diffToMonday);
+    return monday.toISOString().split('T')[0];
+  });
+  const [manualBillEndDate, setManualBillEndDate] = useState<string>(() => {
+    const today = new Date();
+    const day = today.getDay();
+    const diffToMonday = (day === 0 ? -6 : 1) - day;
+    const sunday = new Date(today);
+    sunday.setDate(today.getDate() + diffToMonday + 27); // 4 full weeks
+    return sunday.toISOString().split('T')[0];
+  });
 
   // One-Time Deposit state
   const isOneTimeDeposit = manualCategoryId === 'cat_one_time_deposit';
@@ -260,9 +330,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       : availableExpenseCategories[0]?.id || '';
 
     const defaultDesc = isOneTimeDeposit
-      ? depositDestination === 'goal'
-        ? `Deposit to ${savingsGoals.find((g) => g.id === selectedGoalId)?.name || 'Savings Goal'}`
-        : 'One-Time Savings Deposit'
+      ? 'One-Time Savings Deposit'
       : 'Manual Expense';
 
     const newItem: StagedExpense = {
@@ -272,14 +340,16 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       date: manualDate || new Date().toISOString().split('T')[0],
       loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
       billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+      billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
+      billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
       tags: isOneTimeDeposit
-        ? ['One-Time Deposit', depositDestination === 'goal' ? 'Goal Deposit' : 'Budget Expansion']
+        ? ['One-Time Deposit', 'Budget Expansion']
         : selectedTags.length > 0
         ? selectedTags
         : undefined,
       subcategory: isOneTimeDeposit ? undefined : selectedTags[0] || undefined,
-      depositDestination: isOneTimeDeposit ? depositDestination : undefined,
-      targetGoalId: isOneTimeDeposit && depositDestination === 'goal' ? selectedGoalId : undefined,
+      depositDestination: isOneTimeDeposit ? 'savings_budget' : undefined,
+      targetGoalId: undefined,
     };
 
     setManualBatch((prev) => [...prev, newItem]);
@@ -301,9 +371,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       : availableExpenseCategories[0]?.id || '';
 
     const defaultDesc = isOneTimeDeposit
-      ? depositDestination === 'goal'
-        ? `Deposit to ${savingsGoals.find((g) => g.id === selectedGoalId)?.name || 'Savings Goal'}`
-        : 'One-Time Savings Deposit'
+      ? 'One-Time Savings Deposit'
       : 'Manual Expense';
 
     // If the user filled the current fields, add it too
@@ -315,14 +383,16 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
         date: manualDate || new Date().toISOString().split('T')[0],
         loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
         billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+        billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
+        billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
         tags: isOneTimeDeposit
-          ? ['One-Time Deposit', depositDestination === 'goal' ? 'Goal Deposit' : 'Budget Expansion']
+          ? ['One-Time Deposit', 'Budget Expansion']
           : selectedTags.length > 0
           ? selectedTags
           : undefined,
         subcategory: isOneTimeDeposit ? undefined : selectedTags[0] || undefined,
-        depositDestination: isOneTimeDeposit ? depositDestination : undefined,
-        targetGoalId: isOneTimeDeposit && depositDestination === 'goal' ? selectedGoalId : undefined,
+        depositDestination: isOneTimeDeposit ? 'savings_budget' : undefined,
+        targetGoalId: undefined,
       });
     }
 
@@ -539,35 +609,54 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
               )}
             </button>
 
-            {/* Tab B: Quick Note (AI) */}
+            {/* Tab B: Quick Note (AI) - Disabled */}
             <button
               id="tab-quick-note-ai"
+              type="button"
               onClick={() => handleTabChange('quicknote')}
-              className={`flex-1 py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                activeTab === 'quicknote'
-                  ? 'bg-white text-dark-green-900 shadow-xs'
-                  : 'text-dark-grey-700 hover:text-dark-green-900'
-              }`}
+              className="flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition opacity-60 text-dark-grey-600 hover:opacity-80 cursor-pointer select-none"
+              title="Quick Note (AI) - Coming Soon"
             >
               <Sparkles className="w-3.5 h-3.5 text-sage-600" />
               <span>Quick Note (AI)</span>
+              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded-full bg-beige-300 text-brown-800">
+                Soon
+              </span>
             </button>
 
-            {/* Tab C: Scan Receipt */}
+            {/* Tab C: Scan Receipt - Disabled */}
             <button
               id="tab-scan-receipt"
+              type="button"
               onClick={() => handleTabChange('scan')}
-              className={`flex-1 py-2 px-3 rounded-xl text-xs font-extrabold flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                activeTab === 'scan'
-                  ? 'bg-white text-dark-green-900 shadow-xs'
-                  : 'text-dark-grey-700 hover:text-dark-green-900'
-              }`}
+              className="flex-1 py-2 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition opacity-60 text-dark-grey-600 hover:opacity-80 cursor-pointer select-none"
+              title="Scan Receipt - Coming Soon"
             >
               <Camera className="w-3.5 h-3.5 text-brown-700" />
               <span>Scan Receipt</span>
+              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded-full bg-beige-300 text-brown-800">
+                Soon
+              </span>
             </button>
           </div>
         </div>
+
+        {/* Coming Soon Notice Banner */}
+        {comingSoonMessage && (
+          <div className="mx-6 mt-3 p-3 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-between gap-3 text-xs text-amber-900 font-semibold animate-in fade-in slide-in-from-top-1 duration-200">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-700 shrink-0" />
+              <span>{comingSoonMessage}</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setComingSoonMessage(null)}
+              className="p-1 rounded-full hover:bg-amber-100 text-amber-800 transition cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Tab Content Body */}
         <div className="flex-1 overflow-y-auto p-5 sm:p-6">
@@ -614,72 +703,9 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                 </div>
               )}
 
-              {/* 3 Explicit Form Fields */}
+              {/* Form Fields */}
               <div className="space-y-4">
-                {/* Field 1: Amount */}
-                <div className="space-y-1">
-                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center justify-between">
-                    <span className="flex items-center gap-1">
-                      <DollarSign className="w-3.5 h-3.5 text-sage-700" />
-                      Amount ($)
-                    </span>
-                    <span className="text-[10px] text-brown-700 font-normal">
-                      Required numeric keypad
-                    </span>
-                  </label>
-                  <div className="relative flex items-center">
-                    <span className="absolute left-4 text-2xl font-black text-dark-green-900">
-                      $
-                    </span>
-                    <input
-                      id="manual-input-amount"
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      placeholder="0.00"
-                      value={manualAmount}
-                      onChange={(e) => setManualAmount(e.target.value)}
-                      className="w-full pl-9 pr-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl text-2xl sm:text-3xl font-black text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
-                      autoFocus
-                    />
-                  </div>
-
-                  {/* Quick Preset Buttons - Additive Math Logic */}
-                  <div className="flex gap-1.5 pt-1">
-                    {[5, 10, 20, 50, 100].map((preset) => (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => handleQuickAdd(preset)}
-                        className="px-2.5 py-1 rounded-lg bg-beige-100 hover:bg-sage-100 text-[11px] font-bold text-dark-green-900 border border-beige-200 transition cursor-pointer"
-                      >
-                        +${preset}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Field 2: Description */}
-                <div className="space-y-1">
-                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
-                    <FileText className="w-3.5 h-3.5 text-sage-700" />
-                    Description
-                  </label>
-                  <input
-                    id="manual-input-description"
-                    type="text"
-                    placeholder={
-                      isOneTimeDeposit
-                        ? 'e.g. Tax Refund, Bonus, Gift, Birthday Money'
-                        : "e.g. Trader Joe's, Shell Gas, Lunch with team"
-                    }
-                    value={manualDescription}
-                    onChange={(e) => setManualDescription(e.target.value)}
-                    className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
-                  />
-                </div>
-
-                {/* Field 3: Category Dropdown */}
+                {/* Field 1: Category Dropdown */}
                 <div className="space-y-1">
                   <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center justify-between">
                     <span className="flex items-center gap-1">
@@ -704,7 +730,18 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     }`}
                   >
                     {availableExpenseCategories.map((cat) => {
+                      const isBills = cat.group === 'Bills' || cat.name.toLowerCase().includes('bill');
                       const effectiveWeekly = getCategoryEffectiveWeeklyBudget(cat, activeWeekId, household);
+                      
+                      if (isBills) {
+                        const monthlyBudget = Math.round((cat.baselineBudget || 0) * (52 / 12));
+                        return (
+                          <option key={cat.id} value={cat.id}>
+                            {cat.name} ({formatCurrency(monthlyBudget)}/mo)
+                          </option>
+                        );
+                      }
+
                       return (
                         <option key={cat.id} value={cat.id}>
                           {cat.name} ({formatCurrency(effectiveWeekly.budget)}/wk)
@@ -712,88 +749,178 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                       );
                     })}
                     <option value="cat_one_time_deposit">
-                      ✨ One-Time Deposit (Savings Allocation)
+                      One-Time Deposit (Savings Allocation)
                     </option>
                   </select>
                 </div>
 
-                {/* Special One-Time Deposit Routing Box */}
-                {isOneTimeDeposit && (
-                  <div className="p-4 bg-sage-50/90 border border-sage-200 rounded-2xl space-y-3 animate-in fade-in">
+                {/* Field 2 (when Bills category is selected): Bill Billing Frequency */}
+                {isBillsCategory && (
+                  <div className="space-y-2 p-3.5 bg-sage-50/80 border border-sage-200 rounded-2xl animate-in fade-in">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-extrabold text-dark-green-950 flex items-center gap-1.5">
-                        <Sparkles className="w-4 h-4 text-sage-700" />
-                        Deposit Destination
-                      </span>
-                      <span className="text-[10px] font-bold text-sage-800 bg-sage-200/80 px-2 py-0.5 rounded-full">
-                        Savings Routing
-                      </span>
+                      <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                        <Tag className="w-3.5 h-3.5 text-sage-700" />
+                        Bill Billing Frequency
+                      </label>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setDepositDestination('savings_budget')}
-                        className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
-                          depositDestination === 'savings_budget'
-                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800'
-                            : 'bg-white/60 border-sage-200 hover:bg-white'
-                        }`}
-                      >
-                        <span className="text-xs font-bold text-dark-green-900 block">
-                          Expand Savings Budget
-                        </span>
-                        <span className="text-[10px] text-brown-700 leading-tight mt-1 block">
-                          Increases this week's Savings allocation envelope.
-                        </span>
-                      </button>
+                    <select
+                      id="manual-select-bill-frequency"
+                      value={manualBillFrequency}
+                      onChange={(e) => setManualBillFrequency(e.target.value as BillFrequency)}
+                      className="w-full px-3.5 py-2 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                    >
+                      <option value="monthly">Monthly</option>
+                      <option value="yearly">Yearly</option>
+                      <option value="custom">Custom</option>
+                    </select>
 
-                      <button
-                        type="button"
-                        onClick={() => setDepositDestination('goal')}
-                        className={`p-3 rounded-xl border text-left transition cursor-pointer flex flex-col justify-between ${
-                          depositDestination === 'goal'
-                            ? 'bg-white border-dark-green-800 shadow-xs ring-1 ring-dark-green-800'
-                            : 'bg-white/60 border-sage-200 hover:bg-white'
-                        }`}
-                      >
-                        <span className="text-xs font-bold text-dark-green-900 block">
-                          Direct Goal Deposit
-                        </span>
-                        <span className="text-[10px] text-brown-700 leading-tight mt-1 block">
-                          Allocates directly to an individual savings goal.
-                        </span>
-                      </button>
-                    </div>
-
-                    {depositDestination === 'goal' && (
-                      <div className="space-y-1 pt-1">
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 block">
-                          Select Savings Goal
-                        </label>
-                        <select
-                          value={selectedGoalId}
-                          onChange={(e) => setSelectedGoalId(e.target.value)}
-                          className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-bold text-dark-green-900"
-                        >
-                          <option value="goal_emergency">
-                            🛡️ Emergency Savings Fund (${formatCurrency(savingsGoals.find(g => g.id === 'goal_emergency')?.currentAmount || 0)} allocated)
-                          </option>
-                          {savingsGoals
-                            .filter((g) => g.id !== 'goal_emergency')
-                            .map((goal) => (
-                              <option key={goal.id} value={goal.id}>
-                                🎯 {goal.name} (${formatCurrency(goal.currentAmount || 0)} / {formatCurrency(goal.targetAmount || 0)})
+                    {manualBillFrequency === 'custom' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 animate-in fade-in">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-sage-700" />
+                            Start Week
+                          </label>
+                          <select
+                            id="manual-input-bill-start-date"
+                            value={manualBillStartDate}
+                            onChange={(e) => {
+                              const newStart = e.target.value;
+                              setManualBillStartDate(newStart);
+                              if (manualBillEndDate < newStart) {
+                                const matched = fiscalWeekOptions.find((o) => o.startDate === newStart);
+                                if (matched) setManualBillEndDate(matched.endDate);
+                              }
+                            }}
+                            className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                          >
+                            {fiscalWeekOptions.map((opt) => (
+                              <option key={opt.id} value={opt.startDate}>
+                                {opt.label}
                               </option>
                             ))}
-                        </select>
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-sage-700" />
+                            End Week
+                          </label>
+                          <select
+                            id="manual-input-bill-end-date"
+                            value={manualBillEndDate}
+                            onChange={(e) => setManualBillEndDate(e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                          >
+                            {fiscalWeekOptions
+                              .filter((opt) => opt.endDate >= manualBillStartDate)
+                              .map((opt) => (
+                                <option key={opt.id} value={opt.endDate}>
+                                  {opt.label}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
                       </div>
                     )}
+
+                    <div className="space-y-1 pt-0.5 text-[11px] text-brown-700 leading-snug">
+                      <p>
+                        <strong>Note:</strong> Bills are not included in weekly budgeting and will only show in the Monthly view dashboard.
+                      </p>
+                      {manualBillFrequency === 'yearly' && (
+                        <p className="text-sage-800 font-semibold pt-0.5">
+                          This yearly expense will be prorated equally over the next 12 months starting with the month that the Bill was logged in.
+                        </p>
+                      )}
+                    </div>
                   </div>
                 )}
 
-                {/* Subcategory & Tagging Engine for Standard Categories */}
-                {!isOneTimeDeposit && selectedManualCat && (
+                {/* Field 2 / 3: Description */}
+                <div className="space-y-1">
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                    <FileText className="w-3.5 h-3.5 text-sage-700" />
+                    Description
+                  </label>
+                  <input
+                    id="manual-input-description"
+                    type="text"
+                    placeholder={
+                      isOneTimeDeposit
+                        ? 'e.g. Tax Refund, Bonus, Gift, Birthday Money'
+                        : "e.g. Trader Joe's, Shell Gas, Lunch with team"
+                    }
+                    value={manualDescription}
+                    onChange={(e) => setManualDescription(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-medium text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
+                  />
+                </div>
+
+                {/* Field 3: Amount ($) and Date */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+                  {/* Amount */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <DollarSign className="w-3.5 h-3.5 text-sage-700" />
+                        Amount ($)
+                      </span>
+                      <span className="text-[10px] text-brown-700 font-normal">
+                        Required
+                      </span>
+                    </label>
+                    <div className="relative flex items-center">
+                      <span className="absolute left-4 text-2xl font-black text-dark-green-900">
+                        $
+                      </span>
+                      <input
+                        id="manual-input-amount"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        placeholder="0.00"
+                        value={manualAmount}
+                        onChange={(e) => setManualAmount(e.target.value)}
+                        className="w-full pl-9 pr-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl text-2xl sm:text-3xl font-black text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
+                        autoFocus
+                      />
+                    </div>
+
+                    {/* Quick Preset Buttons - Additive Math Logic */}
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {[5, 10, 20, 50, 100].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() => handleQuickAdd(preset)}
+                          className="px-2.5 py-1 rounded-lg bg-beige-100 hover:bg-sage-100 text-[11px] font-bold text-dark-green-900 border border-beige-200 transition cursor-pointer"
+                        >
+                          +${preset}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Date */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                      <Calendar className="w-3.5 h-3.5 text-sage-700" />
+                      Date
+                    </label>
+                    <input
+                      id="manual-input-date"
+                      type="date"
+                      value={manualDate}
+                      onChange={(e) => setManualDate(e.target.value)}
+                      className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
+                    />
+                  </div>
+                </div>
+
+                {/* Subcategory & Tagging Engine (for Standard Categories & One-Time Deposits) */}
+                {(selectedManualCat || isOneTimeDeposit) && (
                   <div className="space-y-2 p-3.5 bg-beige-50/80 border border-beige-200 rounded-2xl">
                     <div className="flex items-center justify-between">
                       <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
@@ -806,9 +933,14 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     </div>
 
                     {/* Pre-defined Subcategory Pills */}
-                    {selectedManualCat.subcategories && selectedManualCat.subcategories.length > 0 && (
+                    {((isOneTimeDeposit
+                      ? ['Tax Refund', 'Bonus', 'Gift', 'Birthday', 'Side Hustle']
+                      : selectedManualCat?.subcategories) || []).length > 0 && (
                       <div className="flex flex-wrap gap-1.5">
-                        {selectedManualCat.subcategories.map((subcat) => {
+                        {(isOneTimeDeposit
+                          ? ['Tax Refund', 'Bonus', 'Gift', 'Birthday', 'Side Hustle']
+                          : selectedManualCat?.subcategories || []
+                        ).map((subcat) => {
                           const isSelected = selectedTags.includes(subcat);
                           return (
                             <button
@@ -876,76 +1008,24 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                   </div>
                 )}
 
-                {/* Contextual Category Examples Helper Row */}
-                {!isOneTimeDeposit && selectedManualCat && (
-                  <div className="flex items-start gap-1.5 px-3 py-2 bg-beige-100/70 border border-beige-200/90 rounded-xl text-xs text-brown-800 animate-in fade-in duration-150">
-                    <span className="font-bold text-dark-green-900 shrink-0">Examples:</span>
-                    <span className="text-brown-800 font-medium leading-relaxed">
-                      {getCategoryExamples(selectedManualCat)}
-                    </span>
-                  </div>
-                )}
-
-                {/* Bill Frequency Dropdown (when Bills category is selected) */}
-                {isBillsCategory && (
-                  <div className="space-y-1.5 p-3.5 bg-sage-50/80 border border-sage-200 rounded-2xl animate-in fade-in">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
-                        <Tag className="w-3.5 h-3.5 text-sage-700" />
-                        Bill Billing Frequency
-                      </label>
-                      <span className="text-[10px] font-bold text-sage-800 bg-sage-200/70 px-2 py-0.5 rounded-full">
-                        Paid-Only Proration
-                      </span>
-                    </div>
-
-                    <select
-                      id="manual-select-bill-frequency"
-                      value={manualBillFrequency}
-                      onChange={(e) => setManualBillFrequency(e.target.value as BillFrequency)}
-                      className="w-full px-3.5 py-2 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                    >
-                      <option value="weekly">Weekly (Full expense charged to current week)</option>
-                      <option value="monthly">Monthly (Prorated across current 4-4-5 month weeks)</option>
-                      <option value="annually">Annually (Prorated across fiscal year / 52 weeks)</option>
-                    </select>
-
-                    <p className="text-[11px] text-brown-700 leading-snug pt-0.5">
-                      <strong>Paid-Only Rule:</strong> Only the active prorated share of this paid bill will hit this week's budget. Unpaid future recurring bills will not be auto-scheduled.
-                    </p>
-                  </div>
-                )}
-
-                {/* Payer & Date Optional Row */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                      Paid By
-                    </label>
-                    <select
-                      value={manualLoggedBy}
-                      onChange={(e) => setManualLoggedBy(e.target.value)}
-                      className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900"
-                    >
-                      {members.map((m) => (
-                        <option key={m.userId} value={m.userId}>
-                          {m.name} {m.userId === user?.userId ? '(You)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
-                      Date
-                    </label>
-                    <input
-                      type="date"
-                      value={manualDate}
-                      onChange={(e) => setManualDate(e.target.value)}
-                      className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900"
-                    />
-                  </div>
+                {/* Payer Optional Row */}
+                <div className="space-y-1 pt-1">
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                    <Users className="w-3.5 h-3.5 text-sage-700" />
+                    Paid By
+                  </label>
+                  <select
+                    id="manual-select-paid-by"
+                    value={manualLoggedBy}
+                    onChange={(e) => setManualLoggedBy(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
+                  >
+                    {members.map((m) => (
+                      <option key={m.userId} value={m.userId}>
+                        {m.name} {m.userId === user?.userId ? '(You)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

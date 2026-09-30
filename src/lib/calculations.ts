@@ -458,7 +458,7 @@ export function getProratedExpenseAmount(
     }
   }
 
-  if (exp.billFrequency === 'annually') {
+  if (exp.billFrequency === 'annually' || exp.billFrequency === 'yearly') {
     const expYear = validExpDate.getFullYear();
     const totalWeeksInYear = is53WeekFiscalYear(expYear, fiscalYearEndMonth) ? 53 : 52;
     const weeklyAmount = amount / totalWeeksInYear;
@@ -487,6 +487,28 @@ export function getProratedExpenseAmount(
       const currentFiscalMonth = getFiscalMonthForDate(start, fiscalYearEndMonth);
       const weeksInMonth = currentFiscalMonth.weekCount || 4;
       return Math.round((weeklyAmount * weeksInMonth) * 100) / 100;
+    }
+  }
+
+  if (exp.billFrequency === 'custom' && exp.billStartDate && exp.billEndDate) {
+    const customStart = new Date(exp.billStartDate + (exp.billStartDate.length === 10 ? 'T00:00:00' : ''));
+    const customEnd = new Date(exp.billEndDate + (exp.billEndDate.length === 10 ? 'T23:59:59' : ''));
+    if (!isNaN(customStart.getTime()) && !isNaN(customEnd.getTime()) && customEnd >= customStart) {
+      const totalDays = Math.max(1, Math.round((customEnd.getTime() - customStart.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+      const totalWeeks = Math.max(1, Math.ceil(totalDays / 7));
+      const weeklyAmount = amount / totalWeeks;
+
+      if (end.getTime() < customStart.getTime() || start.getTime() > customEnd.getTime()) {
+        return 0;
+      }
+
+      if (isWeeklyView) {
+        return Math.round(weeklyAmount * 100) / 100;
+      } else {
+        const currentFiscalMonth = getFiscalMonthForDate(start, fiscalYearEndMonth);
+        const weeksInMonth = currentFiscalMonth.weekCount || 4;
+        return Math.round((weeklyAmount * weeksInMonth) * 100) / 100;
+      }
     }
   }
 

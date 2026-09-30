@@ -41,6 +41,7 @@ import {
   PiggyBank,
   ShieldCheck,
   MessageSquare,
+  AlertCircle,
 } from 'lucide-react';
 
 interface DashboardViewProps {
@@ -76,6 +77,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [areAllCardsExpanded, setAreAllCardsExpanded] = useState(false);
+  const [earlierCheckInWarning, setEarlierCheckInWarning] = useState<string | null>(null);
 
   // Interception Modal State for Post-Check-In Transactions (Directive 1 & 2)
   const [impactModalState, setImpactModalState] = useState<{
@@ -177,6 +179,71 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
     );
   }, [timeframeMode, timeframeOffset, activeDateRange, checkIns]);
+
+  // Detect if there is an earlier past-due uncompleted check-in prior to the current active historical week
+  const earlierUncompletedWeek = useMemo(() => {
+    if (timeframeMode !== 'week' || timeframeOffset >= 0) return null;
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+
+    // Earliest boundary: household creation date or earliest expense or 12 weeks back
+    let earliestDate = new Date();
+    if (household?.createdAt) {
+      const created = new Date(household.createdAt);
+      if (!isNaN(created.getTime())) earliestDate = created;
+    }
+    if (expenses.length > 0) {
+      expenses.forEach((e) => {
+        const d = e.date ? new Date(e.date + (e.date.length === 10 ? 'T12:00:00' : '')) : new Date(e.timestamp);
+        if (!isNaN(d.getTime()) && d < earliestDate) earliestDate = d;
+      });
+    }
+    const maxPastLimit = new Date();
+    maxPastLimit.setDate(maxPastLimit.getDate() - 12 * 7);
+    if (earliestDate < maxPastLimit) earliestDate = maxPastLimit;
+
+    // Start scanning week by week from earliestDate up to the week strictly before activeDateRange.startDate
+    let scanDate = new Date(earliestDate);
+    let scanRange = getWeekRange(scanDate, firstDay, 0);
+
+    const activeStartStr = formatLocalDate(activeDateRange.startDate);
+    const today = new Date();
+    const currentWeekRange = getWeekRange(today, firstDay, 0);
+    const currentStartStr = formatLocalDate(currentWeekRange.startDate);
+
+    while (formatLocalDate(scanRange.startDate) < activeStartStr) {
+      const scanStartStr = formatLocalDate(scanRange.startDate);
+      const scanEndStr = formatLocalDate(scanRange.endDate);
+
+      // Check if this scanned week was completed
+      const isCompleted = checkIns.some(
+        (c) =>
+          c.status === 'completed' &&
+          (c.weekStartDate === scanStartStr ||
+            c.weekEndDate === scanEndStr ||
+            c.id.includes(scanStartStr))
+      );
+
+      // If it's not completed, and this week has concluded in the past (before current week)
+      if (!isCompleted && scanStartStr < currentStartStr) {
+        const tracker = getFiscalTrackerInfo(scanRange.startDate, fiscalYearEnd);
+        return {
+          weekStartDate: scanRange.startDate,
+          weekEndDate: scanRange.endDate,
+          startStr: scanStartStr,
+          endStr: scanEndStr,
+          weekOfFiscalYear: tracker.weekOfFiscalYear,
+          label: `W${tracker.weekOfFiscalYear} (${scanRange.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${scanRange.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})`,
+        };
+      }
+
+      // Move to next week
+      scanDate = new Date(scanRange.startDate.getTime() + 7 * 24 * 60 * 60 * 1000);
+      scanRange = getWeekRange(scanDate, firstDay, 0);
+    }
+
+    return null;
+  }, [timeframeMode, timeframeOffset, household, expenses, checkIns, activeDateRange]);
 
   const historicalSavingsDeducted = useMemo(() => {
     if (!historicalCheckIn?.decisions) return 0;
@@ -625,9 +692,26 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 )}
               </div>
             ) : (
-              <p className="text-xs text-brown-700 max-w-xl">
-                Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for {timeframeNavDisplay.title}.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-brown-700 max-w-xl">
+                  Reconcile expenses, absorb category deficits, and bank surplus envelope balances into your savings pot for {timeframeNavDisplay.title}.
+                </p>
+                {earlierCheckInWarning && (
+                  <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl flex items-center justify-between gap-2 text-xs text-amber-900 font-bold animate-in fade-in">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
+                      <span>{earlierCheckInWarning}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEarlierCheckInWarning(null)}
+                      className="text-amber-700 hover:text-amber-900 p-0.5 rounded cursor-pointer"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -644,8 +728,30 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             ) : (
               <button
                 id="dashboard-historical-checkin-cta"
-                onClick={() => openWeeklyCheckInModal()}
-                className="flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer"
+                type="button"
+                onClick={() => {
+                  if (earlierUncompletedWeek) {
+                    setEarlierCheckInWarning(
+                      `The earlier fiscal week check-in (${earlierUncompletedWeek.label}) needs to be completed first.`
+                    );
+                    showToast(
+                      `The earlier fiscal week check-in (${earlierUncompletedWeek.label}) needs to be completed first.`,
+                      'warning'
+                    );
+                    return;
+                  }
+                  openWeeklyCheckInModal();
+                }}
+                className={`flex-shrink-0 flex items-center justify-center gap-2 px-5 py-3 text-xs sm:text-sm font-extrabold rounded-2xl transition ${
+                  earlierUncompletedWeek
+                    ? 'bg-beige-200 text-dark-grey-600 border border-beige-300 opacity-70 cursor-not-allowed'
+                    : 'bg-dark-green-800 hover:bg-dark-green-900 text-white shadow-sm active:scale-95 cursor-pointer'
+                }`}
+                title={
+                  earlierUncompletedWeek
+                    ? `Earlier fiscal week check-in (${earlierUncompletedWeek.label}) needs to be completed first.`
+                    : 'Execute Check-In for this Week'
+                }
               >
                 <span>Execute Check-In for this Week</span>
                 <ArrowRight className="w-4 h-4" />

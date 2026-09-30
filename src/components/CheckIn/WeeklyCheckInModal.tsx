@@ -18,6 +18,7 @@ import {
   getRemainingWeeksInMonth,
   getOldestPastDueCheckInWeek,
 } from '../../lib/checkInCalculations';
+import { getFiscalTrackerInfo } from '../../lib/fiscal445';
 import {
   Clock,
   CheckCircle2,
@@ -197,6 +198,19 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     return getWeekId(selectedWeekRange, household?.firstDayOfWeek || 'Monday');
   }, [selectedWeekRange, household?.firstDayOfWeek]);
 
+  const formattedWeekHeader = useMemo(() => {
+    const tracker = getFiscalTrackerInfo(
+      selectedWeekRange.startDate,
+      household?.fiscalYearEndMonth || 12
+    );
+    const startMonth = selectedWeekRange.startDate.toLocaleDateString('en-US', { month: 'short' });
+    const startDay = selectedWeekRange.startDate.getDate();
+    const endMonth = selectedWeekRange.endDate.toLocaleDateString('en-US', { month: 'short' });
+    const endDay = selectedWeekRange.endDate.getDate();
+    const year = selectedWeekRange.endDate.getFullYear();
+    return `W${tracker.weekOfFiscalYear}: ${startMonth} ${startDay} - ${endMonth} ${endDay}, ${year}`;
+  }, [selectedWeekRange, household?.fiscalYearEndMonth]);
+
   // Isolate categories by group
   const isBillsCategory = (c: Category) =>
     c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
@@ -273,7 +287,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     return categoryPacings
       .filter((p) => p.isUnderspent)
       .reduce((sum, p) => {
-        const choice = underspendChoices[p.category.id] || 'transfer_pot';
+        const choice = underspendChoices[p.category.id];
         if (choice === 'transfer_pot') {
           return sum + p.leftover;
         }
@@ -363,16 +377,20 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       let deltaAmount = 0;
 
       if (p.isUnderspent) {
-        const choice = underspendChoices[cat.id] || 'transfer_pot';
+        const choice = underspendChoices[cat.id];
         if (choice === 'prorate') {
           const addPerWeek = Math.round(p.leftover / remainingWeeksInMonth);
           followingWeeksBudget = p.baseline + addPerWeek;
           deltaAmount = addPerWeek;
           statusLabel = `+${formatCurrency(addPerWeek)}/wk prorated`;
           statusType = 'prorated_up';
-        } else {
+        } else if (choice === 'transfer_pot') {
           followingWeeksBudget = p.baseline;
           statusLabel = 'Transferred to pot (baseline retained)';
+          statusType = 'neutral';
+        } else {
+          followingWeeksBudget = p.baseline;
+          statusLabel = `${formatCurrency(p.leftover)} unspent (Choose action)`;
           statusType = 'neutral';
         }
       } else if (p.isOverspent) {
@@ -460,7 +478,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       let choice: CategoryRolloverDecision['choice'] = 'rollover';
 
       if (proj.isUnderspent) {
-        const uChoice = underspendChoices[cat.id] || 'transfer_pot';
+        const uChoice = underspendChoices[cat.id];
         choice = uChoice === 'prorate' ? 'rollover' : 'savings';
       } else if (proj.isOverspent) {
         const input = overspendInputs[cat.id];
@@ -483,7 +501,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         adjustmentPerWeek: proj.followingWeeksBudget - proj.baseline,
         previousWeeklyBudget: proj.budget,
         newWeeklyBudget: proj.followingWeeksBudget,
-        savingsContribution: proj.isUnderspent && (underspendChoices[cat.id] || 'transfer_pot') === 'transfer_pot' ? proj.leftover : 0,
+        savingsContribution: proj.isUnderspent && underspendChoices[cat.id] === 'transfer_pot' ? proj.leftover : 0,
       });
     });
 
@@ -647,8 +665,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                   Weekly Check-In & Budget Balancing
                 </h3>
                 {isHistoricalWeek ? (
-                  <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-brown-100 text-brown-900 border border-brown-300">
-                    Historical Week
+                  <span className="text-[10px] font-extrabold uppercase px-2.5 py-0.5 rounded-full bg-alert-red-100 text-alert-red-800 border border-alert-red-300">
+                    Past Due
                   </span>
                 ) : isPreviewMode ? (
                   <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-gold-100 text-gold-900 border border-gold-300">
@@ -661,7 +679,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                 )}
               </div>
               <span className="text-xs text-brown-700 block truncate">
-                {selectedWeekRange.label} &bull; {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'} remaining in month
+                {formattedWeekHeader} &bull; {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'} remaining in month
               </span>
             </div>
           </div>
@@ -765,7 +783,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                 <div>
                   <h4 className="text-sm font-black text-dark-green-900 flex items-center gap-1.5">
                     <Receipt className="w-4 h-4 text-dark-green-700" />
-                    Transactions for {selectedWeekRange.label}
+                    Transactions for {formattedWeekHeader}
                   </h4>
                   <p className="text-xs text-brown-700">
                     Verify all purchases are logged before balancing category rollovers and deficits.
@@ -786,7 +804,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               {showInlineLogExpense && (
                 <div className="p-4 bg-sage-50/60 border border-sage-200 rounded-2xl space-y-3 animate-in fade-in duration-150">
                   <h5 className="text-xs font-black text-dark-green-900">
-                    Add Missing Expense to {selectedWeekRange.label}
+                    Add Missing Expense to {formattedWeekHeader}
                   </h5>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1023,360 +1041,195 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
           {/* ========================================================================= */}
           {step === 2 && (
             <div className="space-y-6">
-              {/* TOP SECTION: GLOBAL TRANSFER POT CARD */}
-              <div className="p-4 sm:p-5 bg-dark-green-900 text-white rounded-3xl shadow-md border border-dark-green-950 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-xs border border-white/20 flex items-center justify-center text-sage-300 shrink-0">
-                      <Layers className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] uppercase font-extrabold tracking-wider text-sage-200">
-                          Global Transfer Pot
-                        </span>
-                        <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white/20 text-white">
-                          Real-Time Pool
-                        </span>
-                      </div>
-                      <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight text-white flex items-baseline gap-2">
-                        <span>{formatCurrency(availableTransferPot)}</span>
-                        <span className="text-xs font-medium text-sage-200">available to balance deficits or savings</span>
-                      </div>
-                    </div>
+              {/* 1. TOP SECTION: THIS WEEK PROGRESS (First element in modal) */}
+              <div className="bg-beige-50/60 border border-beige-200 rounded-3xl p-4 sm:p-5 space-y-3.5">
+                <div className="flex items-center justify-between border-b border-beige-200 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-dark-green-800" />
+                    <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
+                      This Week Progress
+                    </h5>
                   </div>
-
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/15 text-[11px] font-bold text-sage-200">
-                      +{formatCurrency(totalTransferPotGenerated)} transferred
-                    </div>
-                    {totalPotPulledForDeficits > 0 && (
-                      <div className="px-2.5 py-1 rounded-xl bg-alert-red-600/30 border border-alert-red-300/40 text-[11px] font-bold text-alert-red-200">
-                        -{formatCurrency(totalPotPulledForDeficits)} used for deficits
-                      </div>
-                    )}
-                    {availableTransferPot > 0 && (
-                      <div className="px-2.5 py-1 rounded-xl bg-sage-700/40 border border-sage-400/40 text-[11px] font-bold text-sage-200 flex items-center gap-1">
-                        <Sparkles className="w-3 h-3 text-sage-300" />
-                        <span>+{formatCurrency(availableTransferPot)} routing to Savings</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <p className="text-xs text-sage-100/90 leading-relaxed border-t border-white/10 pt-2.5">
-                  Underspent envelope surpluses can be pooled into this Transfer Pot to absorb category overspends. Any remaining pot funds automatically expand your weekly Savings deposit!
-                </p>
-              </div>
-
-              {/* REVIEW SECTION UI: SIDE-BY-SIDE (THIS WEEK vs FOLLOWING WEEKS) */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-black uppercase tracking-wider text-dark-grey-600">
-                    Category Overview & Projection Matrix
-                  </h4>
-                  <span className="text-[11px] text-brown-700 font-semibold">
-                    Dynamic updates in real-time
+                  <span className="text-[11px] font-bold text-brown-700">
+                    Total Spent: {formatCurrency(totalSpent)}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* LEFT COLUMN: THIS WEEK (CURRENT CATEGORY PROGRESS) */}
-                  <div className="bg-beige-50/60 border border-beige-200 rounded-3xl p-4 space-y-3.5">
-                    <div className="flex items-center justify-between border-b border-beige-200 pb-2">
-                      <div className="flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-dark-green-800" />
-                        <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
-                          This Week Progress
-                        </h5>
-                      </div>
-                      <span className="text-[11px] font-bold text-brown-700">
-                        Total Spent: {formatCurrency(totalSpent)}
-                      </span>
-                    </div>
+                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                  {/* Expense Categories */}
+                  {categoryProjections.map((p) => {
+                    const cat = p.category;
+                    const spentPct = p.budget > 0 ? Math.min(100, Math.round((p.spent / p.budget) * 100)) : 0;
+                    const uChoice = underspendChoices[cat.id];
 
-                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                      {/* Expense Categories */}
-                      {categoryProjections.map((p) => {
-                        const cat = p.category;
-                        const spentPct = p.budget > 0 ? Math.min(100, Math.round((p.spent / p.budget) * 100)) : 0;
-                        const uChoice = underspendChoices[cat.id] || 'transfer_pot';
-
-                        return (
-                          <div
-                            key={cat.id}
-                            className="bg-white border border-beige-200/90 rounded-2xl p-3 space-y-2 shadow-2xs"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <div className="w-7 h-7 rounded-xl bg-beige-100 flex items-center justify-center shrink-0">
-                                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
-                                </div>
-                                <span className="text-xs font-extrabold text-dark-green-900 truncate">
-                                  {cat.name}
-                                </span>
-                              </div>
-
-                              <span className="text-xs font-black font-mono text-dark-green-900">
-                                {formatCurrency(p.spent)}{' '}
-                                <span className="text-[10px] text-dark-grey-600 font-normal">
-                                  / {formatCurrency(p.budget)}
-                                </span>
-                              </span>
-                            </div>
-
-                            {/* Dynamic Segmented Progress Bar */}
-                            <div className="space-y-1">
-                              <div className="w-full h-3 bg-beige-200 rounded-full overflow-hidden flex border border-beige-300/40 relative">
-                                {/* Base Spent Segment */}
-                                <div
-                                  className={`h-full transition-all duration-300 ${
-                                    p.isOverspent ? 'bg-alert-red-600' : 'bg-sage-600'
-                                  }`}
-                                  style={{ width: `${Math.min(100, spentPct)}%` }}
-                                />
-
-                                {/* Unused Leftover Segment */}
-                                {p.isUnderspent && (
-                                  <div
-                                    className={`h-full transition-all duration-300 ${
-                                      uChoice === 'transfer_pot'
-                                        ? 'bg-dark-green-900'
-                                        : 'bg-sky-blue-600'
-                                    }`}
-                                    style={{ width: `${100 - spentPct}%` }}
-                                  />
-                                )}
-                              </div>
-
-                              {/* Progress Sub-Labels */}
-                              <div className="flex items-center justify-between text-[10px]">
-                                {p.isUnderspent ? (
-                                  <>
-                                    <span className="text-sage-800 font-bold">
-                                      {formatCurrency(p.leftover)} leftover
-                                    </span>
-                                    <span
-                                      className={`font-black px-1.5 py-0.2 rounded text-[9px] ${
-                                        uChoice === 'transfer_pot'
-                                          ? 'bg-dark-green-900 text-white'
-                                          : 'bg-sky-blue-100 text-sky-blue-900 border border-sky-blue-300'
-                                      }`}
-                                    >
-                                      {uChoice === 'transfer_pot'
-                                        ? `${formatCurrency(p.leftover)} transferred`
-                                        : `${formatCurrency(p.leftover)} prorated`}
-                                    </span>
-                                  </>
-                                ) : p.isOverspent ? (
-                                  <>
-                                    <span className="text-alert-red-600 font-bold">
-                                      {formatCurrency(p.deficit)} overspent
-                                    </span>
-                                    <span className="text-alert-red-700 font-black bg-alert-red-100 px-1.5 py-0.2 rounded text-[9px]">
-                                      Deficit active
-                                    </span>
-                                  </>
-                                ) : (
-                                  <span className="text-dark-grey-600 font-bold">Exact on budget</span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {/* Savings Category Card (This Week) */}
-                      <div className="bg-sage-50/70 border border-sage-200 rounded-2xl p-3 space-y-2 shadow-2xs">
+                    return (
+                      <div
+                        key={cat.id}
+                        className="bg-white border border-beige-200/90 rounded-2xl p-3 space-y-2 shadow-2xs"
+                      >
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2 min-w-0">
-                            <div className="w-7 h-7 rounded-xl bg-sage-200 text-dark-green-900 flex items-center justify-center shrink-0">
-                              <PiggyBank className="w-3.5 h-3.5" />
+                            <div className="w-7 h-7 rounded-xl bg-beige-100 flex items-center justify-center shrink-0">
+                              <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
                             </div>
-                            <div>
-                              <span className="text-xs font-extrabold text-dark-green-950 block">
-                                Savings Pot Deposit
-                              </span>
-                              <span className="text-[10px] text-sage-900 font-medium">
-                                Target: {formatCurrency(thisWeekSavingsTarget)}
-                                {thisWeekSavingsTarget !== baselineSavingsTarget && (
-                                  <span className="ml-1 text-dark-green-800 font-bold">
-                                    (Expanded from {formatCurrency(baselineSavingsTarget)} baseline)
-                                  </span>
-                                )}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div className="text-right">
-                            <div className="text-xs font-black font-mono text-dark-green-950">
-                              {formatCurrency(savingsSavedThisWeek)}{' '}
-                              <span className="text-[10px] text-sage-900 font-normal">
-                                / {formatCurrency(savingsBudgetThisWeek)}
-                              </span>
-                            </div>
-                            <span className="text-[9px] font-bold text-dark-green-800 block">
-                              {savingsSavedThisWeek >= savingsBudgetThisWeek ? 'Target Achieved' : 'Deficit Active'}
+                            <span className="text-xs font-extrabold text-dark-green-900 truncate">
+                              {cat.name}
                             </span>
                           </div>
+
+                          <span className="text-xs font-black font-mono text-dark-green-900">
+                            {formatCurrency(p.spent)}{' '}
+                            <span className="text-[10px] text-dark-grey-600 font-normal">
+                              / {formatCurrency(p.budget)}
+                            </span>
+                          </span>
                         </div>
 
-                        {/* Progress Bar for Savings (Solid stepped color) */}
-                        {(() => {
-                          const savingsPct = savingsBudgetThisWeek > 0
-                            ? Math.round((savingsSavedThisWeek / savingsBudgetThisWeek) * 100)
-                            : 0;
-                          return (
-                            <div className={`w-full h-3 rounded-full overflow-hidden flex border ${
-                              savingsPct >= 100
-                                ? 'border-2 border-dark-green-800 ring-1 ring-dark-green-800/30 bg-beige-100'
-                                : 'border-sage-300/80 bg-beige-100'
-                            }`}>
+                        {/* Dynamic Segmented Progress Bar */}
+                        <div className="space-y-1">
+                          <div className="w-full h-3 bg-beige-200 rounded-full overflow-hidden flex border border-beige-300/40 relative">
+                            {/* Base Spent Segment */}
+                            <div
+                              className={`h-full transition-all duration-300 ${
+                                p.isOverspent ? 'bg-alert-red-600' : 'bg-sage-600'
+                              }`}
+                              style={{ width: `${Math.min(100, spentPct)}%` }}
+                            />
+
+                            {/* Unused Leftover Segment */}
+                            {p.isUnderspent && (
                               <div
-                                className={`h-full ${getSavingsProgressFillColor(savingsPct)} transition-all duration-300 rounded-full`}
-                                style={{
-                                  width: `${Math.min(100, savingsPct)}%`,
-                                }}
-                              />
-                            </div>
-                          );
-                        })()}
-
-                        {savingsExpandedBonus > 0 && (
-                          <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
-                            <Sparkles className="w-3 h-3 text-sage-600 shrink-0" />
-                            <span>
-                              Expanded budget: <strong>+{formatCurrency(savingsExpandedBonus)}</strong> bonus from Transfer Pot
-                            </span>
-                          </div>
-                        )}
-
-                        {totalDepositsThisWeek > 0 && (
-                          <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
-                            <DollarSign className="w-3 h-3 text-dark-green-800 shrink-0" />
-                            <span>
-                              Includes <strong>+{formatCurrency(totalDepositsThisWeek)}</strong> from {weekDeposits.length} one-off deposit{weekDeposits.length > 1 ? 's' : ''} received this week
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* RIGHT COLUMN: AMOUNT BUDGETED FOR FOLLOWING WEEKS */}
-                  <div className="bg-sage-50/50 border border-sage-200 rounded-3xl p-4 space-y-3.5">
-                    <div className="flex items-center justify-between border-b border-sage-200 pb-2">
-                      <div className="flex items-center gap-2">
-                        <TrendingUp className="w-4 h-4 text-sage-800" />
-                        <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
-                          Amount Budgeted For Following Weeks
-                        </h5>
-                      </div>
-                      <span className="text-[11px] font-bold text-sage-900">
-                        Next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'Week' : 'Weeks'}
-                      </span>
-                    </div>
-
-                    <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                      {/* Expense Categories Following Weeks */}
-                      {categoryProjections.map((p) => {
-                        const cat = p.category;
-                        const isHigher = p.followingWeeksBudget > p.baseline;
-                        const isLower = p.followingWeeksBudget < p.baseline;
-
-                        return (
-                          <div
-                            key={`future-${cat.id}`}
-                            className="bg-white border border-sage-200/80 rounded-2xl p-3 space-y-1.5 shadow-2xs"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <div className="w-7 h-7 rounded-xl bg-sage-100 flex items-center justify-center shrink-0">
-                                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
-                                </div>
-                                <div className="min-w-0">
-                                  <span className="text-xs font-extrabold text-dark-green-900 block truncate">
-                                    {cat.name}
-                                  </span>
-                                  <span className="text-[10px] text-dark-grey-600">
-                                    Baseline: {formatCurrency(p.baseline)}/wk
-                                  </span>
-                                </div>
-                              </div>
-
-                              <div className="text-right">
-                                <div className="text-xs sm:text-sm font-black font-mono text-dark-green-900">
-                                  {formatCurrency(p.followingWeeksBudget)}
-                                  <span className="text-[10px] font-normal text-brown-700">/wk</span>
-                                </div>
-                                <span className="text-[10px] text-dark-grey-600 font-medium block">
-                                  for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Status Pill */}
-                            <div className="pt-1 flex items-center justify-between text-[10px] border-t border-beige-100">
-                              <span className="text-dark-grey-600 font-medium">Status:</span>
-                              <span
-                                className={`font-bold px-2 py-0.5 rounded-full ${
-                                  isHigher
-                                    ? 'bg-sage-100 text-sage-900 border border-sage-300'
-                                    : isLower
-                                    ? 'bg-alert-red-50 text-alert-red-700 border border-alert-red-200'
-                                    : 'bg-beige-100 text-brown-800'
+                                className={`h-full transition-all duration-300 ${
+                                  uChoice === 'transfer_pot'
+                                    ? 'bg-dark-green-900'
+                                    : uChoice === 'prorate'
+                                    ? 'bg-sky-blue-600'
+                                    : 'bg-sage-400'
                                 }`}
-                              >
-                                {p.statusLabel}
-                              </span>
-                            </div>
-                          </div>
-                        );
-                      })}
-
-                      {/* Savings Category Following Weeks */}
-                      <div className="bg-white border border-sage-200 rounded-2xl p-3 space-y-1.5 shadow-2xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <div className="w-7 h-7 rounded-xl bg-sage-100 text-dark-green-900 flex items-center justify-center shrink-0">
-                              <PiggyBank className="w-3.5 h-3.5" />
-                            </div>
-                            <div>
-                              <span className="text-xs font-extrabold text-dark-green-950 block">
-                                Savings Target Projection
-                              </span>
-                              <span className="text-[10px] text-sage-900">
-                                Global Baseline: {formatCurrency(baselineSavingsTarget)}/wk
-                              </span>
-                            </div>
+                                style={{ width: `${100 - spentPct}%` }}
+                              />
+                            )}
                           </div>
 
-                          <div className="text-right">
-                            <div className="text-xs sm:text-sm font-black font-mono text-dark-green-950">
-                              {formatCurrency(Math.max(0, baselineSavingsTarget - futureSavingsReductionTotal))}
-                              <span className="text-[10px] font-normal text-sage-900">/wk</span>
-                            </div>
-                            <span className="text-[10px] text-dark-green-800 font-medium block">
-                              for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
-                            </span>
+                          {/* Progress Sub-Labels */}
+                          <div className="flex items-center justify-between text-[10px]">
+                            {p.isUnderspent ? (
+                              <>
+                                <span className="text-sage-800 font-bold">
+                                  {formatCurrency(p.leftover)} unspent
+                                </span>
+                                <span
+                                  className={`font-black px-1.5 py-0.2 rounded text-[9px] ${
+                                    uChoice === 'transfer_pot'
+                                      ? 'bg-dark-green-900 text-white'
+                                      : uChoice === 'prorate'
+                                      ? 'bg-sky-blue-100 text-sky-blue-900 border border-sky-blue-300'
+                                      : 'bg-beige-100 text-brown-800 border border-beige-300'
+                                  }`}
+                                >
+                                  {uChoice === 'transfer_pot'
+                                    ? `${formatCurrency(p.leftover)} transferred`
+                                    : uChoice === 'prorate'
+                                    ? `${formatCurrency(p.leftover)} prorated`
+                                    : `${formatCurrency(p.leftover)} unspent`}
+                                </span>
+                              </>
+                            ) : p.isOverspent ? (
+                              <>
+                                <span className="text-alert-red-600 font-bold">
+                                  {formatCurrency(p.deficit)} overspent
+                                </span>
+                                <span className="text-alert-red-700 font-black bg-alert-red-100 px-1.5 py-0.2 rounded text-[9px]">
+                                  Deficit active
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-dark-grey-600 font-bold">Exact on budget</span>
+                            )}
                           </div>
                         </div>
+                      </div>
+                    );
+                  })}
 
-                        <div className="pt-1 flex items-center justify-between text-[10px] border-t border-sage-100">
-                          <span className="text-sage-900 font-medium">Following Weeks Target:</span>
-                          <span className="font-bold text-dark-green-900">
-                            {futureSavingsReductionTotal > 0
-                              ? `-${formatCurrency(futureSavingsReductionTotal)}/wk from deficit override`
-                              : 'Baseline target maintained'}
+                  {/* Savings Category Card (This Week) */}
+                  <div className="bg-sage-50/70 border border-sage-200 rounded-2xl p-3 space-y-2 shadow-2xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-xl bg-sage-200 text-dark-green-900 flex items-center justify-center shrink-0">
+                          <PiggyBank className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-extrabold text-dark-green-950 block">
+                            Savings Pot Deposit
+                          </span>
+                          <span className="text-[10px] text-sage-900 font-medium">
+                            Target: {formatCurrency(thisWeekSavingsTarget)}
+                            {thisWeekSavingsTarget !== baselineSavingsTarget && (
+                              <span className="ml-1 text-dark-green-800 font-bold">
+                                (Expanded from {formatCurrency(baselineSavingsTarget)} baseline)
+                              </span>
+                            )}
                           </span>
                         </div>
                       </div>
+
+                      <div className="text-right">
+                        <div className="text-xs font-black font-mono text-dark-green-950">
+                          {formatCurrency(savingsSavedThisWeek)}{' '}
+                          <span className="text-[10px] text-sage-900 font-normal">
+                            / {formatCurrency(savingsBudgetThisWeek)}
+                          </span>
+                        </div>
+                        <span className="text-[9px] font-bold text-dark-green-800 block">
+                          {savingsSavedThisWeek >= savingsBudgetThisWeek ? 'Target Achieved' : 'Deficit Active'}
+                        </span>
+                      </div>
                     </div>
+
+                    {/* Progress Bar for Savings (Solid stepped color) */}
+                    {(() => {
+                      const savingsPct = savingsBudgetThisWeek > 0
+                        ? Math.round((savingsSavedThisWeek / savingsBudgetThisWeek) * 100)
+                        : 0;
+                      return (
+                        <div className={`w-full h-3 rounded-full overflow-hidden flex border ${
+                          savingsPct >= 100
+                            ? 'border-2 border-dark-green-800 ring-1 ring-dark-green-800/30 bg-beige-100'
+                            : 'border-sage-300/80 bg-beige-100'
+                        }`}>
+                          <div
+                            className={`h-full ${getSavingsProgressFillColor(savingsPct)} transition-all duration-300 rounded-full`}
+                            style={{
+                              width: `${Math.min(100, savingsPct)}%`,
+                            }}
+                          />
+                        </div>
+                      );
+                    })()}
+
+                    {savingsExpandedBonus > 0 && (
+                      <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
+                        <Sparkles className="w-3 h-3 text-sage-600 shrink-0" />
+                        <span>
+                          Expanded budget: <strong>+{formatCurrency(savingsExpandedBonus)}</strong> bonus from Transfer Pot
+                        </span>
+                      </div>
+                    )}
+
+                    {totalDepositsThisWeek > 0 && (
+                      <div className="text-[10px] text-dark-green-900 font-semibold flex items-center gap-1 bg-white/70 p-1.5 rounded-lg border border-sage-200/80">
+                        <DollarSign className="w-3 h-3 text-dark-green-800 shrink-0" />
+                        <span>
+                          Includes <strong>+{formatCurrency(totalDepositsThisWeek)}</strong> from {weekDeposits.length} one-off deposit{weekDeposits.length > 1 ? 's' : ''} received this week
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
 
-              {/* BUDGET BALANCING CHOICES (BOTTOM SECTION) */}
+              {/* 2. MIDDLE SECTION: BUDGET BALANCING CHOICES (With Transfer Pot between Underspent & Overspent) */}
               <div className="space-y-4 pt-2">
                 <div className="border-b border-beige-200 pb-2">
                   <h4 className="text-sm font-black text-dark-green-950 flex items-center gap-2">
@@ -1400,7 +1253,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                         .filter((p) => p.isUnderspent)
                         .map((p) => {
                           const cat = p.category;
-                          const currentChoice = underspendChoices[cat.id] || 'transfer_pot';
+                          const currentChoice = underspendChoices[cat.id];
 
                           return (
                             <div
@@ -1504,6 +1357,52 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                         })}
                     </div>
                   )}
+
+                  {/* GLOBAL TRANSFER POT CARD (Displayed between the underspend and overspend selection sections) */}
+                  <div className="p-4 sm:p-5 bg-dark-green-900 text-white rounded-3xl shadow-md border border-dark-green-950 space-y-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-2xl bg-white/10 backdrop-blur-xs border border-white/20 flex items-center justify-center text-sage-300 shrink-0">
+                          <Layers className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] uppercase font-extrabold tracking-wider text-sage-200">
+                              Global Transfer Pot
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.2 rounded bg-white/20 text-white">
+                              Real-Time Pool
+                            </span>
+                          </div>
+                          <div className="text-2xl sm:text-3xl font-black font-mono tracking-tight text-white flex items-baseline gap-2">
+                            <span>{formatCurrency(availableTransferPot)}</span>
+                            <span className="text-xs font-medium text-sage-200">available to balance deficits or savings</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="px-2.5 py-1 rounded-xl bg-white/10 border border-white/15 text-[11px] font-bold text-sage-200">
+                          +{formatCurrency(totalTransferPotGenerated)} transferred
+                        </div>
+                        {totalPotPulledForDeficits > 0 && (
+                          <div className="px-2.5 py-1 rounded-xl bg-alert-red-600/30 border border-alert-red-300/40 text-[11px] font-bold text-alert-red-200">
+                            -{formatCurrency(totalPotPulledForDeficits)} used for deficits
+                          </div>
+                        )}
+                        {availableTransferPot > 0 && (
+                          <div className="px-2.5 py-1 rounded-xl bg-sage-700/40 border border-sage-400/40 text-[11px] font-bold text-sage-200 flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-sage-300" />
+                            <span>+{formatCurrency(availableTransferPot)} routing to Savings</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-xs text-sage-100/90 leading-relaxed border-t border-white/10 pt-2.5">
+                      Underspent envelope surpluses can be pooled into this Transfer Pot to absorb category overspends. Any remaining pot funds automatically expand your weekly Savings deposit!
+                    </p>
+                  </div>
 
                   {/* 2. Overspent Categories List */}
                   {categoryPacings.filter((p) => p.isOverspent).length > 0 && (
@@ -1739,6 +1638,117 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       </span>
                     </div>
                   )}
+                </div>
+              </div>
+
+              {/* 3. BOTTOM SECTION: AMOUNT BUDGETED FOR FOLLOWING WEEKS (Last element in modal) */}
+              <div className="bg-sage-50/50 border border-sage-200 rounded-3xl p-4 sm:p-5 space-y-3.5">
+                <div className="flex items-center justify-between border-b border-sage-200 pb-2">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="w-4 h-4 text-sage-800" />
+                    <h5 className="text-xs font-black text-dark-green-950 uppercase tracking-wide">
+                      Amount Budgeted For Following Weeks
+                    </h5>
+                  </div>
+                  <span className="text-[11px] font-bold text-sage-900">
+                    Next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'Week' : 'Weeks'}
+                  </span>
+                </div>
+
+                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                  {/* Expense Categories Following Weeks */}
+                  {categoryProjections.map((p) => {
+                    const cat = p.category;
+                    const isHigher = p.followingWeeksBudget > p.baseline;
+                    const isLower = p.followingWeeksBudget < p.baseline;
+
+                    return (
+                      <div
+                        key={`future-${cat.id}`}
+                        className="bg-white border border-sage-200/80 rounded-2xl p-3 space-y-1.5 shadow-2xs"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <div className="w-7 h-7 rounded-xl bg-sage-100 flex items-center justify-center shrink-0">
+                              <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="min-w-0">
+                              <span className="text-xs font-extrabold text-dark-green-900 block truncate">
+                                {cat.name}
+                              </span>
+                              <span className="text-[10px] text-dark-grey-600">
+                                Baseline: {formatCurrency(p.baseline)}/wk
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="text-xs sm:text-sm font-black font-mono text-dark-green-900">
+                              {formatCurrency(p.followingWeeksBudget)}
+                              <span className="text-[10px] font-normal text-brown-700">/wk</span>
+                            </div>
+                            <span className="text-[10px] text-dark-grey-600 font-medium block">
+                              for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Status Pill */}
+                        <div className="pt-1 flex items-center justify-between text-[10px] border-t border-beige-100">
+                          <span className="text-dark-grey-600 font-medium">Status:</span>
+                          <span
+                            className={`font-bold px-2 py-0.5 rounded-full ${
+                              isHigher
+                                ? 'bg-sage-100 text-sage-900 border border-sage-300'
+                                : isLower
+                                ? 'bg-alert-red-50 text-alert-red-700 border border-alert-red-200'
+                                : 'bg-beige-100 text-brown-800'
+                            }`}
+                          >
+                            {p.statusLabel}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Savings Category Following Weeks */}
+                  <div className="bg-white border border-sage-200 rounded-2xl p-3 space-y-1.5 shadow-2xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="w-7 h-7 rounded-xl bg-sage-100 text-dark-green-900 flex items-center justify-center shrink-0">
+                          <PiggyBank className="w-3.5 h-3.5" />
+                        </div>
+                        <div>
+                          <span className="text-xs font-extrabold text-dark-green-950 block">
+                            Savings Target Projection
+                          </span>
+                          <span className="text-[10px] text-sage-900">
+                            Global Baseline: {formatCurrency(baselineSavingsTarget)}/wk
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="text-xs sm:text-sm font-black font-mono text-dark-green-950">
+                          {formatCurrency(Math.max(0, baselineSavingsTarget - futureSavingsReductionTotal))}
+                          <span className="text-[10px] font-normal text-sage-900">/wk</span>
+                        </div>
+                        <span className="text-[10px] text-dark-green-800 font-medium block">
+                          for next {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="pt-1 flex items-center justify-between text-[10px] border-t border-sage-100">
+                      <span className="text-sage-900 font-medium">Following Weeks Target:</span>
+                      <span className="font-bold text-dark-green-900">
+                        {futureSavingsReductionTotal > 0
+                          ? `-${formatCurrency(futureSavingsReductionTotal)}/wk from deficit override`
+                          : 'Baseline target maintained'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>

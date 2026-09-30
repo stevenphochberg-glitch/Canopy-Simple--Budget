@@ -209,7 +209,7 @@ export interface TransactionReaction {
   timestamp: number;
 }
 
-export type BillFrequency = 'weekly' | 'monthly' | 'annually';
+export type BillFrequency = 'monthly' | 'yearly' | 'custom' | 'annually' | 'weekly';
 
 export interface Expense {
   id: string;
@@ -221,6 +221,8 @@ export interface Expense {
   loggedByUserId: string;
   receiptImgUrl?: string;
   billFrequency?: BillFrequency;
+  billStartDate?: string;
+  billEndDate?: string;
   tags?: string[];
   subcategory?: string;
   depositDestination?: 'savings_budget' | 'goal';
@@ -238,6 +240,8 @@ export interface StagedExpense {
   loggedByUserId: string;
   receiptImgUrl?: string;
   billFrequency?: BillFrequency;
+  billStartDate?: string;
+  billEndDate?: string;
   tags?: string[];
   subcategory?: string;
   depositDestination?: 'savings_budget' | 'goal';
