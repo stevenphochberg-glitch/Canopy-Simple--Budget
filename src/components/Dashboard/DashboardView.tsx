@@ -424,6 +424,39 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     totalWeeklyBaseline,
   ]);
 
+  const isExpandedBudget = useMemo(() => {
+    if (depositTotalThisWeek > 0) return true;
+    if (isDepositExpansion) return true;
+    if (totalTimeframeBudget > totalWeeklyBaseline) return true;
+    const weekOverrides = household?.weeklyOverrides?.[activeWeekId];
+    if (weekOverrides) {
+      const hasAnyExpandedOverride = Object.entries(weekOverrides).some(([catId, val]) => {
+        const cat = categories.find((c) => c.id === catId);
+        const baseline = cat?.baselineBudget || 0;
+        return (Number(val) || 0) > baseline;
+      });
+      if (hasAnyExpandedOverride) return true;
+    }
+    const activeWeekStartStr = formatLocalDate(activeDateRange.startDate);
+    const hasMatchingDeposit = (household?.oneOffDeposits || []).some((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      const targetRange = getWeekRange(depDate, household?.firstDayOfWeek || 'Monday', 0);
+      return formatLocalDate(targetRange.startDate) === activeWeekStartStr;
+    });
+    return hasMatchingDeposit;
+  }, [
+    depositTotalThisWeek,
+    isDepositExpansion,
+    totalTimeframeBudget,
+    totalWeeklyBaseline,
+    household?.weeklyOverrides,
+    activeWeekId,
+    categories,
+    household?.oneOffDeposits,
+    activeDateRange,
+    household?.firstDayOfWeek,
+  ]);
+
   // 1% – 75%: Muted Sage Green, 75% – 90%: Earth Brown, 90% – 99%: Alert Red, >= 100%: Alert Red fill & Alert Red outline
   let overallBarColor = 'bg-sage-600';
   if (overallPercentage >= 100) {
@@ -654,7 +687,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                           SAVINGS ADJUSTED:
                         </span>
                         <p className="text-brown-800 text-xs leading-relaxed">
-                          You deposited{' '}
+                          You banked{' '}
                           <strong>{formatCurrency(historicalCheckIn.totalSaved || 0)}</strong> into savings after covering {formatCurrency(historicalSavingsDeducted)} in category overspends
                           {historicalDepositTotal > 0 ? ` (including +${formatCurrency(historicalDepositTotal)} from one-off deposits)` : ''}.
                         </p>
@@ -795,7 +828,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   <span
                     className="text-dark-green-900"
                     title={
-                      isDepositExpansion
+                      isExpandedBudget
                         ? `Expanded Weekly Budget: ${formatCurrency(totalTimeframeBudget)}`
                         : `Active Weekly Prorated: ${formatCurrency(totalTimeframeBudget)}`
                     }
@@ -804,12 +837,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                   </span>
                   <span
                     className={`text-[8px] sm:text-[9px] font-extrabold px-1 py-0.2 rounded border ${
-                      isDepositExpansion
+                      isExpandedBudget
                         ? 'bg-sage-100 text-dark-green-900 border-sage-300'
                         : 'bg-sky-blue-100 text-sky-blue-900 border-sky-blue-300'
                     }`}
                   >
-                    {isDepositExpansion ? 'Deposit' : 'Prorated'}
+                    {isExpandedBudget ? 'Expanded' : 'Prorated'}
                   </span>
                 </>
               ) : (
@@ -818,11 +851,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </div>
             <p className="text-[9px] sm:text-[10px] text-brown-700 truncate">
               {hasAnyWeeklyOverride
-                ? isDepositExpansion
+                ? isExpandedBudget
                   ? `Expanded (+${formatCurrency(
                       depositTotalThisWeek > 0
                         ? depositTotalThisWeek
-                        : totalTimeframeBudget - totalWeeklyBaseline
+                        : Math.abs(totalTimeframeBudget - totalWeeklyBaseline)
                     )})`
                   : `Prorated (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(
                       totalTimeframeBudget - totalWeeklyBaseline

@@ -80,6 +80,9 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   // Step 2 Overspend inputs: categoryId -> { potPull, savingsPull, overrideMode }
   const [overspendInputs, setOverspendInputs] = useState<Record<string, OverspendInputState>>({});
 
+  // Step 2 Explicit user choice to route Transfer Pot funds into Savings
+  const [sendPotToSavings, setSendPotToSavings] = useState<boolean>(false);
+
   const [intentionsNote, setIntentionsNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [forceEarlyCheckIn, setForceEarlyCheckIn] = useState<boolean>(false);
@@ -132,6 +135,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       setForceEarlyCheckIn(false);
       setUnderspendChoices({});
       setOverspendInputs({});
+      setSendPotToSavings(false);
     }
   }, [isOpen, weeklyCheckInTargetRange, timeframeMode, timeframeOffset, activeDateRange, statusInfo.activeWeekRange, oldestPastDueWeek]);
 
@@ -321,8 +325,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     return Math.max(0, totalTransferPotGenerated - totalPotPulledForDeficits);
   }, [totalTransferPotGenerated, totalPotPulledForDeficits]);
 
-  // 4. Calculate Dynamic Savings for This Week (Savings Expansion per Requirement 5)
-  // If funds remain in Transfer Pot, automatically route exact remaining amount into current week's Savings category,
+  // 4. Calculate Dynamic Savings for This Week (Savings Expansion per user choice)
+  // When user clicks 'Send pot amount to savings', route exact remaining amount into current week's Savings category,
   // dynamically expanding the total savings budget for the week.
   const {
     savingsBudgetThisWeek,
@@ -330,7 +334,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     savingsExpandedBonus,
     futureSavingsReductionTotal,
   } = useMemo(() => {
-    const bonus = availableTransferPot;
+    const bonus = sendPotToSavings ? availableTransferPot : 0;
     const baseTarget = thisWeekSavingsTarget;
     const baseSaved = Math.max(0, baseTarget - totalSavingsPulledForDeficits);
 
@@ -371,7 +375,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const categoryProjections = useMemo(() => {
     return categoryPacings.map((p) => {
       const cat = p.category;
-      let followingWeeksBudget = p.baseline;
+      let followingWeeksBudget = p.budget;
       let statusLabel = 'Unchanged';
       let statusType: 'neutral' | 'prorated_up' | 'prorated_down' | 'loss_accepted' | 'future_savings_pulled' = 'neutral';
       let deltaAmount = 0;
@@ -380,32 +384,32 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         const choice = underspendChoices[cat.id];
         if (choice === 'prorate') {
           const addPerWeek = Math.round(p.leftover / remainingWeeksInMonth);
-          followingWeeksBudget = p.baseline + addPerWeek;
+          followingWeeksBudget = p.budget + addPerWeek;
           deltaAmount = addPerWeek;
           statusLabel = `+${formatCurrency(addPerWeek)}/wk prorated`;
           statusType = 'prorated_up';
         } else if (choice === 'transfer_pot') {
-          followingWeeksBudget = p.baseline;
-          statusLabel = 'Transferred to pot (baseline retained)';
-          statusType = 'neutral';
+          followingWeeksBudget = p.budget;
+          statusLabel = 'Transferred to pot (budget retained)';
+          statusType = p.budget !== p.baseline ? 'prorated_down' : 'neutral';
         } else {
-          followingWeeksBudget = p.baseline;
+          followingWeeksBudget = p.budget;
           statusLabel = `${formatCurrency(p.leftover)} unspent (Choose action)`;
-          statusType = 'neutral';
+          statusType = p.budget !== p.baseline ? 'prorated_down' : 'neutral';
         }
       } else if (p.isOverspent) {
         const input = overspendInputs[cat.id] || { potPull: 0, savingsPull: 0, overrideMode: 'none' };
         const covered = (Number(input.potPull) || 0) + (Number(input.savingsPull) || 0);
         const uncovered = Math.max(0, p.deficit - covered);
-        const monthlyCap = p.baseline * remainingWeeksInMonth;
+        const monthlyCap = p.budget * remainingWeeksInMonth;
 
         if (uncovered === 0) {
-          followingWeeksBudget = p.baseline;
-          statusLabel = 'Covered via pot/savings';
-          statusType = 'neutral';
+          followingWeeksBudget = p.budget;
+          statusLabel = p.budget < p.baseline ? 'Covered via pot/savings (prorated budget maintained)' : 'Covered via pot/savings';
+          statusType = p.budget < p.baseline ? 'prorated_down' : 'neutral';
         } else if (uncovered <= monthlyCap) {
           const redPerWeek = Math.round(uncovered / remainingWeeksInMonth);
-          followingWeeksBudget = Math.max(0, p.baseline - redPerWeek);
+          followingWeeksBudget = Math.max(0, p.budget - redPerWeek);
           deltaAmount = redPerWeek;
           statusLabel = `-${formatCurrency(redPerWeek)}/wk auto-prorated`;
           statusType = 'prorated_down';
@@ -425,6 +429,10 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
             statusType = 'prorated_down';
           }
         }
+      } else {
+        followingWeeksBudget = p.budget;
+        statusLabel = p.budget !== p.baseline ? 'Prorated budget maintained' : 'Unchanged';
+        statusType = p.budget !== p.baseline ? 'prorated_down' : 'neutral';
       }
 
       return {
@@ -436,6 +444,21 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
       };
     });
   }, [categoryPacings, underspendChoices, overspendInputs, remainingWeeksInMonth]);
+
+  // Dynamic future week labels (e.g. "W4 & W5") for proration notes
+  const futureWeekLabels = useMemo(() => {
+    const tracker = getFiscalTrackerInfo(selectedWeekRange.startDate, household?.fiscalYearEndMonth || 12);
+    const curWeek = tracker.weekOfFiscalMonth;
+    const totalWeeks = tracker.monthWeekCount;
+    const weeks: string[] = [];
+    for (let w = curWeek + 1; w <= totalWeeks; w++) {
+      weeks.push(`W${w}`);
+    }
+    if (weeks.length === 0) return `next ${remainingWeeksInMonth} ${remainingWeeksInMonth === 1 ? 'week' : 'weeks'}`;
+    if (weeks.length === 1) return weeks[0];
+    if (weeks.length === 2) return `${weeks[0]} & ${weeks[1]}`;
+    return `${weeks.slice(0, -1).join(', ')} & ${weeks[weeks.length - 1]}`;
+  }, [selectedWeekRange.startDate, household?.fiscalYearEndMonth, remainingWeeksInMonth]);
 
   // Overall totals for Step 1, 2, 3
   const totalSpent = useMemo(() => {
@@ -1391,10 +1414,22 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                           </div>
                         )}
                         {availableTransferPot > 0 && (
-                          <div className="px-2.5 py-1 rounded-xl bg-sage-700/40 border border-sage-400/40 text-[11px] font-bold text-sage-200 flex items-center gap-1">
-                            <Sparkles className="w-3 h-3 text-sage-300" />
-                            <span>+{formatCurrency(availableTransferPot)} routing to Savings</span>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSendPotToSavings((prev) => !prev)}
+                            className={`px-3 py-1.5 rounded-xl text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                              sendPotToSavings
+                                ? 'bg-sage-600 hover:bg-sage-500 text-white border border-sage-300 shadow-xs'
+                                : 'bg-white hover:bg-sage-100 text-dark-green-950 border border-white/40 shadow-xs'
+                            }`}
+                          >
+                            <Sparkles className={`w-3.5 h-3.5 ${sendPotToSavings ? 'text-sage-200' : 'text-sage-700'}`} />
+                            <span>
+                              {sendPotToSavings
+                                ? `✓ Sent to Savings (+${formatCurrency(availableTransferPot)})`
+                                : 'Send pot amount to savings'}
+                            </span>
+                          </button>
                         )}
                       </div>
                     </div>
@@ -1551,7 +1586,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                 {uncovered === 0 ? (
                                   <div className="p-2.5 bg-sage-50 border border-sage-200 rounded-xl flex items-center gap-2 text-xs text-sage-900 font-bold">
                                     <CheckCircle2 className="w-4 h-4 text-sage-700 shrink-0" />
-                                    <span>Deficit fully covered! Next weeks budget remains at {formatCurrency(p.baseline)}/wk.</span>
+                                    <span>Deficit fully covered! Next weeks budget remains at {formatCurrency(p.budget)}/wk.</span>
                                   </div>
                                 ) : !isOverMonthlyCap ? (
                                   <div className="p-2.5 bg-gold-50 border border-gold-200 rounded-xl space-y-1 text-xs text-gold-950">
@@ -1560,7 +1595,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                       <span>Auto-Prorating Remaining Deficit (-{formatCurrency(uncovered)})</span>
                                     </div>
                                     <p className="text-[11px] text-gold-900/90 leading-relaxed">
-                                      Reducing future weekly budgets by <strong>-{formatCurrency(Math.round(uncovered / remainingWeeksInMonth))}/wk</strong> across the remaining {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget: <strong>{formatCurrency(Math.max(0, p.baseline - Math.round(uncovered / remainingWeeksInMonth)))}/wk</strong>.
+                                      Reducing future weekly budgets by <strong>-{formatCurrency(Math.round(uncovered / remainingWeeksInMonth))}/wk</strong> across the remaining {remainingWeeksInMonth} {remainingWeeksInMonth === 1 ? 'week' : 'weeks'}. Next week budget: <strong>{formatCurrency(Math.max(0, p.budget - Math.round(uncovered / remainingWeeksInMonth)))}/wk</strong>.
                                     </p>
                                   </div>
                                 ) : (
@@ -1816,21 +1851,57 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                   </div>
                 </div>
 
-                <p className="text-xs text-dark-green-950 leading-relaxed bg-white/70 p-2.5 rounded-xl border border-sage-200/80">
-                  {savingsSavedThisWeek >= savingsBudgetThisWeek ? (
-                    <span>
-                      🎉 <strong>Savings Goal Secured:</strong> You have banked{' '}
-                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into your savings pot this week
-                      {totalDepositsThisWeek > 0 ? ` (including +${formatCurrency(totalDepositsThisWeek)} from one-off deposits)` : ''}
-                      {savingsExpandedBonus > 0 ? ` with a +${formatCurrency(savingsExpandedBonus)} transfer pot surplus expansion` : ''}.
-                    </span>
-                  ) : (
-                    <span>
-                      ⚠️ <strong>Savings Adjusted:</strong> You deposited{' '}
-                      <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into savings after covering {formatCurrency(totalSavingsPulledForDeficits)} in category overspends
-                      {totalDepositsThisWeek > 0 ? ` (including +${formatCurrency(totalDepositsThisWeek)} from one-off deposits)` : ''}.
-                    </span>
-                  )}
+                <p className="text-xs text-dark-green-950 leading-relaxed bg-white/70 p-3 rounded-xl border border-sage-200/80 space-y-1.5">
+                  <span className="block">
+                    {totalDeficit > 0 ? (
+                      <>
+                        ⚠️ <strong>Savings Adjusted:</strong> {formatCurrency(savingsSavedThisWeek)} is banked into savings after covering {formatCurrency(totalPotPulledForDeficits + totalSavingsPulledForDeficits)} of the {formatCurrency(totalDeficit)} overspends.
+                      </>
+                    ) : (
+                      <>
+                        🎉 <strong>Savings Goal Secured:</strong> You have banked{' '}
+                        <strong>{formatCurrency(savingsSavedThisWeek)}</strong> into your savings pot this week
+                        {totalDepositsThisWeek > 0 ? ` (including +${formatCurrency(totalDepositsThisWeek)} from one-off deposits)` : ''}
+                        {savingsExpandedBonus > 0 ? ` with a +${formatCurrency(savingsExpandedBonus)} transfer pot surplus expansion` : ''}.
+                      </>
+                    )}
+                  </span>
+
+                  {/* Proration and budget adjustment details */}
+                  {categoryProjections
+                    .filter((p) => p.followingWeeksBudget !== p.baseline)
+                    .map((p) => {
+                      const isLower = p.followingWeeksBudget < p.baseline;
+                      const isHigher = p.followingWeeksBudget > p.baseline;
+                      if (isLower) {
+                        const input = overspendInputs[p.category.id] || { potPull: 0, savingsPull: 0, overrideMode: 'none' };
+                        const covered = (Number(input.potPull) || 0) + (Number(input.savingsPull) || 0);
+                        const uncovered = Math.max(0, p.deficit - covered);
+
+                        if (uncovered > 0) {
+                          return (
+                            <span key={p.category.id} className="block pt-1.5 border-t border-sage-200/70 text-dark-green-950">
+                              📌 The additional deficit of {formatCurrency(uncovered)} is covered by prorating the {p.category.name.toLowerCase()} budget by -{formatCurrency(Math.round(uncovered / remainingWeeksInMonth))}/wk (to {formatCurrency(p.followingWeeksBudget)}/wk across {futureWeekLabels}).
+                            </span>
+                          );
+                        } else {
+                          const neededToRestore = (p.baseline - p.followingWeeksBudget) * remainingWeeksInMonth;
+                          return (
+                            <span key={p.category.id} className="block pt-1.5 border-t border-sage-200/70 text-dark-green-950">
+                              📌 The {p.category.name.toLowerCase()} budget remains at its prorated amount of {formatCurrency(p.followingWeeksBudget)}/wk across {futureWeekLabels}. {neededToRestore > 0 ? `(An additional ${formatCurrency(neededToRestore)} would be required from future savings to restore the ${formatCurrency(p.baseline)}/wk baseline).` : ''}
+                            </span>
+                          );
+                        }
+                      }
+                      if (isHigher) {
+                        return (
+                          <span key={p.category.id} className="block pt-1.5 border-t border-sage-200/70 text-dark-green-950">
+                            📌 Leftover {formatCurrency(p.leftover)} from {p.category.name} is prorated forward, increasing the {p.category.name.toLowerCase()} budget to {formatCurrency(p.followingWeeksBudget)}/wk (+{formatCurrency(p.followingWeeksBudget - p.baseline)}/wk across {futureWeekLabels}).
+                          </span>
+                        );
+                      }
+                      return null;
+                    })}
                 </p>
               </div>
 

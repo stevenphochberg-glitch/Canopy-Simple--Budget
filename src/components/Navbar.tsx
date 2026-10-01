@@ -244,11 +244,11 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             </button>
           </div>
 
-          {/* Timeframe Filter Indicator centered in global header when scrolled out of view */}
+          {/* Timeframe Filter Indicator: Centered on mobile; displayed between logo and nav buttons on desktop */}
           {isTimeframeScrolledOutOfView && headerTimeframeText && (
             <div
               id="global-header-timeframe-filter"
-              className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3.5 py-1 bg-beige-100 border border-beige-300 rounded-xl text-xs font-black text-dark-green-950 animate-in fade-in zoom-in-95 duration-150 shadow-2xs z-20 whitespace-nowrap"
+              className="absolute left-1/2 -translate-x-1/2 md:static md:left-auto md:translate-x-0 flex items-center gap-1.5 px-3.5 py-1 bg-beige-100 border border-beige-300 rounded-xl text-xs font-black text-dark-green-950 animate-in fade-in zoom-in-95 duration-150 shadow-2xs z-20 whitespace-nowrap"
             >
               <span>{headerTimeframeText}</span>
             </div>
