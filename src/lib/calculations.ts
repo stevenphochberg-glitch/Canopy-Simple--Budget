@@ -1,5 +1,6 @@
 import { DayOfWeek, PaySchedule, HouseholdMember, Category, TimeframeMode, DateRange, Expense, Household } from '../types';
-import { is53WeekFiscalYear, getFiscalMonthForDate } from './fiscal445';
+import { is53WeekFiscalYear, getFiscalMonthForDate, getFiscalMonthRange } from './fiscal445';
+export { getFiscalMonthRange };
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Monday',
@@ -295,17 +296,11 @@ export function getWeekRange(refDate: Date, firstDayOfWeek: DayOfWeek, weekOffse
 
 /**
  * Calculates start and end Date for a given month offset from a reference date.
+ * Strictly adheres to 4-4-5 Fiscal Month boundaries and resolves reference dates
+ * according to which fiscal month they fall into.
  */
-export function getMonthRange(refDate: Date, monthOffset: number = 0): DateRange {
-  const target = new Date(refDate.getFullYear(), refDate.getMonth() + monthOffset, 1);
-  const start = new Date(target.getFullYear(), target.getMonth(), 1, 0, 0, 0, 0);
-  const end = new Date(target.getFullYear(), target.getMonth() + 1, 0, 23, 59, 59, 999);
-
-  return {
-    startDate: start,
-    endDate: end,
-    label: target.toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-  };
+export function getMonthRange(refDate: Date, monthOffset: number = 0, fiscalYearEndMonth: number = 12): DateRange {
+  return getFiscalMonthRange(refDate, monthOffset, fiscalYearEndMonth);
 }
 
 /**

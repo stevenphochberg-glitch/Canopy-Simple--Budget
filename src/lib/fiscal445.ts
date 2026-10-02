@@ -1,4 +1,4 @@
-import { FiscalMonth, ExtraPaycheckInfo, HouseholdMember, PaySchedule } from '../types';
+import { FiscalMonth, ExtraPaycheckInfo, HouseholdMember, PaySchedule, DateRange } from '../types';
 
 export const FISCAL_MONTH_NAMES = [
   'January',
@@ -129,6 +129,43 @@ export function getFiscalMonthForDate(date: Date, fiscalYearEndMonth: number = 1
   // Fallback to first month of current year
   const defaultMonths = getFiscalYearMonths(year, fiscalYearEndMonth);
   return defaultMonths[0];
+}
+
+/**
+ * Calculates start and end Date for a given fiscal month offset from a reference date.
+ * Strictly adheres to the 4-4-5 fiscal calendar and accounts for where the reference date falls
+ * within its active fiscal month.
+ */
+export function getFiscalMonthRange(
+  refDate: Date,
+  monthOffset: number = 0,
+  fiscalYearEndMonth: number = 12
+): DateRange {
+  const currentFM = getFiscalMonthForDate(refDate, fiscalYearEndMonth);
+
+  let targetYear = currentFM.startDate.getFullYear();
+  let targetMonthIdx = (currentFM.fiscalMonthNumber - 1) + monthOffset;
+
+  while (targetMonthIdx < 0) {
+    targetMonthIdx += 12;
+    targetYear -= 1;
+  }
+  while (targetMonthIdx >= 12) {
+    targetMonthIdx -= 12;
+    targetYear += 1;
+  }
+
+  const yearMonths = getFiscalYearMonths(targetYear, fiscalYearEndMonth);
+  const targetFM = yearMonths[targetMonthIdx] || currentFM;
+
+  const startMonth = targetFM.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endMonth = targetFM.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  return {
+    startDate: targetFM.startDate,
+    endDate: targetFM.endDate,
+    label: `${targetFM.monthName} ${targetFM.startDate.getFullYear()} (${startMonth} – ${endMonth})`,
+  };
 }
 
 export interface FiscalQuarter {

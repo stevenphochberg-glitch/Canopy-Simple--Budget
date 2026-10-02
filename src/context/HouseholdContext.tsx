@@ -389,12 +389,13 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const activeDateRange = useMemo<DateRange>(() => {
     const now = new Date();
     const firstDay = household?.firstDayOfWeek || 'Monday';
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
     if (timeframeMode === 'week') {
       return getWeekRange(now, firstDay, timeframeOffset);
     } else {
-      return getMonthRange(now, timeframeOffset);
+      return getMonthRange(now, timeframeOffset, fiscalYearEnd);
     }
-  }, [timeframeMode, timeframeOffset, household?.firstDayOfWeek]);
+  }, [timeframeMode, timeframeOffset, household?.firstDayOfWeek, household?.fiscalYearEndMonth]);
 
   const resetTimeframeToCurrent = () => {
     setTimeframeOffset(0);
@@ -1642,6 +1643,35 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           })
         );
 
+        // If this week already has a completed check-in, update its totalSaved
+        const completedCheckIn = (checkIns || []).find((ci) => {
+          if (ci.status !== 'completed') return false;
+          const cStart = ci.weekStartDate;
+          const cEnd = ci.weekEndDate;
+          return (
+            (depositDateStr >= cStart && depositDateStr <= cEnd) ||
+            ci.weekStartDate === weekId ||
+            ci.id.includes(weekId)
+          );
+        });
+
+        if (completedCheckIn) {
+          const curSaved = typeof completedCheckIn.totalSaved === 'number' ? completedCheckIn.totalSaved : baselineSavings;
+          const updatedTotalSaved = curSaved + safeAmount;
+          const updatedCheckIn = {
+            ...completedCheckIn,
+            totalSaved: updatedTotalSaved,
+          };
+          setCheckIns((prev) =>
+            prev.map((ci) => (ci.id === completedCheckIn.id ? updatedCheckIn : ci))
+          );
+          const ciRef = doc(db, 'households', household.id, 'checkIns', completedCheckIn.id);
+          batch.update(ciRef, sanitizeFirestorePayload({
+            totalSaved: updatedTotalSaved,
+            updatedAt: new Date().toISOString(),
+          }));
+        }
+
         await batch.commit();
       } catch (err) {
         console.error('Firestore addOneOffDeposit error:', err);
@@ -1835,6 +1865,70 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       weeklyOverrides: existingWeeklyOverrides,
     };
     setHousehold(updatedHousehold);
+
+    // Synchronize check-ins if amount or week changed
+    if (amountDiff !== 0 || oldWeekId !== newWeekId) {
+      if (oldWeekId === newWeekId) {
+        const completedCheckIn = (checkIns || []).find((ci) => {
+          if (ci.status !== 'completed') return false;
+          const cStart = ci.weekStartDate;
+          const cEnd = ci.weekEndDate;
+          return (
+            (oldDateStr >= cStart && oldDateStr <= cEnd) ||
+            ci.weekStartDate === oldWeekId ||
+            ci.id.includes(oldWeekId)
+          );
+        });
+        if (completedCheckIn) {
+          const curSaved = typeof completedCheckIn.totalSaved === 'number' ? completedCheckIn.totalSaved : baselineSavings;
+          const updatedTotalSaved = Math.max(0, curSaved + amountDiff);
+          setCheckIns((prev) =>
+            prev.map((ci) => (ci.id === completedCheckIn.id ? { ...ci, totalSaved: updatedTotalSaved } : ci))
+          );
+          if (isFirebaseConfigured && db) {
+            const ciRef = doc(db, 'households', household.id, 'checkIns', completedCheckIn.id);
+            updateDoc(ciRef, sanitizeFirestorePayload({ totalSaved: updatedTotalSaved, updatedAt: new Date().toISOString() }));
+          }
+        }
+      } else {
+        const oldCi = (checkIns || []).find((ci) => {
+          if (ci.status !== 'completed') return false;
+          const cStart = ci.weekStartDate;
+          const cEnd = ci.weekEndDate;
+          return (oldDateStr >= cStart && oldDateStr <= cEnd) || ci.weekStartDate === oldWeekId || ci.id.includes(oldWeekId);
+        });
+        const newCi = (checkIns || []).find((ci) => {
+          if (ci.status !== 'completed') return false;
+          const cStart = ci.weekStartDate;
+          const cEnd = ci.weekEndDate;
+          return (newDateStr >= cStart && newDateStr <= cEnd) || ci.weekStartDate === newWeekId || ci.id.includes(newWeekId);
+        });
+
+        if (oldCi) {
+          const curSaved = typeof oldCi.totalSaved === 'number' ? oldCi.totalSaved : baselineSavings;
+          const updatedTotalSaved = Math.max(0, curSaved - oldAmount);
+          setCheckIns((prev) =>
+            prev.map((ci) => (ci.id === oldCi.id ? { ...ci, totalSaved: updatedTotalSaved } : ci))
+          );
+          if (isFirebaseConfigured && db) {
+            const ciRef = doc(db, 'households', household.id, 'checkIns', oldCi.id);
+            updateDoc(ciRef, sanitizeFirestorePayload({ totalSaved: updatedTotalSaved, updatedAt: new Date().toISOString() }));
+          }
+        }
+
+        if (newCi) {
+          const curSaved = typeof newCi.totalSaved === 'number' ? newCi.totalSaved : baselineSavings;
+          const updatedTotalSaved = Math.max(0, curSaved + newAmount);
+          setCheckIns((prev) =>
+            prev.map((ci) => (ci.id === newCi.id ? { ...ci, totalSaved: updatedTotalSaved } : ci))
+          );
+          if (isFirebaseConfigured && db) {
+            const ciRef = doc(db, 'households', household.id, 'checkIns', newCi.id);
+            updateDoc(ciRef, sanitizeFirestorePayload({ totalSaved: updatedTotalSaved, updatedAt: new Date().toISOString() }));
+          }
+        }
+      }
+    }
 
     if (isFirebaseConfigured && db) {
       try {

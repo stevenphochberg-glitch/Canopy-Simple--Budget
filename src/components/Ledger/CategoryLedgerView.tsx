@@ -36,6 +36,7 @@ import { BudgetProgressBar } from '../Common/BudgetProgressBar';
 import { SavingsGoalsLedgerSection } from './SavingsGoalsLedgerSection';
 import { LedgerDataVisualizer, LedgerDateRangeMeta } from './LedgerDataVisualizer';
 import { CheckInImpactModal } from '../CheckIn/CheckInImpactModal';
+import { DepositCheckInImpactModal } from '../Modals/DepositCheckInImpactModal';
 import {
   formatCurrency,
   formatDateDisplay,
@@ -132,6 +133,15 @@ export const CategoryLedgerView: React.FC = () => {
     actionType: 'delete',
     checkIn: null,
   });
+
+  const [depositImpactState, setDepositImpactState] = useState<{
+    isOpen: boolean;
+    amount: number;
+    description: string;
+    date: string;
+    checkIn: CheckIn;
+    depositId: string;
+  } | null>(null);
 
   /**
    * Evaluates whether an expense belongs to a past completed fiscal week check-in.
@@ -634,6 +644,39 @@ export const CategoryLedgerView: React.FC = () => {
 
   const saveEditDeposit = async () => {
     if (!editingDeposit || !editDesc.trim() || editAmount <= 0) return;
+
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const oldFiscalWeekId = getFiscalWeekId(editingDeposit.date, fiscalYearEnd);
+    const newFiscalWeekId = getFiscalWeekId(editDate, fiscalYearEnd);
+
+    const isAmountChanged = Math.abs(Number(editAmount) - Number(editingDeposit.amount)) > 0.001;
+    const isWeekChanged = Boolean(oldFiscalWeekId && newFiscalWeekId && oldFiscalWeekId !== newFiscalWeekId);
+    const hasFinancialImpact = isAmountChanged || isWeekChanged;
+
+    if (hasFinancialImpact) {
+      const completedCi = (checkIns || []).find((ci) => {
+        if (ci.status !== 'completed') return false;
+        const ciWeekId =
+          ci.fiscalWeekId ||
+          getFiscalWeekId(ci.weekStartDate || ci.weekEndDate || ci.timestamp, fiscalYearEnd);
+        return ciWeekId === oldFiscalWeekId || ciWeekId === newFiscalWeekId;
+      });
+
+      if (completedCi) {
+        setDepositImpactState({
+          isOpen: true,
+          amount: Number(editAmount),
+          description: editDesc.trim(),
+          date: editDate,
+          checkIn: completedCi,
+          depositId: editingDeposit.id,
+        });
+        setEditingDeposit(null);
+        return;
+      }
+    }
+
+    // Title / description or member only edit without financial impact:
     await updateDeposit(editingDeposit.id, {
       description: editDesc.trim(),
       amount: Number(editAmount),
@@ -662,21 +705,49 @@ export const CategoryLedgerView: React.FC = () => {
       tags: editTags,
     };
 
-    const completedCheckIn = getCompletedPastCheckInForExpense(editingExpense);
-    if (completedCheckIn) {
-      setImpactModalState({
-        isOpen: true,
-        targetExpense: editingExpense,
-        actionType: 'edit',
-        proposedExpense: proposed,
-        checkIn: completedCheckIn,
-      });
-      setEditingExpense(null);
-      return;
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const oldExpDateStr =
+      editingExpense.date ||
+      (editingExpense.timestamp ? new Date(editingExpense.timestamp).toISOString().split('T')[0] : '');
+    const oldFiscalWeekId = getFiscalWeekId(oldExpDateStr, fiscalYearEnd);
+    const newFiscalWeekId = getFiscalWeekId(editDate, fiscalYearEnd);
+
+    const isAmountChanged = Math.abs(Number(editAmount) - Number(editingExpense.amount)) > 0.001;
+    const isCategoryChanged = editCategoryId !== editingExpense.categoryId;
+    const isWeekChanged = Boolean(oldFiscalWeekId && newFiscalWeekId && oldFiscalWeekId !== newFiscalWeekId);
+
+    // Financial impact on check-in results only occurs when amount, category, or fiscal week changes
+    const hasFinancialImpact = isAmountChanged || isCategoryChanged || isWeekChanged;
+
+    if (hasFinancialImpact) {
+      const completedCheckIn = getCompletedPastCheckInForExpense(editingExpense);
+      if (completedCheckIn) {
+        setImpactModalState({
+          isOpen: true,
+          targetExpense: editingExpense,
+          actionType: 'edit',
+          proposedExpense: proposed,
+          checkIn: completedCheckIn,
+        });
+        setEditingExpense(null);
+        return;
+      }
     }
 
+    // Title / description or tags only edit without financial impact:
     await updateExpense(editingExpense.id, proposed);
     setEditingExpense(null);
+  };
+
+  const handleConfirmDepositImpact = async () => {
+    if (!depositImpactState) return;
+    await updateDeposit(depositImpactState.depositId, {
+      description: depositImpactState.description,
+      amount: depositImpactState.amount,
+      date: depositImpactState.date,
+      payerMemberId: editPayerId,
+    });
+    setDepositImpactState(null);
   };
 
   /**
@@ -2432,6 +2503,21 @@ export const CategoryLedgerView: React.FC = () => {
           expenses={expenses}
           household={household}
           onConfirm={handleConfirmImpact}
+        />
+      )}
+
+      {/* Historical Deposit Check-In Impact Modal */}
+      {depositImpactState?.isOpen && (
+        <DepositCheckInImpactModal
+          isOpen={depositImpactState.isOpen}
+          onClose={() => setDepositImpactState(null)}
+          depositAmount={depositImpactState.amount}
+          depositDescription={depositImpactState.description}
+          depositDate={depositImpactState.date}
+          checkIn={depositImpactState.checkIn}
+          household={household}
+          categories={categories}
+          onConfirm={handleConfirmDepositImpact}
         />
       )}
     </div>

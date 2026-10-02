@@ -300,6 +300,105 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     return depositsThisWeek.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
   }, [depositsThisWeek]);
 
+  // Aggregate all deposit expansions across the timeframe (Week or Month)
+  const { totalTimeframeDeposits, timeframeDepositCount } = useMemo(() => {
+    if (timeframeMode === 'week') {
+      const directDeps = (household?.oneOffDeposits || []).filter((dep) => {
+        const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+        return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
+      });
+      const directSum = directDeps.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+      const weekOverrides = household?.weeklyOverrides?.[activeWeekId];
+      const savCat = categories.find((c) => c.type === 'savings' || c.group?.toLowerCase() === 'savings');
+      const savBase = savCat ? Number(savCat.baselineBudget) || 0 : 0;
+      const savOverride = weekOverrides ? Number(weekOverrides.savings ?? (savCat ? weekOverrides[savCat.id] : 0)) : 0;
+      const overrideExpansion = savOverride > savBase ? savOverride - savBase : 0;
+      const total = Math.max(directSum, overrideExpansion);
+      return { totalTimeframeDeposits: total, timeframeDepositCount: directDeps.length > 0 ? directDeps.length : (total > 0 ? 1 : 0) };
+    }
+
+    // Month View: scan all weeks in fiscal month
+    let count = 0;
+    let total = 0;
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    let curr = new Date(activeDateRange.startDate);
+    const seenWeeks = new Set<string>();
+
+    const savCat = categories.find((c) => c.type === 'savings' || c.group?.toLowerCase() === 'savings');
+    const savBase = savCat ? Number(savCat.baselineBudget) || 0 : 0;
+
+    while (curr <= activeDateRange.endDate) {
+      const wRange = getWeekRange(curr, firstDay, 0);
+      const wStartStr = formatLocalDate(wRange.startDate);
+
+      if (!seenWeeks.has(wStartStr) && wRange.startDate <= activeDateRange.endDate && wRange.endDate >= activeDateRange.startDate) {
+        seenWeeks.add(wStartStr);
+
+        const weekDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+          const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+          return depDate >= wRange.startDate && depDate <= wRange.endDate;
+        });
+        const weekDepTotal = weekDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+        const weekOverride = household?.weeklyOverrides?.[wStartStr];
+        const savOverrideVal = weekOverride
+          ? Number(weekOverride.savings ?? (savCat?.id ? weekOverride[savCat.id] : 0))
+          : 0;
+        const overrideExpansion = savOverrideVal > savBase ? savOverrideVal - savBase : 0;
+
+        const checkIn = (checkIns || []).find(
+          (c) => c.status === 'completed' && (c.weekStartDate === wStartStr || c.id.includes(wStartStr))
+        );
+        const savDec = checkIn?.decisions?.find(
+          (d) => d.categoryId === savCat?.id || d.categoryName?.toLowerCase().includes('savings')
+        );
+        const checkInExpansion = savDec && savDec.budget !== undefined && Number(savDec.budget) > savBase
+          ? Number(savDec.budget) - savBase
+          : 0;
+
+        const effectiveWeekExpansion = Math.max(weekDepTotal, overrideExpansion, checkInExpansion);
+
+        if (weekDeposits.length > 0 || effectiveWeekExpansion > 0) {
+          count += Math.max(weekDeposits.length, 1);
+          total += effectiveWeekExpansion > 0 ? effectiveWeekExpansion : weekDepTotal;
+        }
+      }
+
+      curr = new Date(curr.getTime() + 7 * 24 * 60 * 60 * 1000);
+    }
+
+    const directDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
+    });
+    const directTotal = directDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+    return {
+      totalTimeframeDeposits: Math.max(total, directTotal),
+      timeframeDepositCount: Math.max(count, directDeposits.length),
+    };
+  }, [
+    timeframeMode,
+    household?.oneOffDeposits,
+    household?.weeklyOverrides,
+    household?.firstDayOfWeek,
+    activeDateRange,
+    activeWeekId,
+    categories,
+    checkIns,
+  ]);
+
+  // Baseline total for the active timeframe (weekly baseline sum in Week View, full monthly baseline in Month View)
+  const totalTimeframeBaseline = useMemo(() => {
+    if (timeframeMode === 'week') {
+      return totalWeeklyBaseline;
+    }
+    return categories.reduce(
+      (sum, c) => sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth),
+      0
+    );
+  }, [timeframeMode, totalWeeklyBaseline, categories, weeksInFiscalMonth]);
+
   // 3. Executive Overview Spending Summary Calculations:
   // - Week View: Budget Set sums weekly allocations of Essentials, Fun Money, and Savings (non-Bills), plus any one-time deposit expansion.
   // - Month View: Total Monthly Budget is a statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month) + one-time deposits.
@@ -311,25 +410,21 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         const { budget, isOverridden } = getCategoryEffectiveWeeklyBudget(c, activeWeekId, household);
         const isSavings = c.type === 'savings' || c.group?.toLowerCase() === 'savings';
         const effective = isSavings
-          ? Math.max(budget, (Number(c.baselineBudget) || 0) + depositTotalThisWeek)
+          ? Math.max(budget, (Number(c.baselineBudget) || 0) + totalTimeframeDeposits)
           : budget;
         sum += effective;
-        if (isOverridden || (isSavings && depositTotalThisWeek > 0)) {
+        if (isOverridden || (isSavings && totalTimeframeDeposits > 0)) {
           overridePresent = true;
         }
       });
       return { totalTimeframeBudget: sum, hasAnyWeeklyOverride: overridePresent };
     }
-    // Month View: Statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month)
-    const monthSum = categories.reduce(
-      (sum, c) => sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth),
-      0
-    );
+    // Month View: Statically derived constant (Baseline Weekly Allocation × Weeks in Fiscal Month) + total month deposits
     return {
-      totalTimeframeBudget: monthSum + depositTotalThisWeek,
-      hasAnyWeeklyOverride: depositTotalThisWeek > 0,
+      totalTimeframeBudget: totalTimeframeBaseline + totalTimeframeDeposits,
+      hasAnyWeeklyOverride: totalTimeframeDeposits > 0,
     };
-  }, [timeframeMode, visibleCategories, categories, weeksInFiscalMonth, activeWeekId, household, depositTotalThisWeek]);
+  }, [timeframeMode, visibleCategories, activeWeekId, household, totalTimeframeDeposits, totalTimeframeBaseline]);
 
   // Total spent in active timeframe:
   // In Week View, completely exclude Bills transactions from calculations.
@@ -425,37 +520,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   ]);
 
   const isExpandedBudget = useMemo(() => {
-    if (depositTotalThisWeek > 0) return true;
-    if (isDepositExpansion) return true;
-    if (totalTimeframeBudget > totalWeeklyBaseline) return true;
-    const weekOverrides = household?.weeklyOverrides?.[activeWeekId];
-    if (weekOverrides) {
-      const hasAnyExpandedOverride = Object.entries(weekOverrides).some(([catId, val]) => {
-        const cat = categories.find((c) => c.id === catId);
-        const baseline = cat?.baselineBudget || 0;
-        return (Number(val) || 0) > baseline;
-      });
-      if (hasAnyExpandedOverride) return true;
-    }
-    const activeWeekStartStr = formatLocalDate(activeDateRange.startDate);
-    const hasMatchingDeposit = (household?.oneOffDeposits || []).some((dep) => {
-      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
-      const targetRange = getWeekRange(depDate, household?.firstDayOfWeek || 'Monday', 0);
-      return formatLocalDate(targetRange.startDate) === activeWeekStartStr;
-    });
-    return hasMatchingDeposit;
-  }, [
-    depositTotalThisWeek,
-    isDepositExpansion,
-    totalTimeframeBudget,
-    totalWeeklyBaseline,
-    household?.weeklyOverrides,
-    activeWeekId,
-    categories,
-    household?.oneOffDeposits,
-    activeDateRange,
-    household?.firstDayOfWeek,
-  ]);
+    return totalTimeframeBudget > totalTimeframeBaseline;
+  }, [totalTimeframeBudget, totalTimeframeBaseline]);
 
   // 1% – 75%: Muted Sage Green, 75% – 90%: Earth Brown, 90% – 99%: Alert Red, >= 100%: Alert Red fill & Alert Red outline
   let overallBarColor = 'bg-sage-600';
@@ -470,8 +536,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   // Timeframe Navigation formatted titles & fiscal sublabels
   const timeframeNavDisplay = useMemo(() => {
     if (timeframeMode === 'month') {
-      const monthTitle = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
-      const monthSub = `Month ${fiscalMonth.fiscalMonthNumber} of 12`;
+      const year = fiscalMonth.endDate.getFullYear();
+      const monthTitle = `${fiscalMonth.monthName} ${year}`;
+      const startShort = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const endShort = activeDateRange.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      const monthSub = `${startShort} – ${endShort} • Fiscal M${fiscalMonth.fiscalMonthNumber} (${fiscalMonth.weekCount} wks)`;
       return { title: monthTitle, sub: monthSub };
     } else {
       const startShort = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
@@ -817,20 +886,20 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               Budget
             </span>
             <div className="text-sm sm:text-lg lg:text-xl font-black font-mono text-dark-green-900 tracking-tight flex items-baseline gap-1 sm:gap-1.5 flex-wrap">
-              {hasAnyWeeklyOverride ? (
+              {hasAnyWeeklyOverride || totalTimeframeBudget !== totalTimeframeBaseline ? (
                 <>
                   <span
                     className="line-through text-dark-grey-600/70 text-[10px] sm:text-xs font-semibold"
-                    title={`Global Baseline: ${formatCurrency(totalWeeklyBaseline)}`}
+                    title={`Global Baseline: ${formatCurrency(totalTimeframeBaseline)}`}
                   >
-                    {formatCurrency(totalWeeklyBaseline)}
+                    {formatCurrency(totalTimeframeBaseline)}
                   </span>
                   <span
                     className="text-dark-green-900"
                     title={
                       isExpandedBudget
-                        ? `Expanded Weekly Budget: ${formatCurrency(totalTimeframeBudget)}`
-                        : `Active Weekly Prorated: ${formatCurrency(totalTimeframeBudget)}`
+                        ? `Expanded ${timeframeMode === 'week' ? 'Weekly' : 'Monthly'} Budget: ${formatCurrency(totalTimeframeBudget)}`
+                        : `Active ${timeframeMode === 'week' ? 'Weekly' : 'Monthly'} Prorated: ${formatCurrency(totalTimeframeBudget)}`
                     }
                   >
                     {formatCurrency(totalTimeframeBudget)}
@@ -850,15 +919,15 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               )}
             </div>
             <p className="text-[9px] sm:text-[10px] text-brown-700 truncate">
-              {hasAnyWeeklyOverride
+              {hasAnyWeeklyOverride || totalTimeframeBudget !== totalTimeframeBaseline
                 ? isExpandedBudget
                   ? `Expanded (+${formatCurrency(
-                      depositTotalThisWeek > 0
-                        ? depositTotalThisWeek
-                        : Math.abs(totalTimeframeBudget - totalWeeklyBaseline)
+                      totalTimeframeDeposits > 0
+                        ? totalTimeframeDeposits
+                        : Math.abs(totalTimeframeBudget - totalTimeframeBaseline)
                     )})`
-                  : `Prorated (${totalTimeframeBudget >= totalWeeklyBaseline ? '+' : ''}${formatCurrency(
-                      totalTimeframeBudget - totalWeeklyBaseline
+                  : `Prorated (${totalTimeframeBudget >= totalTimeframeBaseline ? '+' : ''}${formatCurrency(
+                      totalTimeframeBudget - totalTimeframeBaseline
                     )})`
                 : `${visibleCategories.length} ${timeframeMode === 'week' ? 'weekly buckets' : 'buckets'}`}
             </p>

@@ -7,8 +7,10 @@ import {
   getWeekId,
   getCategoryEffectiveWeeklyBudget,
 } from '../../lib/calculations';
-import { getFiscalYearMonths } from '../../lib/fiscal445';
+import { getFiscalYearMonths, getFiscalWeekId } from '../../lib/fiscal445';
 import { parseQuickNoteWithGemini, scanReceiptWithGemini } from '../../lib/geminiApi';
+import { DepositCheckInImpactModal } from './DepositCheckInImpactModal';
+import { MultiTagSplitModal } from './MultiTagSplitModal';
 import {
   X,
   Plus,
@@ -29,6 +31,7 @@ import {
   Image as ImageIcon,
   Calendar,
   Users,
+  PiggyBank,
 } from 'lucide-react';
 
 const LAST_TAB_STORAGE_KEY = 'canopy_last_log_tab';
@@ -53,10 +56,59 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     user,
     household,
     savingsGoals,
+    checkIns,
+    addOneOffDeposit,
     addStagedItem,
     showToast,
     openStagingModal,
   } = useHousehold();
+
+  const [depositImpactState, setDepositImpactState] = useState<{
+    isOpen: boolean;
+    amount: number;
+    description: string;
+    date: string;
+    checkIn: any;
+  } | null>(null);
+
+  const [multiTagPromptState, setMultiTagPromptState] = useState<{
+    isOpen: boolean;
+    totalAmount: number;
+    description: string;
+    categoryName?: string;
+    tags: string[];
+    actionType: 'proceed_staging' | 'save_add_another';
+  } | null>(null);
+
+  const getCompletedCheckInForDate = (dateStr: string) => {
+    if (!dateStr) return null;
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const expFiscalWeekId = getFiscalWeekId(dateStr, fiscalYearEnd);
+    return (
+      (checkIns || []).find((ci) => {
+        if (ci.status !== 'completed') return false;
+        const ciWeekId =
+          ci.fiscalWeekId ||
+          getFiscalWeekId(ci.weekStartDate || ci.weekEndDate || ci.timestamp, fiscalYearEnd);
+        if (ciWeekId && expFiscalWeekId && ciWeekId === expFiscalWeekId) return true;
+        const cStart = ci.weekStartDate;
+        const cEnd = ci.weekEndDate;
+        return dateStr >= cStart && dateStr <= cEnd;
+      }) || null
+    );
+  };
+
+  const handleConfirmDepositImpact = async () => {
+    if (!depositImpactState) return;
+    await addOneOffDeposit({
+      amount: depositImpactState.amount,
+      description: depositImpactState.description,
+      date: depositImpactState.date,
+      payerMemberId: manualLoggedBy,
+    });
+    setDepositImpactState(null);
+    onClose();
+  };
 
   // Remember & default to user's last selected tab
   const [activeTab, setActiveTab] = useState<LogTab>('manual');
@@ -323,6 +375,33 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       return;
     }
 
+    if (isOneTimeDeposit) {
+      const completedCi = getCompletedCheckInForDate(manualDate);
+      if (completedCi) {
+        setDepositImpactState({
+          isOpen: true,
+          amount: numAmount,
+          description: manualDescription.trim() || 'One-Time Savings Deposit',
+          date: manualDate,
+          checkIn: completedCi,
+        });
+        return;
+      }
+    }
+
+    // Prompt user to split into separate transactions if more than 1 tag is selected
+    if (!isOneTimeDeposit && selectedTags.length > 1) {
+      setMultiTagPromptState({
+        isOpen: true,
+        totalAmount: numAmount,
+        description: manualDescription.trim() || 'Manual Expense',
+        categoryName: selectedManualCat?.name,
+        tags: selectedTags,
+        actionType: 'save_add_another',
+      });
+      return;
+    }
+
     const resolvedCategoryId = isOneTimeDeposit
       ? 'cat_savings'
       : manualCategoryId && availableExpenseCategories.some((c) => c.id === manualCategoryId)
@@ -360,7 +439,7 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     showToast(`Added "$${numAmount.toFixed(2)}" to current batch (${manualBatch.length + 1} items).`);
   };
 
-  const handleManualProceedToStaging = () => {
+  const handleManualProceedToStaging = async () => {
     const currentNum = parseFloat(manualAmount);
     const itemsToStage: StagedExpense[] = [...manualBatch];
 
@@ -373,6 +452,67 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     const defaultDesc = isOneTimeDeposit
       ? 'One-Time Savings Deposit'
       : 'Manual Expense';
+
+    // Check if user is logging a deposit for a week that is already checked in
+    if (isOneTimeDeposit && currentNum > 0) {
+      const completedCi = getCompletedCheckInForDate(manualDate);
+      if (completedCi) {
+        setDepositImpactState({
+          isOpen: true,
+          amount: currentNum,
+          description: manualDescription.trim() || defaultDesc,
+          date: manualDate,
+          checkIn: completedCi,
+        });
+        return;
+      }
+    }
+
+    // Prompt user to split into separate transactions if more than 1 tag is selected on current input
+    if (!isOneTimeDeposit && currentNum > 0 && selectedTags.length > 1) {
+      setMultiTagPromptState({
+        isOpen: true,
+        totalAmount: currentNum,
+        description: manualDescription.trim() || defaultDesc,
+        categoryName: selectedManualCat?.name,
+        tags: selectedTags,
+        actionType: 'proceed_staging',
+      });
+      return;
+    }
+
+    // Check if any batched deposit belongs to a checked-in week
+    const depositInBatch = itemsToStage.find((item) => {
+      const isDep = item.categoryId === 'cat_savings' || item.depositDestination === 'savings_budget' || item.tags?.includes('One-Time Deposit');
+      if (!isDep) return false;
+      return !!getCompletedCheckInForDate(item.date);
+    });
+
+    if (depositInBatch) {
+      const completedCi = getCompletedCheckInForDate(depositInBatch.date);
+      if (completedCi) {
+        setDepositImpactState({
+          isOpen: true,
+          amount: depositInBatch.amount,
+          description: depositInBatch.description,
+          date: depositInBatch.date,
+          checkIn: completedCi,
+        });
+        return;
+      }
+    }
+
+    // If user is directly logging a single deposit for an unchecked week, log immediately
+    if (isOneTimeDeposit && currentNum > 0 && itemsToStage.length === 0) {
+      await addOneOffDeposit({
+        amount: currentNum,
+        description: manualDescription.trim() || defaultDesc,
+        date: manualDate || new Date().toISOString().split('T')[0],
+        payerMemberId: manualLoggedBy,
+      });
+      onClose();
+      return;
+    }
 
     // If the user filled the current fields, add it too
     if (currentNum && currentNum > 0) {
@@ -410,6 +550,88 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     // Close Log modal and open Review & Confirm staging view
     onClose();
     openStagingModal(itemsToStage);
+  };
+
+  const handleConfirmSplitFromPrompt = (
+    splitItems: Array<{ tag: string; amount: number; description: string }>
+  ) => {
+    if (!multiTagPromptState) return;
+
+    const resolvedCategoryId =
+      manualCategoryId && availableExpenseCategories.some((c) => c.id === manualCategoryId)
+        ? manualCategoryId
+        : availableExpenseCategories[0]?.id || '';
+
+    const newItems: StagedExpense[] = splitItems.map((item) => ({
+      amount: item.amount,
+      description: item.description,
+      categoryId: resolvedCategoryId,
+      date: manualDate || new Date().toISOString().split('T')[0],
+      loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
+      billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+      billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
+      billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+      tags: [item.tag],
+      subcategory: item.tag,
+    }));
+
+    if (multiTagPromptState.actionType === 'save_add_another') {
+      setManualBatch((prev) => [...prev, ...newItems]);
+      setManualAmount('');
+      setManualDescription('');
+      setSelectedTags([]);
+      setMultiTagPromptState(null);
+      showToast(`Created ${newItems.length} separate transactions for batch (${manualBatch.length + newItems.length} items total).`);
+    } else {
+      const itemsToStage = [...manualBatch, ...newItems];
+      setManualBatch([]);
+      setManualAmount('');
+      setManualDescription('');
+      setSelectedTags([]);
+      setMultiTagPromptState(null);
+      onClose();
+      openStagingModal(itemsToStage);
+    }
+  };
+
+  const handleKeepSingleFromPrompt = () => {
+    if (!multiTagPromptState) return;
+
+    const resolvedCategoryId =
+      manualCategoryId && availableExpenseCategories.some((c) => c.id === manualCategoryId)
+        ? manualCategoryId
+        : availableExpenseCategories[0]?.id || '';
+
+    const singleItem: StagedExpense = {
+      amount: multiTagPromptState.totalAmount,
+      description: multiTagPromptState.description,
+      categoryId: resolvedCategoryId,
+      date: manualDate || new Date().toISOString().split('T')[0],
+      loggedByUserId: manualLoggedBy || user?.userId || 'usr_self',
+      billFrequency: isBillsCategory ? manualBillFrequency : undefined,
+      billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
+      billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+      tags: selectedTags.length > 0 ? selectedTags : undefined,
+      subcategory: selectedTags[0] || undefined,
+    };
+
+    if (multiTagPromptState.actionType === 'save_add_another') {
+      setManualBatch((prev) => [...prev, singleItem]);
+      setManualAmount('');
+      setManualDescription('');
+      setSelectedTags([]);
+      setMultiTagPromptState(null);
+      showToast(`Added multi-tagged "$${singleItem.amount.toFixed(2)}" to batch (${manualBatch.length + 1} items).`);
+    } else {
+      const itemsToStage = [...manualBatch, singleItem];
+      setManualBatch([]);
+      setManualAmount('');
+      setManualDescription('');
+      setSelectedTags([]);
+      setMultiTagPromptState(null);
+      onClose();
+      openStagingModal(itemsToStage);
+    }
   };
 
   const removeBatchItem = (index: number) => {
@@ -1027,6 +1249,21 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                     ))}
                   </select>
                 </div>
+
+                {/* Checked-In Week Notice for One-Time Deposits */}
+                {isOneTimeDeposit && getCompletedCheckInForDate(manualDate) && (
+                  <div className="p-3 bg-sage-50 border border-sage-200 rounded-2xl flex items-start gap-2.5 animate-in fade-in">
+                    <PiggyBank className="w-4 h-4 text-dark-green-800 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <span className="text-xs font-bold text-dark-green-900 block">
+                        Checked-In Week Detected
+                      </span>
+                      <p className="text-[11px] text-brown-700 leading-tight">
+                        This deposit is dated for a completed check-in week. Submitting will open the Check-In Effect preview to review updated banked savings and expanded goals.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Action Buttons: Save & Add Another + Review & Confirm */}
@@ -1049,8 +1286,13 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>
-                    Proceed to Review & Confirm{' '}
-                    {manualBatch.length > 0 ? `(${manualBatch.length + (parseFloat(manualAmount) > 0 ? 1 : 0)})` : ''}
+                    {isOneTimeDeposit
+                      ? getCompletedCheckInForDate(manualDate)
+                        ? 'Review Check-In Effect & Log Deposit'
+                        : 'Log One-Time Deposit'
+                      : `Proceed to Review & Confirm ${
+                          manualBatch.length > 0 ? `(${manualBatch.length + (parseFloat(manualAmount) > 0 ? 1 : 0)})` : ''
+                        }`}
                   </span>
                 </button>
               </div>
@@ -1260,6 +1502,35 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* Deposit Impact Modal on Completed Check-In */}
+      {depositImpactState?.isOpen && (
+        <DepositCheckInImpactModal
+          isOpen={depositImpactState.isOpen}
+          onClose={() => setDepositImpactState(null)}
+          depositAmount={depositImpactState.amount}
+          depositDescription={depositImpactState.description}
+          depositDate={depositImpactState.date}
+          checkIn={depositImpactState.checkIn}
+          household={household}
+          categories={categories}
+          onConfirm={handleConfirmDepositImpact}
+        />
+      )}
+
+      {/* Multi-Tag Split Prompt Modal */}
+      {multiTagPromptState?.isOpen && (
+        <MultiTagSplitModal
+          isOpen={multiTagPromptState.isOpen}
+          onClose={() => setMultiTagPromptState(null)}
+          totalAmount={multiTagPromptState.totalAmount}
+          description={multiTagPromptState.description}
+          categoryName={multiTagPromptState.categoryName}
+          tags={multiTagPromptState.tags}
+          onConfirmSplit={handleConfirmSplitFromPrompt}
+          onKeepSingle={handleKeepSingleFromPrompt}
+        />
+      )}
     </div>
   );
 };

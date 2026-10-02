@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryGroup, StagedExpense, BillFrequency } from '../../types';
 import { formatCurrency } from '../../lib/calculations';
+import { getFiscalWeekId } from '../../lib/fiscal445';
+import { DepositCheckInImpactModal } from '../Modals/DepositCheckInImpactModal';
 import {
   X,
   Plus,
@@ -31,9 +33,20 @@ export const ReviewAndConfirmModal: React.FC = () => {
     members,
     user,
     savingsGoals,
+    checkIns,
+    household,
+    addOneOffDeposit,
   } = useHousehold();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [depositImpactState, setDepositImpactState] = useState<{
+    isOpen: boolean;
+    amount: number;
+    description: string;
+    date: string;
+    checkIn: any;
+    stagedIndex?: number;
+  } | null>(null);
 
   if (!isStagingModalOpen) return null;
 
@@ -42,12 +55,73 @@ export const ReviewAndConfirmModal: React.FC = () => {
     0
   );
 
+  const getCompletedCheckInForDate = (dateStr: string) => {
+    if (!dateStr) return null;
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const expFiscalWeekId = getFiscalWeekId(dateStr, fiscalYearEnd);
+    return (
+      (checkIns || []).find((ci) => {
+        if (ci.status !== 'completed') return false;
+        const ciWeekId =
+          ci.fiscalWeekId ||
+          getFiscalWeekId(ci.weekStartDate || ci.weekEndDate || ci.timestamp, fiscalYearEnd);
+        if (ciWeekId && expFiscalWeekId && ciWeekId === expFiscalWeekId) return true;
+        const cStart = ci.weekStartDate;
+        const cEnd = ci.weekEndDate;
+        return dateStr >= cStart && dateStr <= cEnd;
+      }) || null
+    );
+  };
+
   const handleConfirm = async () => {
+    // Check if any staged expense is a deposit belonging to a completed check-in
+    const depositIndex = stagedExpenses.findIndex((item) => {
+      const isDep =
+        item.categoryId === 'cat_savings' ||
+        item.depositDestination === 'savings_budget' ||
+        item.tags?.includes('One-Time Deposit');
+      if (!isDep) return false;
+      return !!getCompletedCheckInForDate(item.date);
+    });
+
+    if (depositIndex !== -1) {
+      const depItem = stagedExpenses[depositIndex];
+      const completedCi = getCompletedCheckInForDate(depItem.date);
+      if (completedCi) {
+        setDepositImpactState({
+          isOpen: true,
+          amount: depItem.amount,
+          description: depItem.description || 'One-Time Savings Deposit',
+          date: depItem.date,
+          checkIn: completedCi,
+          stagedIndex: depositIndex,
+        });
+        return;
+      }
+    }
+
     setIsSubmitting(true);
     try {
       await confirmAllStagedExpenses();
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleConfirmDepositImpact = async () => {
+    if (!depositImpactState) return;
+    if (depositImpactState.stagedIndex !== undefined) {
+      removeStagedItem(depositImpactState.stagedIndex);
+    }
+    await addOneOffDeposit({
+      amount: depositImpactState.amount,
+      description: depositImpactState.description,
+      date: depositImpactState.date,
+      payerMemberId: user?.userId || 'usr_self',
+    });
+    setDepositImpactState(null);
+    if (stagedExpenses.length <= 1) {
+      closeStagingModal();
     }
   };
 
@@ -460,6 +534,21 @@ export const ReviewAndConfirmModal: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Deposit Impact Modal on Completed Check-In */}
+      {depositImpactState?.isOpen && (
+        <DepositCheckInImpactModal
+          isOpen={depositImpactState.isOpen}
+          onClose={() => setDepositImpactState(null)}
+          depositAmount={depositImpactState.amount}
+          depositDescription={depositImpactState.description}
+          depositDate={depositImpactState.date}
+          checkIn={depositImpactState.checkIn}
+          household={household}
+          categories={categories}
+          onConfirm={handleConfirmDepositImpact}
+        />
+      )}
     </div>
   );
 };

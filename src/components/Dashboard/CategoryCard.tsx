@@ -287,19 +287,27 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     let covered = 0;
 
     monthCompletedCheckIns.forEach((c) => {
-      if (typeof c.totalSaved === 'number') {
-        banked += Number(c.totalSaved) || 0;
-      }
+      const weekBanked = typeof c.totalSaved === 'number' ? Number(c.totalSaved) : 0;
+      banked += weekBanked;
+
       const savDecision = (c.decisions || []).find(
         (d) => d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings')
       );
-      if (savDecision && savDecision.savingsDeduction !== undefined) {
-        covered += Number(savDecision.savingsDeduction) || 0;
+      
+      let weekCovered = 0;
+      if (savDecision && savDecision.savingsDeduction !== undefined && savDecision.savingsDeduction > 0) {
+        weekCovered = Number(savDecision.savingsDeduction);
+      } else if (savDecision && savDecision.budget !== undefined && savDecision.spent !== undefined) {
+        weekCovered = Math.max(0, Number(savDecision.budget) - Number(savDecision.spent));
+      } else {
+        const baseline = Number(category.baselineBudget) || 650;
+        weekCovered = Math.max(0, baseline - weekBanked);
       }
+      covered += weekCovered;
     });
 
     return { monthSavingsBanked: banked, monthSavingsCovered: covered };
-  }, [isMonthView, monthCompletedCheckIns, category.id]);
+  }, [isMonthView, monthCompletedCheckIns, category.id, category.baselineBudget]);
 
   // savingsDeducted is strictly the savings amount used for overspend coverage (capped by available baseline budget)
   const savingsDeducted = useMemo(() => {
@@ -321,37 +329,114 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     return Math.max(0, baselineSavingsTargetAvailable - savingsDeducted);
   }, [isSavings, baselineSavingsTargetAvailable, savingsDeducted]);
 
+  const { monthDepositCount, monthDepositTotal } = useMemo(() => {
+    if (!isMonthView || !isSavings) return { monthDepositCount: 0, monthDepositTotal: 0 };
+    let count = 0;
+    let total = 0;
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    let curr = new Date(dateRange.startDate);
+    const seenWeeks = new Set<string>();
+
+    while (curr <= dateRange.endDate) {
+      const wRange = getWeekRange(curr, firstDay, 0);
+      const wStartStr = formatLocalDate(wRange.startDate);
+
+      if (!seenWeeks.has(wStartStr) && wRange.startDate <= dateRange.endDate && wRange.endDate >= dateRange.startDate) {
+        seenWeeks.add(wStartStr);
+
+        // 1. Direct one-off deposits in this week
+        const weekDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+          const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+          return depDate >= wRange.startDate && depDate <= wRange.endDate;
+        });
+
+        const weekDepTotal = weekDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+        // 2. Weekly override expanding savings above baseline
+        const weekOverride = household?.weeklyOverrides?.[wStartStr];
+        const savOverrideVal = weekOverride
+          ? Number(weekOverride.savings ?? (category.id ? weekOverride[category.id] : 0))
+          : 0;
+        const overrideExpansion = savOverrideVal > baselineBudget ? savOverrideVal - baselineBudget : 0;
+
+        // 3. Completed check-in decision with expanded savings budget
+        const checkIn = (checkIns || []).find(
+          (c) => c.status === 'completed' && (c.weekStartDate === wStartStr || c.id.includes(wStartStr))
+        );
+        const savDec = checkIn?.decisions?.find(
+          (d) => d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings')
+        );
+        const checkInExpansion = savDec && savDec.budget !== undefined && Number(savDec.budget) > baselineBudget
+          ? Number(savDec.budget) - baselineBudget
+          : 0;
+
+        const effectiveWeekExpansion = Math.max(weekDepTotal, overrideExpansion, checkInExpansion);
+
+        if (weekDeposits.length > 0 || effectiveWeekExpansion > 0) {
+          count += Math.max(weekDeposits.length, 1);
+          total += effectiveWeekExpansion > 0 ? effectiveWeekExpansion : weekDepTotal;
+        }
+      }
+
+      curr = new Date(curr.getTime() + 7 * 24 * 60 * 60 * 1000);
+    }
+
+    const directDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= dateRange.startDate && depDate <= dateRange.endDate;
+    });
+    const directTotal = directDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+    return {
+      monthDepositCount: Math.max(count, directDeposits.length),
+      monthDepositTotal: Math.max(total, directTotal),
+    };
+  }, [
+    isMonthView,
+    isSavings,
+    household?.firstDayOfWeek,
+    household?.oneOffDeposits,
+    household?.weeklyOverrides,
+    dateRange,
+    baselineBudget,
+    category.id,
+    checkIns,
+  ]);
+
   // True banked amount (Target Budget minus funds used for Overspend Coverage)
   const targetBudget = useMemo(() => {
     if (!isSavings) return budgetForTimeframe;
     if (isMonthView) {
-      return (baselineBudget * weeksInMonth) + depositAmount;
+      return (baselineBudget * weeksInMonth) + monthDepositTotal;
     }
     return Math.max(
       baselineBudget + depositAmount,
       budgetForTimeframe,
       overrideAmount !== undefined ? overrideAmount : 0
     );
-  }, [isSavings, isMonthView, baselineBudget, weeksInMonth, depositAmount, budgetForTimeframe, overrideAmount]);
+  }, [isSavings, isMonthView, baselineBudget, weeksInMonth, monthDepositTotal, depositAmount, budgetForTimeframe, overrideAmount]);
 
   const amountActuallyBanked = useMemo(() => {
     if (!isSavings) return 0;
     if (thisWeekCheckIn && typeof thisWeekCheckIn.totalSaved === 'number') {
-      return Math.max(0, thisWeekCheckIn.totalSaved);
+      return Math.max(0, thisWeekCheckIn.totalSaved + depositAmount);
     }
-    return protectedSavings;
-  }, [isSavings, thisWeekCheckIn, protectedSavings]);
+    return protectedSavings + depositAmount;
+  }, [isSavings, thisWeekCheckIn, protectedSavings, depositAmount]);
 
   const displayCoverage = isMonthView ? monthSavingsCovered : savingsDeducted;
   const displayBanked = isMonthView ? monthSavingsBanked : (hasThisWeekCheckIn ? amountActuallyBanked : (isSavingsAllocated ? protectedSavings : 0));
   const displayDeposit = depositAmount;
-  const depositCount = isSavings ? Math.max(depositsThisWeek.length, depositAmount > 0 ? 1 : 0) : count;
+  const depositCount = isSavings ? (isMonthView ? monthDepositCount : Math.max(depositsThisWeek.length, depositAmount > 0 ? 1 : 0)) : count;
 
   // Total pool for segmented savings bar
   const totalPool = useMemo(() => {
     if (!isSavings) return 0;
-    return Math.max(targetBudget, displayCoverage + displayBanked + displayDeposit, 1);
-  }, [isSavings, targetBudget, displayCoverage, displayBanked, displayDeposit]);
+    if (isMonthView) {
+      return Math.max(targetBudget, displayCoverage + displayBanked, 1);
+    }
+    return Math.max(targetBudget, displayCoverage + displayBanked, 1);
+  }, [isSavings, isMonthView, targetBudget, displayCoverage, displayBanked]);
 
   // Determine icon background style based on bucket color/group
   let iconBg = 'bg-sage-100 text-dark-green-900 border-sage-300';
@@ -457,7 +542,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                   {isSavings ? (
                     isMonthView ? (
                       <>
-                        <span>{formatCurrency(displayBanked + displayDeposit)}</span>
+                        <span>{formatCurrency(displayBanked)}</span>
                         <span className="text-xs font-normal text-brown-700 ml-1">
                           / {formatCurrency(targetBudget)}
                         </span>
@@ -521,10 +606,18 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                 <div className="flex items-center justify-end gap-1.5">
                   {isSavings ? (
                     <div className="flex flex-col items-end gap-0.5">
-                      {!isMonthView && depositAmount > 0 && (
-                        <div className="flex items-center justify-end gap-1 text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-sage-100 text-dark-green-900 border border-sage-300 tracking-tight">
-                          <span>One-Time Deposit +{formatCurrency(depositAmount)}</span>
-                        </div>
+                      {isMonthView ? (
+                        (depositCount > 0 && monthDepositTotal > 0) && (
+                          <div className="flex items-center justify-end gap-1 text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-sage-100 text-dark-green-900 border border-sage-300 tracking-tight">
+                            <span>{formatCurrency(monthDepositTotal)} for {depositCount} {depositCount === 1 ? 'deposit' : 'deposits'}</span>
+                          </div>
+                        )
+                      ) : (
+                        depositAmount > 0 && (
+                          <div className="flex items-center justify-end gap-1 text-[10px] font-extrabold px-1.5 py-0.2 rounded bg-sage-100 text-dark-green-900 border border-sage-300 tracking-tight">
+                            <span>One-Time Deposit +{formatCurrency(depositAmount)}</span>
+                          </div>
+                        )
                       )}
                       {((isMonthView && displayCoverage > 0) || (hasThisWeekCheckIn && savingsDeducted > 0)) && (
                         <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
@@ -548,10 +641,10 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                       )}
                       <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
                         {isMonthView ? (
-                          (displayBanked + displayDeposit) > 0 ? (
+                          displayBanked > 0 ? (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
-                              <span>{formatCurrency(displayBanked + displayDeposit)} Banked</span>
+                              <span>{formatCurrency(displayBanked)} Banked</span>
                             </>
                           ) : (
                             <span className="text-dark-grey-600 font-bold text-[11px]">$0 Banked</span>
@@ -701,11 +794,11 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
         <div className="space-y-1.5 pt-0.5">
             {isSavings ? (
               isMonthView ? (
-                /* Month View: Segmented bar showing only Coverage, Banked from Check-Ins, and One-Time Deposits */
-                (displayCoverage > 0 || displayBanked > 0 || displayDeposit > 0) ? (
+                /* Month View: Segmented bar showing only Coverage and Banked from Check-Ins */
+                (displayCoverage > 0 || displayBanked > 0) ? (
                   <div
                     className="w-full h-5 sm:h-5.5 rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1.5 sm:gap-2 relative shadow-2xs"
-                    title={`Monthly Target: ${formatCurrency(targetBudget)} | Banked from Check-ins: ${formatCurrency(displayBanked)} | One-time Deposits: ${formatCurrency(displayDeposit)} | Overspend Coverage: ${formatCurrency(displayCoverage)}`}
+                    title={`Monthly Target: ${formatCurrency(targetBudget)} | Banked from Check-ins: ${formatCurrency(displayBanked)} | Overspend Coverage: ${formatCurrency(displayCoverage)}`}
                   >
                     {/* Segment 1 (Overspend Coverage Pill) */}
                     {displayCoverage > 0 && (
@@ -745,27 +838,6 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                             : protectedMode === 'amount'
                             ? formatCurrency(displayBanked)
                             : `${Math.round((displayBanked / totalPool) * 100)}%`}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Segment 3 (One-Time Deposit Pill) */}
-                    {displayDeposit > 0 && (
-                      <div
-                        style={{ width: `${(displayDeposit / totalPool) * 100}%` }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDepositMode((prev) => cycleMode(prev));
-                        }}
-                        className="h-full bg-sage-400 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 cursor-pointer hover:brightness-105 active:scale-95 select-none"
-                        title={`One-time deposit: ${formatCurrency(displayDeposit)} (${Math.round((displayDeposit / totalPool) * 100)}%) - Click to toggle display`}
-                      >
-                        <span className="truncate text-sage-950 font-bold">
-                          {depositMode === 'desc'
-                            ? 'One-time deposit'
-                            : depositMode === 'amount'
-                            ? formatCurrency(displayDeposit)
-                            : `${Math.round((displayDeposit / totalPool) * 100)}%`}
                         </span>
                       </div>
                     )}
@@ -875,7 +947,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
               <span className="text-dark-grey-600 font-medium">
                 {isSavings
                   ? isMonthView
-                    ? `${Math.round(((displayBanked + displayDeposit) / (targetBudget || 1)) * 100)}% of monthly target banked`
+                    ? `${Math.round((displayBanked / (targetBudget || 1)) * 100)}% of monthly target banked`
                     : hasThisWeekCheckIn
                     ? `${Math.round((amountActuallyBanked / (targetBudget || 1)) * 100)}% of target banked`
                     : !isSavingsAllocated
