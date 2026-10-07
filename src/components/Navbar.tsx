@@ -51,21 +51,35 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     leaveHousehold,
     timeframeMode,
     activeDateRange,
+    ledgerDateRangeLabel,
   } = useHousehold();
   const [copiedSync, setCopiedSync] = useState(false);
   const [showMemberDropdown, setShowMemberDropdown] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement>(null);
 
-  // Track if Dashboard Timeframe Selector has scrolled out of frame
+  // Track if Timeframe Selector / Visualizer Header has scrolled out of frame
   const [isTimeframeScrolledOutOfView, setIsTimeframeScrolledOutOfView] = useState(false);
 
   useEffect(() => {
     const handleScroll = () => {
-      const el = document.getElementById('dashboard-timeframe-header');
-      if (el) {
-        const rect = el.getBoundingClientRect();
-        // Out of frame when top card is scrolled above the header
-        setIsTimeframeScrolledOutOfView(rect.bottom <= 60);
+      if (activeTab === 'dashboard') {
+        const el = document.getElementById('dashboard-timeframe-header');
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          // Out of frame when top card is scrolled above the header
+          setIsTimeframeScrolledOutOfView(rect.bottom <= 60);
+        } else {
+          setIsTimeframeScrolledOutOfView(false);
+        }
+      } else if (activeTab === 'ledger') {
+        const el = document.getElementById('ledger-visualizer-header');
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          // Out of frame when visualizer header is scrolled past the header
+          setIsTimeframeScrolledOutOfView(rect.bottom <= 60);
+        } else {
+          setIsTimeframeScrolledOutOfView(false);
+        }
       } else {
         setIsTimeframeScrolledOutOfView(false);
       }
@@ -78,15 +92,19 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
 
   // Formatted timeframe indicator text for global header
   const headerTimeframeText = useMemo(() => {
+    if (activeTab === 'ledger') {
+      return ledgerDateRangeLabel || '';
+    }
     if (!activeDateRange?.startDate) return '';
     if (timeframeMode === 'week') {
       const fiscalTracker = getFiscalTrackerInfo(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
       return `Week View W${fiscalTracker.weekOfFiscalYear}`;
     } else {
-      const monthAbbr = activeDateRange.startDate.toLocaleDateString('en-US', { month: 'short' });
+      const fm = getFiscalMonthForDate(activeDateRange.startDate, household?.fiscalYearEndMonth || 12);
+      const monthAbbr = fm.monthName.slice(0, 3);
       return `Month View ${monthAbbr}`;
     }
-  }, [timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
+  }, [activeTab, ledgerDateRangeLabel, timeframeMode, activeDateRange, household?.fiscalYearEndMonth]);
 
   // Click-outside listener for the Account dropdown
   useEffect(() => {
@@ -244,22 +262,23 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             </button>
           </div>
 
-          {/* Timeframe Filter Indicator: Centered on mobile; displayed between logo and nav buttons on desktop */}
+          {/* Timeframe Filter Indicator: Centered in free space between logo and account on mobile; neatly positioned on desktop */}
           {isTimeframeScrolledOutOfView && headerTimeframeText && (
             <div
               id="global-header-timeframe-filter"
-              className="absolute left-1/2 -translate-x-1/2 md:static md:left-auto md:translate-x-0 flex items-center gap-1.5 px-3.5 py-1 bg-beige-100 border border-beige-300 rounded-xl text-xs font-black text-dark-green-950 animate-in fade-in zoom-in-95 duration-150 shadow-2xs z-20 whitespace-nowrap"
+              title={headerTimeframeText}
+              className="flex items-center justify-center gap-1.5 px-2.5 sm:px-3.5 py-1 bg-beige-100 border border-beige-300 rounded-xl text-[11px] sm:text-xs font-black text-dark-green-950 shadow-2xs min-w-0 mx-auto md:mx-0 md:max-w-[160px] lg:max-w-[260px] xl:max-w-[340px] shrink overflow-hidden animate-in fade-in zoom-in-95 duration-150"
             >
-              <span>{headerTimeframeText}</span>
+              <span className="truncate block min-w-0">{headerTimeframeText}</span>
             </div>
           )}
 
           {/* Center-Aligned Navigation Tabs (Desktop / Tablet) */}
-          <nav className="hidden md:flex items-center gap-1 bg-beige-100/80 p-1 rounded-2xl border border-beige-200">
+          <nav className="hidden md:flex items-center gap-1 bg-beige-100/80 p-1 rounded-2xl border border-beige-200 shrink-0">
             {headerTabs.map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
-              const hasAlert = tab.id === 'checkin' && reviewDueStatus.isDue;
+              const hasAlert = tab.id === 'checkin' && reviewDueStatus.isPastDue;
 
               return (
                 <button
@@ -278,7 +297,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
                     <span
                       id="header-checkin-notification-dot"
                       className="w-2 h-2 bg-alert-red-600 rounded-full shrink-0 animate-pulse"
-                      title="Check-in review due"
+                      title="Check-in review past due"
                     />
                   )}
                 </button>
@@ -653,12 +672,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
             }`}
           >
             <CheckCircle className="w-4 h-4" />
-            {reviewDueStatus.isDue && (
+            {reviewDueStatus.isPastDue && (
               <span
                 id="mobile-checkin-notification-dot"
                 className="absolute top-0 right-0 w-2.5 h-2.5 bg-alert-red-600 rounded-full ring-2 ring-white"
-                title="Review due"
-                aria-label="Review due alert"
+                title="Review past due"
+                aria-label="Review past due alert"
               />
             )}
           </div>

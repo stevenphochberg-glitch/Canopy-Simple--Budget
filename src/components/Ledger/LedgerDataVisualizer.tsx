@@ -2,14 +2,25 @@ import React, { useState, useMemo } from 'react';
 import { Category, Expense, OneOffDeposit, Household, CheckIn, HouseholdMember } from '../../types';
 import { formatCurrency, getProratedExpenseAmount, calculateCategorySpending, formatLocalDate } from '../../lib/calculations';
 import { getFiscalMonthForDate, getFiscalYearMonths, getFiscalQuarterForDate, getFiscalWeekId } from '../../lib/fiscal445';
-import { PieChart, BarChart3, Info, Layers, Tag as TagIcon, Sparkles } from 'lucide-react';
+import { PieChart, BarChart3, Info, Layers, Tag as TagIcon, Sparkles, Calendar, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 
 export type ChartGroupingMode = 'categories' | 'tags' | 'both';
+
+export type LedgerDateFilterType =
+  | 'week'
+  | 'month'
+  | 'quarter'
+  | 'year'
+  | 'ytd'
+  | 'last12months'
+  | 'alltime'
+  | 'custom';
 
 export interface LedgerDateRangeMeta {
   startDate: Date;
   endDate: Date;
   label: string;
+  headerLabel?: string;
   filterType: string;
   isShorterThanMonth: boolean;
   isIncompleteMonth: boolean;
@@ -25,6 +36,14 @@ interface LedgerDataVisualizerProps {
   dateRangeMeta: LedgerDateRangeMeta;
   checkIns?: CheckIn[];
   members?: HouseholdMember[];
+  dateFilterType?: LedgerDateFilterType;
+  setDateFilterType?: (type: LedgerDateFilterType) => void;
+  dateFilterOffset?: number;
+  setDateFilterOffset?: React.Dispatch<React.SetStateAction<number>>;
+  customStartDate?: string;
+  setCustomStartDate?: (date: string) => void;
+  customEndDate?: string;
+  setCustomEndDate?: (date: string) => void;
 }
 
 // Master Earth Tone Palette for Pie Charts and Visualizations
@@ -129,6 +148,14 @@ export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
   dateRangeMeta,
   checkIns = [],
   members = [],
+  dateFilterType,
+  setDateFilterType,
+  dateFilterOffset = 0,
+  setDateFilterOffset,
+  customStartDate = '',
+  setCustomStartDate,
+  customEndDate = '',
+  setCustomEndDate,
 }) => {
   const [groupingMode, setGroupingMode] = useState<ChartGroupingMode>('categories');
   const [extendedGranularity, setExtendedGranularity] = useState<'month' | 'week'>('month');
@@ -824,29 +851,123 @@ export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
   // 3. SAVINGS TAB: BAR CHART (MAPPING ACTUAL BANKED FUNDS WITH EXPLICIT DATA LABELS)
   // --------------------------------------------------------------------------
   if (isSavingsTab) {
+    const savingsDateControls = dateFilterType && setDateFilterType && setDateFilterOffset ? (
+      <div className="grid grid-cols-2 gap-2.5 w-full sm:w-[380px] md:w-[420px] max-w-full">
+        {/* Date Filter Dropdown */}
+        <div className="w-full h-9 flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-2.5 sm:px-3 rounded-xl min-w-0 overflow-hidden">
+          <Calendar className="w-3.5 h-3.5 text-brown-700 shrink-0" />
+          <select
+            id="ledger-date-filter-select-savings"
+            value={dateFilterType}
+            onChange={(e) => {
+              setDateFilterType(e.target.value as LedgerDateFilterType);
+              setDateFilterOffset(0);
+            }}
+            className="w-full bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer truncate min-w-0"
+          >
+            <option value="week">Week</option>
+            <option value="month">Month</option>
+            <option value="quarter">Quarter</option>
+            <option value="year">Year</option>
+            <option value="ytd">YTD</option>
+            <option value="last12months">Last 12 Months</option>
+            <option value="alltime">All Time</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+
+        {/* Pagination Controls */}
+        {dateFilterType !== 'alltime' && dateFilterType !== 'custom' && (
+          <div className="w-full h-9 flex items-center justify-between gap-0.5 sm:gap-1 bg-beige-50 border border-beige-200 px-1 sm:px-2 rounded-xl min-w-0 overflow-hidden">
+            <button
+              type="button"
+              id="ledger-prev-period-btn-savings"
+              onClick={() => setDateFilterOffset((prev) => prev - 1)}
+              title="Previous time block"
+              className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
+            >
+              <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
+            </button>
+            <span className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+              {dateRangeMeta.label}
+            </span>
+            <button
+              type="button"
+              id="ledger-next-period-btn-savings"
+              onClick={() => setDateFilterOffset((prev) => prev + 1)}
+              title="Next time block"
+              className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
+            >
+              <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+            </button>
+            {dateFilterOffset !== undefined && dateFilterOffset !== 0 && (
+              <button
+                type="button"
+                onClick={() => setDateFilterOffset(0)}
+                title="Reset to current"
+                className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200 text-brown-700 hover:text-dark-green-900 transition flex items-center justify-center shrink-0 ml-0.5"
+              >
+                <RotateCcw className="w-3 h-3 shrink-0" />
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* All Time Date Range Display */}
+        {dateFilterType === 'alltime' && (
+          <div className="w-full h-9 flex items-center justify-center bg-beige-50 border border-beige-200 px-2 rounded-xl min-w-0 overflow-hidden">
+            <span className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+              {dateRangeMeta.label}
+            </span>
+          </div>
+        )}
+
+        {/* Custom Date Pickers */}
+        {dateFilterType === 'custom' && setCustomStartDate && setCustomEndDate && (
+          <div className="w-full h-9 flex items-center justify-between gap-1 bg-beige-50 border border-beige-200 px-1.5 sm:px-2 rounded-xl min-w-0 overflow-hidden">
+            <input
+              type="date"
+              value={customStartDate}
+              onChange={(e) => setCustomStartDate(e.target.value)}
+              className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+            />
+            <span className="text-[11px] text-brown-700 font-bold shrink-0">-</span>
+            <input
+              type="date"
+              value={customEndDate}
+              onChange={(e) => setCustomEndDate(e.target.value)}
+              className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+            />
+          </div>
+        )}
+      </div>
+    ) : null;
+
     if (isWeekView) {
       // Week View Rule (Directive 4.1):
       // If the active Date Filter is set to "Week" (or custom < 1 month), do NOT render the BarChart component at all.
       // Display ONLY the "Total Banked in Timeframe" pill in the upper right, rendering the single aggregated sum for that week.
       return (
         <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
-          <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-beige-200 pb-4">
             <div className="flex items-center gap-2.5">
               <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
                 <BarChart3 className="w-4 h-4 text-dark-green-800" />
               </div>
               <div>
                 <h3 className="text-sm font-black text-dark-green-900">
-                  Non-Accumulating Savings Rate
+                  Savings Over Time
                 </h3>
-                <p className="text-[11px] text-brown-700">
-                  Weekly timeframe focus ({dateRangeMeta.label})
-                </p>
               </div>
             </div>
 
-            <div className="px-3.5 py-1.5 bg-sage-50 border border-sage-200 rounded-full text-xs font-black text-dark-green-900 font-mono shadow-2xs">
-              Total Banked in Timeframe: +{formatCurrency(totalSavingsBankedInTimeframe)}
+            <div className="flex flex-col items-start lg:items-end gap-2 shrink-0 max-w-full">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <div className="px-3.5 py-1.5 bg-sage-50 border border-sage-200 rounded-full text-xs font-black text-dark-green-900 font-mono shadow-2xs">
+                  Total Banked in Timeframe: +{formatCurrency(totalSavingsBankedInTimeframe)}
+                </div>
+              </div>
+              {savingsDateControls}
             </div>
           </div>
         </div>
@@ -873,53 +994,54 @@ export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
 
     return (
       <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-4">
-        <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-beige-200 pb-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
               <BarChart3 className="w-4 h-4 text-dark-green-800" />
             </div>
             <div>
               <h3 className="text-sm font-black text-dark-green-900">
-                Non-Accumulating Savings Rate
+                Savings Over Time
               </h3>
-              <p className="text-[11px] text-brown-700">
-                Actual banked funds per period ({isMonthView ? 'Weekly check-in breakdown' : extendedGranularity === 'month' ? 'Monthly summary' : 'Weekly check-in breakdown'})
-              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-wrap">
-            {/* View by Month | View by Week toggle for Extended timeframes (Directive 4.3) */}
-            {isExtendedView && (
-              <div className="flex items-center gap-1 bg-beige-100/90 p-1 rounded-2xl border border-beige-200 shadow-2xs">
-                <button
-                  type="button"
-                  onClick={() => setExtendedGranularity('month')}
-                  className={`px-3 py-1 rounded-xl text-xs font-extrabold transition cursor-pointer ${
-                    extendedGranularity === 'month'
-                      ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
-                      : 'text-brown-700 hover:text-dark-green-900'
-                  }`}
-                >
-                  View by Month
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setExtendedGranularity('week')}
-                  className={`px-3 py-1 rounded-xl text-xs font-extrabold transition cursor-pointer ${
-                    extendedGranularity === 'week'
-                      ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
-                      : 'text-brown-700 hover:text-dark-green-900'
-                  }`}
-                >
-                  View by Week
-                </button>
-              </div>
-            )}
+          <div className="flex flex-col items-start lg:items-end gap-2 shrink-0 max-w-full">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* View by Month | View by Week toggle for Extended timeframes (Directive 4.3) */}
+              {isExtendedView && (
+                <div className="flex items-center gap-1 bg-beige-100/90 p-1 rounded-2xl border border-beige-200 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => setExtendedGranularity('month')}
+                    className={`px-3 py-1 rounded-xl text-xs font-extrabold transition cursor-pointer ${
+                      extendedGranularity === 'month'
+                        ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
+                        : 'text-brown-700 hover:text-dark-green-900'
+                    }`}
+                  >
+                    View by Month
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setExtendedGranularity('week')}
+                    className={`px-3 py-1 rounded-xl text-xs font-extrabold transition cursor-pointer ${
+                      extendedGranularity === 'week'
+                        ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
+                        : 'text-brown-700 hover:text-dark-green-900'
+                    }`}
+                  >
+                    View by Week
+                  </button>
+                </div>
+              )}
 
-            <div className="px-3.5 py-1.5 bg-sage-50 border border-sage-200 rounded-full text-xs font-black text-dark-green-900 font-mono shadow-2xs">
-              Total Banked in Timeframe: +{formatCurrency(totalSavingsBankedInTimeframe)}
+              <div className="px-3.5 py-1.5 bg-sage-50 border border-sage-200 rounded-full text-xs font-black text-dark-green-900 font-mono shadow-2xs">
+                Total Banked in Timeframe: +{formatCurrency(totalSavingsBankedInTimeframe)}
+              </div>
             </div>
+
+            {savingsDateControls}
           </div>
         </div>
 
@@ -1157,68 +1279,165 @@ export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
   return (
     <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-5">
       {/* Top Header & Grouping Toggle */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-beige-200 pb-4">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
+      <div id="ledger-visualizer-header" className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-beige-200 pb-4">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
             <PieChart className="w-4 h-4 text-dark-green-800" />
           </div>
-          <div>
-            <h3 className="text-sm font-black text-dark-green-900">
-              Ledger Flow Visualizations
+          <div className="min-w-0">
+            <h3 className="text-sm font-black text-dark-green-900 truncate">
+              Ledger Visuals
             </h3>
-            <p className="text-[11px] text-brown-700">
-              Comparative view of household expenses and income for {dateRangeMeta.label}
-            </p>
           </div>
         </div>
 
-        {/* Grouping Mode Toggle (Categories / Tags / Both) */}
-        <div className="flex items-center gap-1 bg-beige-100/90 p-1 rounded-2xl border border-beige-200 shrink-0 self-start sm:self-auto">
-          <span className="text-[10px] font-extrabold uppercase tracking-wider text-brown-700 px-2 flex items-center gap-1">
-            <Layers className="w-3 h-3 text-brown-600" />
-            Group By:
-          </span>
-          {(['categories', 'tags', 'both'] as ChartGroupingMode[]).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => setGroupingMode(mode)}
-              className={`px-2.5 py-1 rounded-xl text-xs font-extrabold transition cursor-pointer capitalize ${
-                groupingMode === mode
-                  ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
-                  : 'text-brown-700 hover:text-dark-green-900'
-              }`}
-            >
-              {mode}
-            </button>
-          ))}
+        {/* Right Header Area: Grouping Mode Toggle + Repeated Date Filter Controls */}
+        <div className="flex flex-col items-start lg:items-end gap-2 shrink-0 max-w-full">
+          {/* Grouping Mode Toggle (Categories / Tags / Both) */}
+          <div className="w-full flex items-center justify-between gap-1 bg-beige-100/90 p-1 rounded-2xl border border-beige-200">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-brown-700 px-2 flex items-center gap-1 shrink-0">
+              <Layers className="w-3 h-3 text-brown-600" />
+              Group By:
+            </span>
+            <div className="flex items-center gap-1 flex-1 justify-end">
+              {(['categories', 'tags', 'both'] as ChartGroupingMode[]).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setGroupingMode(mode)}
+                  className={`flex-1 text-center px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-xl text-[11px] sm:text-xs font-extrabold transition cursor-pointer capitalize ${
+                    groupingMode === mode
+                      ? 'bg-white text-dark-green-950 shadow-xs border border-beige-300'
+                      : 'text-brown-700 hover:text-dark-green-900'
+                  }`}
+                >
+                  {mode}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Repeated Date Range Filter & Pagination Controls (Synced with Main Toolbar) */}
+          {dateFilterType && setDateFilterType && setDateFilterOffset && (
+            <div className="grid grid-cols-2 gap-2.5 w-full sm:w-[380px] md:w-[420px] max-w-full">
+              {/* Date Filter Dropdown */}
+              <div className="w-full h-9 flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-2.5 sm:px-3 rounded-xl min-w-0 overflow-hidden">
+                <Calendar className="w-3.5 h-3.5 text-brown-700 shrink-0" />
+                <select
+                  id="ledger-date-filter-select-visualizer"
+                  value={dateFilterType}
+                  onChange={(e) => {
+                    setDateFilterType(e.target.value as LedgerDateFilterType);
+                    setDateFilterOffset(0);
+                  }}
+                  className="w-full bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer truncate min-w-0"
+                >
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                  <option value="ytd">YTD</option>
+                  <option value="last12months">Last 12 Months</option>
+                  <option value="alltime">All Time</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+
+              {/* Pagination Controls */}
+              {dateFilterType !== 'alltime' && dateFilterType !== 'custom' && (
+                <div className="w-full h-9 flex items-center justify-between gap-0.5 sm:gap-1 bg-beige-50 border border-beige-200 px-1 sm:px-2 rounded-xl min-w-0 overflow-hidden">
+                  <button
+                    type="button"
+                    id="ledger-prev-period-btn-visualizer"
+                    onClick={() => setDateFilterOffset((prev) => prev - 1)}
+                    title="Previous time block"
+                    className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  <span className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+                    {dateRangeMeta.label}
+                  </span>
+                  <button
+                    type="button"
+                    id="ledger-next-period-btn-visualizer"
+                    onClick={() => setDateFilterOffset((prev) => prev + 1)}
+                    title="Next time block"
+                    className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  {dateFilterOffset !== undefined && dateFilterOffset !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setDateFilterOffset(0)}
+                      title="Reset to current"
+                      className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200 text-brown-700 hover:text-dark-green-900 transition flex items-center justify-center shrink-0 ml-0.5"
+                    >
+                      <RotateCcw className="w-3 h-3 shrink-0" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* All Time Date Range Display */}
+              {dateFilterType === 'alltime' && (
+                <div className="w-full h-9 flex items-center justify-center bg-beige-50 border border-beige-200 px-2 rounded-xl min-w-0 overflow-hidden">
+                  <span className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+                    {dateRangeMeta.label}
+                  </span>
+                </div>
+              )}
+
+              {/* Custom Date Pickers */}
+              {dateFilterType === 'custom' && setCustomStartDate && setCustomEndDate && (
+                <div className="w-full h-9 flex items-center justify-between gap-1 bg-beige-50 border border-beige-200 px-1.5 sm:px-2 rounded-xl min-w-0 overflow-hidden">
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+                  />
+                  <span className="text-[11px] text-brown-700 font-bold shrink-0">-</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+                  />
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
-
-      {/* Bills Exclusion Notice if applicable */}
-      {excludeBillsFromAllChart && (
-        <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-2xl flex items-center gap-2 text-xs text-amber-900">
-          <Info className="w-4 h-4 text-amber-700 shrink-0" />
-          <span>
-            <strong>Bills excluded from expense chart:</strong> Active timeframe is shorter than a month or is an ongoing month with partial bills.
-          </span>
-        </div>
-      )}
 
       {/* 2 Side-by-Side Pie Charts: Expenses and Income */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-1">
         {/* Chart 1: Expenses */}
-        <div className="space-y-3 bg-beige-50/40 p-4 rounded-2xl border border-beige-200">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-black text-dark-green-950 uppercase tracking-wider flex items-center gap-1.5">
-              <TagIcon className="w-3.5 h-3.5 text-sage-700" />
-              Expense Distribution ({groupingMode})
-            </span>
-            <span className="text-xs font-black font-mono text-dark-green-900">
-              {formatCurrency(totalExpenseAmount)}
-            </span>
+        <div className="space-y-3 bg-beige-50/40 p-4 rounded-2xl border border-beige-200 flex flex-col justify-between">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-dark-green-950 uppercase tracking-wider flex items-center gap-1.5">
+                <TagIcon className="w-3.5 h-3.5 text-sage-700" />
+                Expense Distribution ({groupingMode})
+              </span>
+              <span className="text-xs font-black font-mono text-dark-green-900">
+                {formatCurrency(totalExpenseAmount)}
+              </span>
+            </div>
+            {renderPieChartSvg(expenseSlices, totalExpenseAmount, 'Expenses')}
           </div>
-          {renderPieChartSvg(expenseSlices, totalExpenseAmount, 'Expenses')}
+
+          {/* Bills Exclusion Notice shown directly after Expense Chart */}
+          {excludeBillsFromAllChart && (
+            <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl flex items-center gap-2 text-xs text-amber-900 mt-2">
+              <Info className="w-4 h-4 text-amber-700 shrink-0" />
+              <span className="text-[11px] leading-tight">
+                <strong>Bills excluded from expense chart:</strong> Active timeframe is shorter than a month or is an ongoing month with partial bills.
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Chart 2: Income */}

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { formatCurrency, formatDateDisplay } from '../../lib/calculations';
+import { formatCurrency, formatDateDisplay, formatLocalDate } from '../../lib/calculations';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { getReactionDef } from '../Common/EarthToneReaction';
 import {
@@ -31,8 +31,10 @@ import {
   ArrowRight,
   Sprout,
   Activity,
+  DollarSign,
+  X,
 } from 'lucide-react';
-import { FeedItem } from '../../types';
+import { FeedItem, Expense } from '../../types';
 
 export const FeedView: React.FC = () => {
   const {
@@ -54,6 +56,15 @@ export const FeedView: React.FC = () => {
   const [messageInput, setMessageInput] = useState('');
   const [selectedDateFilter, setSelectedDateFilter] = useState<string | null>(null);
 
+  // Pop-up modal state for full amount breakdown
+  const [selectedDayPopup, setSelectedDayPopup] = useState<{
+    dateStr: string;
+    dateFormatted: string;
+    totalSpent: number;
+    count: number;
+    transactions: Expense[];
+  } | null>(null);
+
   // Calendar State: Anchor Date for 4-4-5 Fiscal Month
   const [calendarAnchorDate, setCalendarAnchorDate] = useState<Date>(() => new Date());
 
@@ -70,6 +81,20 @@ export const FeedView: React.FC = () => {
   const filteredFeedItems = useMemo(() => {
     return feedItems
       .filter((item) => {
+        // Exclude check-in feed items if the corresponding check-in was deleted
+        if (item.type === 'checkin') {
+          const matchingCheckIn = (checkIns || []).find((c) =>
+            (item.linkedCheckInId && c.id === item.linkedCheckInId) ||
+            (item.metadata?.checkInId && c.id === item.metadata?.checkInId) ||
+            (c.weekEndDate && item.date === c.weekEndDate) ||
+            (c.weekEndDate && item.weekEndDate === c.weekEndDate) ||
+            (c.weekStartDate && item.weekStartDate === c.weekStartDate) ||
+            (item.id && item.id.includes(c.id))
+          );
+          if (!matchingCheckIn && checkIns.length > 0) {
+            return false;
+          }
+        }
         // Date filter from calendar anchor
         if (selectedDateFilter && item.date !== selectedDateFilter) {
           return false;
@@ -81,7 +106,7 @@ export const FeedView: React.FC = () => {
         return true;
       })
       .sort((a, b) => b.timestamp - a.timestamp);
-  }, [feedItems, filterType, selectedDateFilter]);
+  }, [feedItems, filterType, selectedDateFilter, checkIns]);
 
   const handlePostMessage = (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,21 +120,27 @@ export const FeedView: React.FC = () => {
 
   // Calendar computations strictly enforcing 4-4-5 Fiscal Month Structure
   const calendarData = useMemo(() => {
-    // 1. Build an aggregate map of all logged household transactions per date
-    const dailyExpensesMap: Record<string, { totalSpent: number; count: number }> = {};
+    // 1. Build an aggregate map of all logged household transactions STRICTLY by transaction date (exp.date)
+    const dailyExpensesMap: Record<
+      string,
+      { totalSpent: number; count: number; transactions: Expense[] }
+    > = {};
+
     expenses.forEach((exp) => {
       const amount = Number(exp.amount) || 0;
       if (amount <= 0) return;
+      // Strictly transaction date (exp.date), not the logged timestamp
       let dStr = exp.date;
       if (!dStr && exp.timestamp) {
         dStr = new Date(exp.timestamp).toISOString().split('T')[0];
       }
       if (dStr) {
         if (!dailyExpensesMap[dStr]) {
-          dailyExpensesMap[dStr] = { totalSpent: 0, count: 0 };
+          dailyExpensesMap[dStr] = { totalSpent: 0, count: 0, transactions: [] };
         }
         dailyExpensesMap[dStr].totalSpent += amount;
         dailyExpensesMap[dStr].count += 1;
+        dailyExpensesMap[dStr].transactions.push(exp);
       }
     });
 
@@ -143,6 +174,38 @@ export const FeedView: React.FC = () => {
 
     // Populate from feedItems
     feedItems.forEach((item) => {
+      // If check-in feed item, verify it is still active and resolve to Sunday
+      if (item.type === 'checkin') {
+        const matchingCheckIn = (checkIns || []).find((c) =>
+          (item.linkedCheckInId && c.id === item.linkedCheckInId) ||
+          (item.metadata?.checkInId && c.id === item.metadata?.checkInId) ||
+          (c.weekEndDate && item.date === c.weekEndDate) ||
+          (c.weekEndDate && item.weekEndDate === c.weekEndDate) ||
+          (c.weekStartDate && item.weekStartDate === c.weekStartDate) ||
+          (item.id && item.id.includes(c.id))
+        );
+        if (!matchingCheckIn && checkIns.length > 0) {
+          return; // Deleted check-in is removed from calendar
+        }
+        const checkinSunday = matchingCheckIn?.weekEndDate || item.weekEndDate || item.date;
+        if (checkinSunday) {
+          const entry = getOrInitDay(checkinSunday);
+          entry.items.push(item);
+          entry.hasCheckin = true;
+        }
+        return;
+      }
+
+      // If monthly review / month-end reset, strictly display on the Sunday of the last day of the fiscal month
+      if (item.type === 'monthEndReset') {
+        const resetMonth = getFiscalMonthForDate(new Date(item.date || item.timestamp), household?.fiscalYearEndMonth || 12);
+        const resetSundayStr = formatLocalDate(resetMonth.endDate);
+        const entry = getOrInitDay(resetSundayStr);
+        entry.items.push(item);
+        entry.hasStar = true;
+        return;
+      }
+
       const dStr = item.date || new Date(item.timestamp).toISOString().split('T')[0];
       const entry = getOrInitDay(dStr);
       entry.items.push(item);
@@ -151,12 +214,8 @@ export const FeedView: React.FC = () => {
       if (item.type === 'comment' || item.type === 'message') {
         entry.commentCount += 1;
       }
-      // Green checkmarks for completed weekly check-ins
-      if (item.type === 'checkin') {
-        entry.hasCheckin = true;
-      }
-      // Stars for monthly reviews & major milestones
-      if (item.type === 'monthEndReset' || item.type === 'freshStart' || (item.metadata?.totalSaved && item.metadata.totalSaved > 50)) {
+      // Stars for major milestones / fresh start
+      if (item.type === 'freshStart' || (item.metadata?.totalSaved && item.metadata.totalSaved > 50)) {
         entry.hasStar = true;
       }
       // Fallback if expense was only captured in feedItem
@@ -166,25 +225,22 @@ export const FeedView: React.FC = () => {
       }
     });
 
-    // Populate completed check-ins directly from checkIns collection
+    // Populate completed check-ins directly from checkIns collection (strictly on the Sunday of the week that was checked in)
     checkIns.forEach((c) => {
       if (c.status === 'completed') {
-        if (c.weekEndDate) {
-          const entry = getOrInitDay(c.weekEndDate);
-          entry.hasCheckin = true;
-        }
-        if (c.timestamp) {
-          const cDate = new Date(c.timestamp).toISOString().split('T')[0];
-          const entry = getOrInitDay(cDate);
+        const sundayStr = c.weekEndDate || formatLocalDate(new Date(c.weekStartDate || c.timestamp));
+        if (sundayStr) {
+          const entry = getOrInitDay(sundayStr);
           entry.hasCheckin = true;
         }
       }
     });
 
-    // Populate monthly review star from household lastMonthEndReset
+    // Populate monthly review star from household lastMonthEndReset strictly on the Sunday of the last day of the fiscal month
     if (household?.lastMonthEndReset) {
-      const resetDateStr = new Date(household.lastMonthEndReset).toISOString().split('T')[0];
-      const entry = getOrInitDay(resetDateStr);
+      const resetFiscalMonth = getFiscalMonthForDate(new Date(household.lastMonthEndReset), household?.fiscalYearEndMonth || 12);
+      const resetSundayStr = formatLocalDate(resetFiscalMonth.endDate);
+      const entry = getOrInitDay(resetSundayStr);
       entry.hasStar = true;
     }
 
@@ -200,6 +256,9 @@ export const FeedView: React.FC = () => {
       const dayNumber = current.getDate();
       const monthShort = current.toLocaleDateString('en-US', { month: 'short' });
 
+      const monthNumber = current.getMonth() + 1;
+      const dateNumberFormat = `${monthNumber}/${dayNumber}`;
+
       // Ensure day entry exists
       const meta = getOrInitDay(dateStr);
 
@@ -207,6 +266,7 @@ export const FeedView: React.FC = () => {
         date: new Date(current),
         dayNumber,
         monthShort,
+        dateNumberFormat,
         dateStr,
         fiscalWeekNumber: weekNumber,
         meta,
@@ -221,7 +281,18 @@ export const FeedView: React.FC = () => {
       current.setDate(current.getDate() + 1);
     }
 
-    return { fiscalMonth, fiscalTracker, days, dailyExpensesMap };
+    // Group days into 7-day week rows
+    const weeks: Array<{ weekNumber: number; days: typeof days }> = [];
+    for (let i = 0; i < days.length; i += 7) {
+      const weekDays = days.slice(i, i + 7);
+      const wNum = weekDays[0]?.fiscalWeekNumber || Math.floor(i / 7) + 1;
+      weeks.push({
+        weekNumber: wNum,
+        days: weekDays,
+      });
+    }
+
+    return { fiscalMonth, fiscalTracker, days, weeks, dailyExpensesMap };
   }, [fiscalMonth, fiscalTracker, feedItems, expenses, checkIns, household?.lastMonthEndReset]);
 
   const prevFiscalMonth = () => {
@@ -328,195 +399,254 @@ export const FeedView: React.FC = () => {
 
       {/* CALENDAR VIEW (4-4-5 FISCAL MONTH ENFORCED) */}
       {viewMode === 'calendar' && (
-        <div className="bg-white border border-beige-200/90 rounded-3xl p-5 sm:p-6 shadow-xs space-y-5">
+        <div className="bg-white border border-beige-200/90 rounded-3xl shadow-xs overflow-hidden">
           {/* Fiscal Month Header & Navigation */}
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-beige-100 pb-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-[10px] font-black uppercase tracking-wider text-dark-green-950 bg-sage-100 border border-sage-300 px-2.5 py-0.5 rounded-full">
-                  Fiscal Month {fiscalMonth.fiscalMonthNumber} (Q{fiscalMonth.quarter} &bull; {fiscalMonth.weekCount} Weeks)
-                </span>
-                <span className="text-xs font-extrabold text-brown-700 bg-beige-100/80 border border-beige-200 px-2.5 py-0.5 rounded-full">
-                  {fiscalMonth.label}
-                </span>
-                {selectedDateFilter && (
-                  <button
-                    onClick={() => setSelectedDateFilter(null)}
-                    className="text-xs font-bold text-sage-900 bg-sage-50 border border-sage-200 px-2.5 py-0.5 rounded-full hover:bg-sage-100 transition flex items-center gap-1 cursor-pointer"
-                  >
-                    <span>Filtering: {selectedDateFilter}</span>
-                    <span className="text-brown-700 font-black">&times;</span>
-                  </button>
-                )}
+          <div className="p-5 sm:p-6 pb-4 space-y-4">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-beige-100 pb-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-black uppercase tracking-wider text-dark-green-950 bg-sage-100 border border-sage-300 px-2.5 py-0.5 rounded-full">
+                    Fiscal Month {fiscalMonth.fiscalMonthNumber} (Q{fiscalMonth.quarter} &bull; {fiscalMonth.weekCount} Weeks)
+                  </span>
+                  <span className="text-xs font-extrabold text-brown-700 bg-beige-100/80 border border-beige-200 px-2.5 py-0.5 rounded-full">
+                    {fiscalMonth.label}
+                  </span>
+                  {selectedDateFilter && (
+                    <button
+                      onClick={() => setSelectedDateFilter(null)}
+                      className="text-xs font-bold text-sage-900 bg-sage-50 border border-sage-200 px-2.5 py-0.5 rounded-full hover:bg-sage-100 transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <span>Filtering: {selectedDateFilter}</span>
+                      <span className="text-brown-700 font-black">&times;</span>
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <h2 className="text-xl sm:text-2xl font-black text-dark-green-900 tracking-tight">
+                    {fiscalMonth.name}
+                  </h2>
+                  <span className="text-xs font-extrabold text-sage-800 hidden sm:inline">
+                    &bull; {fiscalTracker.label}
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center gap-3">
-                <h2 className="text-xl sm:text-2xl font-black text-dark-green-900 tracking-tight">
-                  {fiscalMonth.name}
-                </h2>
-                <span className="text-xs font-extrabold text-sage-800 hidden sm:inline">
-                  &bull; {fiscalTracker.label}
-                </span>
+
+              <div className="flex items-center gap-2 self-start md:self-auto">
+                <button
+                  onClick={prevFiscalMonth}
+                  className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                  title="Previous Fiscal Month"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span className="hidden sm:inline">Prev Month</span>
+                </button>
+                <button
+                  onClick={() => setCalendarAnchorDate(new Date())}
+                  className="px-3 py-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-xs font-bold text-dark-green-900 transition cursor-pointer"
+                >
+                  Current Month
+                </button>
+                <button
+                  onClick={nextFiscalMonth}
+                  className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
+                  title="Next Fiscal Month"
+                >
+                  <span className="hidden sm:inline">Next Month</span>
+                  <ChevronRight className="w-4 h-4" />
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center gap-2 self-start md:self-auto">
-              <button
-                onClick={prevFiscalMonth}
-                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
-                title="Previous Fiscal Month"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span className="hidden sm:inline">Prev Month</span>
-              </button>
-              <button
-                onClick={() => setCalendarAnchorDate(new Date())}
-                className="px-3 py-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-xs font-bold text-dark-green-900 transition cursor-pointer"
-              >
-                Current Month
-              </button>
-              <button
-                onClick={nextFiscalMonth}
-                className="p-2 rounded-xl bg-beige-50 hover:bg-beige-100 border border-beige-200 text-dark-green-900 transition cursor-pointer flex items-center gap-1 text-xs font-bold"
-                title="Next Fiscal Month"
-              >
-                <span className="hidden sm:inline">Next Month</span>
-                <ChevronRight className="w-4 h-4" />
-              </button>
+            {/* Iconography Legend */}
+            <div className="flex items-center gap-4 text-xs font-semibold text-brown-700 flex-wrap bg-beige-50/70 p-3 rounded-2xl border border-beige-200">
+              <span className="text-dark-green-900 font-extrabold">Fiscal Calendar Indicators:</span>
+              <div className="flex items-center gap-1.5">
+                <div className="w-5 h-5 rounded-full bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                </div>
+                <span>Weekly Check-In</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-5 h-5 rounded-full bg-gold-100 border border-gold-300 flex items-center justify-center text-gold-900">
+                  <Star className="w-3.5 h-3.5 fill-gold-500 text-gold-700" />
+                </div>
+                <span>Monthly Review</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="w-5 h-5 rounded-full bg-beige-200 border border-beige-300 flex items-center justify-center text-dark-green-900">
+                  <MessageSquare className="w-3 h-3" />
+                </div>
+                <span>Comments & Notes</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <div className="px-2 py-0.5 rounded-md bg-white border border-beige-300 font-mono font-black text-dark-green-900 text-[10px] shadow-2xs">
+                  $0.00
+                </div>
+                <span>Daily Transaction Total</span>
+              </div>
             </div>
           </div>
 
-          {/* Iconography Legend */}
-          <div className="flex items-center gap-4 text-xs font-semibold text-brown-700 flex-wrap bg-beige-50/70 p-3 rounded-2xl border border-beige-200">
-            <span className="text-dark-green-900 font-extrabold">Fiscal Calendar Indicators:</span>
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-sage-100 border border-sage-300 flex items-center justify-center text-dark-green-900">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-              </div>
-              <span>Weekly Check-In</span>
+          {/* 4-4-5 Fiscal Calendar Grid (Strictly equal-width day columns across all 7 days with minmax(0, 1fr)) */}
+          <div className="w-full grid grid-cols-[36px_repeat(7,minmax(0,1fr))] sm:grid-cols-[46px_repeat(7,minmax(0,1fr))] gap-0 border-t border-b border-beige-200 bg-white">
+            <div className="text-center font-black text-[10px] sm:text-[11px] uppercase tracking-wider text-brown-600 py-2 bg-beige-100/90 border-b border-r border-beige-200 flex items-center justify-center min-w-0 overflow-hidden">
+              Wk
             </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-gold-100 border border-gold-300 flex items-center justify-center text-gold-900">
-                <Star className="w-3.5 h-3.5 fill-gold-500 text-gold-700" />
-              </div>
-              <span>Monthly Review</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-5 h-5 rounded-full bg-beige-200 border border-beige-300 flex items-center justify-center text-dark-green-900">
-                <MessageSquare className="w-3 h-3" />
-              </div>
-              <span>Comments & Notes</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="px-2 py-0.5 rounded-md bg-white border border-beige-300 font-mono font-black text-dark-green-900 text-[10px] shadow-2xs">
-                $0.00
-              </div>
-              <span>Daily Transaction Total</span>
-            </div>
-          </div>
-
-          {/* 4-4-5 Fiscal Calendar Grid (Exactly 4, 5, or 6 full weeks starting Monday) */}
-          <div className="grid grid-cols-7 gap-2">
-            {FISCAL_DAY_HEADERS.map((dayName) => (
+            {FISCAL_DAY_HEADERS.map((dayName, idx) => (
               <div
                 key={dayName}
-                className="text-center font-black text-[11px] uppercase tracking-wider text-dark-green-900 py-1 bg-beige-50/80 rounded-xl border border-beige-100"
+                className={`text-center font-black text-[11px] uppercase tracking-wider text-dark-green-900 py-2 bg-beige-50/90 border-b border-beige-200 min-w-0 overflow-hidden ${
+                  idx < FISCAL_DAY_HEADERS.length - 1 ? 'border-r' : ''
+                }`}
               >
                 {dayName}
               </div>
             ))}
 
-            {calendarData.days.map((cell) => {
-              const isSelected = selectedDateFilter === cell.dateStr;
-              const hasActivity = cell.meta.items.length > 0 || cell.meta.totalDailySpent > 0;
-              const isToday =
-                cell.dateStr === new Date().toISOString().split('T')[0];
-
+            {calendarData.weeks.map((week, wIdx) => {
+              const isLastWeek = wIdx === calendarData.weeks.length - 1;
               return (
-                <div
-                  key={cell.dateStr}
-                  onClick={() => {
-                    if (isSelected) {
-                      setSelectedDateFilter(null);
-                    } else {
-                      setSelectedDateFilter(cell.dateStr);
-                    }
-                  }}
-                  className={`min-h-[130px] sm:min-h-[145px] p-2 sm:p-2.5 rounded-2xl border transition-all flex flex-col justify-between cursor-pointer group ${
-                    isSelected
-                      ? 'bg-sage-50 border-dark-green-800 ring-2 ring-dark-green-800/20 shadow-xs'
-                      : isToday
-                      ? 'bg-white border-sage-400 shadow-2xs ring-1 ring-sage-300'
-                      : hasActivity
-                      ? 'bg-white hover:bg-beige-50 border-beige-200 hover:border-beige-300'
-                      : 'bg-white/70 hover:bg-beige-50 border-beige-100'
-                  }`}
-                >
-                  {/* Top: Month Label & Day Number */}
-                  <div className="flex items-center justify-between">
-                    <span
-                      className={`text-xs font-black ${
-                        isToday
-                          ? 'px-1.5 py-0.5 rounded-md bg-dark-green-900 text-white flex items-center justify-center'
-                          : 'text-dark-green-900'
-                      }`}
-                    >
-                      {cell.monthShort} {cell.dayNumber}
-                    </span>
-                    <span className="text-[9px] font-extrabold text-brown-600 bg-beige-100/70 px-1 rounded-sm">
-                      W{cell.fiscalWeekNumber}
+                <React.Fragment key={`week-${week.weekNumber}`}>
+                  {/* Week indicator displayed once, to the left of Monday */}
+                  <div className={`flex flex-col items-center justify-center p-1 bg-beige-100/80 border-r border-beige-200 text-center self-stretch select-none min-w-0 overflow-hidden ${!isLastWeek ? 'border-b' : ''}`}>
+                    <span className="text-[10px] sm:text-xs font-black text-dark-green-950 bg-white/90 px-1 sm:px-1.5 py-1 rounded-lg border border-beige-300 shadow-2xs">
+                      W{week.weekNumber}
                     </span>
                   </div>
 
-                  {/* Middle: Vertically Stacked Indicators (Icons) */}
-                  <div className="flex-1 flex flex-col justify-center gap-1 my-1">
-                    {cell.meta.hasCheckin && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-300" title="Weekly Check-In Completed">
-                        <CheckCircle2 className="w-3 h-3 text-dark-green-700 shrink-0" />
-                        <span className="truncate hidden sm:inline">Check-in</span>
-                      </div>
-                    )}
-                    {cell.meta.hasStar && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-gold-950 bg-gold-100/90 px-1.5 py-0.5 rounded-md border border-gold-300" title="Monthly Review / Major Milestone">
-                        <Star className="w-3 h-3 fill-gold-500 text-gold-700 shrink-0" />
-                        <span className="truncate hidden sm:inline">Review</span>
-                      </div>
-                    )}
-                    {cell.meta.commentCount > 0 && (
-                      <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-beige-200/90 px-1.5 py-0.5 rounded-md border border-beige-300" title={`${cell.meta.commentCount} Notes`}>
-                        <MessageSquare className="w-3 h-3 text-dark-green-800 shrink-0" />
-                        <span className="truncate">{cell.meta.commentCount} <span className="hidden sm:inline">note{cell.meta.commentCount > 1 ? 's' : ''}</span></span>
-                      </div>
-                    )}
-                  </div>
+                  {/* 7 Days of the Week (Strictly equal width across all columns) */}
+                  {week.days.map((cell, dIdx) => {
+                    const isSelected = selectedDateFilter === cell.dateStr;
+                    const hasActivity = cell.meta.items.length > 0 || cell.meta.totalDailySpent > 0;
+                    const isToday =
+                      cell.dateStr === new Date().toISOString().split('T')[0];
+                    const isLastCol = dIdx === week.days.length - 1;
 
-                  {/* Bottom: Daily Aggregate Transaction Dollar Total */}
-                  <div className="mt-auto pt-1">
-                    {cell.meta.totalDailySpent > 0 ? (
+                    return (
                       <div
-                        className="w-full flex items-center justify-between px-1.5 py-0.5 bg-dark-green-900/5 group-hover:bg-dark-green-900/10 border border-dark-green-900/15 rounded-md text-dark-green-950 shadow-2xs transition"
-                        title={`Total Logged: ${formatCurrency(cell.meta.totalDailySpent)} across ${cell.meta.transactionCount} transaction${cell.meta.transactionCount === 1 ? '' : 's'}`}
+                        key={cell.dateStr}
+                        onClick={() => {
+                          if (isSelected) {
+                            setSelectedDateFilter(null);
+                          } else {
+                            setSelectedDateFilter(cell.dateStr);
+                          }
+                        }}
+                        className={`min-h-[130px] sm:min-h-[145px] p-1.5 sm:p-2.5 transition-colors flex flex-col justify-between cursor-pointer group min-w-0 w-full overflow-hidden ${
+                          !isLastCol ? 'border-r border-beige-200' : ''
+                        } ${!isLastWeek ? 'border-b border-beige-200' : ''} ${
+                          isSelected
+                            ? 'bg-sage-100/90 ring-2 ring-inset ring-dark-green-800 z-10'
+                            : isToday
+                            ? 'bg-sage-50/40'
+                            : hasActivity
+                            ? 'bg-white hover:bg-beige-50/80'
+                            : 'bg-white/80 hover:bg-beige-50/60'
+                        }`}
                       >
-                        <span className="text-[9px] font-black text-sage-800 uppercase tracking-tight hidden sm:inline">
-                          Total
-                        </span>
-                        <span className="text-[10px] sm:text-xs font-mono font-black text-dark-green-900 truncate">
-                          {formatCurrency(cell.meta.totalDailySpent)}
-                        </span>
+                        {/* Top: Date in Number Format (e.g. 9/3, 10/7) */}
+                        <div className="flex items-center justify-start min-w-0">
+                          <span
+                            className={`text-xs font-black ${
+                              isToday
+                                ? 'px-1.5 py-0.5 rounded-md bg-dark-green-900 text-white flex items-center justify-center shadow-2xs'
+                                : 'text-dark-green-900'
+                            }`}
+                          >
+                            {cell.dateNumberFormat}
+                          </span>
+                        </div>
+
+                        {/* Middle: Vertically Stacked Indicators (Icons) */}
+                        <div className="flex-1 flex flex-col justify-center gap-1 my-1 min-w-0">
+                          {cell.meta.hasCheckin && (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-sage-100/90 px-1.5 py-0.5 rounded-md border border-sage-300 min-w-0" title="Weekly Check-In Completed">
+                              <CheckCircle2 className="w-3 h-3 text-dark-green-700 shrink-0" />
+                              <span className="truncate hidden sm:inline">Check-in</span>
+                            </div>
+                          )}
+                          {cell.meta.hasStar && (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-gold-950 bg-gold-100/90 px-1.5 py-0.5 rounded-md border border-gold-300 min-w-0" title="Monthly Review / Major Milestone">
+                              <Star className="w-3 h-3 fill-gold-500 text-gold-700 shrink-0" />
+                              <span className="truncate hidden sm:inline">Review</span>
+                            </div>
+                          )}
+                          {cell.meta.commentCount > 0 && (
+                            <div className="flex items-center gap-1 text-[10px] font-bold text-dark-green-900 bg-beige-200/90 px-1.5 py-0.5 rounded-md border border-beige-300 min-w-0" title={`${cell.meta.commentCount} Notes`}>
+                              <MessageSquare className="w-3 h-3 text-dark-green-800 shrink-0" />
+                              <span className="truncate">{cell.meta.commentCount} <span className="hidden sm:inline">note{cell.meta.commentCount > 1 ? 's' : ''}</span></span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Bottom: Daily Aggregate Transaction Dollar Total */}
+                        <div className="mt-auto pt-1 w-full min-w-0 overflow-hidden">
+                          {cell.meta.totalDailySpent > 0 ? (() => {
+                            const roundedAmount = Math.round(cell.meta.totalDailySpent);
+                            // If an amount is 1000 or over, do not use commas (e.g. $1000, $1250, $10000)
+                            const formattedNoCommas = `$${roundedAmount}`;
+                            // If amount is >= 1000 or too wide to fit without changing cell size, replace with interactive prompt icon
+                            const isTooWide = cell.meta.totalDailySpent >= 1000;
+
+                            const openPopup = (e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              setSelectedDayPopup({
+                                dateStr: cell.dateStr,
+                                dateFormatted: formatDateDisplay(cell.dateStr),
+                                totalSpent: cell.meta.totalDailySpent,
+                                count: cell.meta.transactionCount,
+                                transactions: calendarData.dailyExpensesMap[cell.dateStr]?.transactions || [],
+                              });
+                            };
+
+                            if (isTooWide) {
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={openPopup}
+                                  className="w-full flex items-center justify-center gap-1 py-1 px-1 bg-dark-green-900/10 hover:bg-dark-green-900 text-dark-green-900 hover:text-white border border-dark-green-900/20 rounded-lg text-xs font-black transition cursor-pointer group shadow-2xs min-w-0"
+                                  title={`Total on this date: ${formattedNoCommas} (${cell.meta.transactionCount} transactions). Click to view full amount.`}
+                                  aria-label={`View full amount for ${cell.dateStr}`}
+                                >
+                                  <DollarSign className="w-3.5 h-3.5 shrink-0" />
+                                  <span className="text-[10px] font-mono font-black">...</span>
+                                </button>
+                              );
+                            }
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={openPopup}
+                                className="w-full flex items-center justify-center sm:justify-between px-1 sm:px-1.5 py-0.5 bg-dark-green-900/5 hover:bg-dark-green-900/15 border border-dark-green-900/15 rounded-md text-dark-green-950 shadow-2xs transition text-left cursor-pointer min-w-0"
+                                title={`Total on this date: ${formattedNoCommas} across ${cell.meta.transactionCount} transaction${cell.meta.transactionCount === 1 ? '' : 's'}. Click to view details.`}
+                              >
+                                <span className="text-[9px] font-black text-sage-800 uppercase tracking-tight hidden md:inline">
+                                  Total
+                                </span>
+                                <span className="text-[10px] sm:text-xs font-mono font-black text-dark-green-900 truncate">
+                                  {formattedNoCommas}
+                                </span>
+                              </button>
+                            );
+                          })() : cell.meta.items.length > 0 ? (
+                            <span className="block text-center text-[9px] font-bold text-brown-700 truncate min-w-0">
+                              {cell.meta.items.length} {cell.meta.items.length === 1 ? 'event' : 'events'}
+                            </span>
+                          ) : null}
+                        </div>
                       </div>
-                    ) : cell.meta.items.length > 0 ? (
-                      <span className="block text-center text-[9px] font-bold text-brown-700 truncate">
-                        {cell.meta.items.length} {cell.meta.items.length === 1 ? 'event' : 'events'}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
+                    );
+                  })}
+                </React.Fragment>
               );
             })}
           </div>
 
           {/* Active Day Detail Banner with Clear Date Filter */}
           {selectedDateFilter && (
-            <div className="bg-sage-50 border border-sage-300 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-5 sm:p-6 pt-4">
+              <div className="bg-sage-50 border border-sage-300 p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <span className="text-xs font-extrabold text-dark-green-900 block">
                   Date Filter Active: {formatDateDisplay(selectedDateFilter)}
@@ -545,6 +675,7 @@ export const FeedView: React.FC = () => {
                 </button>
               </div>
             </div>
+          </div>
           )}
         </div>
       )}
@@ -770,6 +901,114 @@ export const FeedView: React.FC = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Pop-up displaying Full Amount & Itemized Transactions for Selected Date */}
+      {selectedDayPopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/60 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="bg-white border border-beige-200 rounded-3xl w-full max-w-md shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="px-5 py-4 bg-sage-50/80 border-b border-beige-200 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-dark-green-800 text-white flex items-center justify-center shadow-xs">
+                  <DollarSign className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-dark-green-900 leading-tight">
+                    Transaction Total
+                  </h3>
+                  <span className="text-xs text-brown-700">
+                    {selectedDayPopup.dateFormatted} ({selectedDayPopup.dateStr})
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedDayPopup(null)}
+                className="p-1.5 rounded-xl text-brown-700 hover:text-dark-green-900 hover:bg-beige-200 transition cursor-pointer"
+                title="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4">
+              {/* Large Amount Display (No commas for 1000+) */}
+              <div className="p-4 bg-beige-50/90 rounded-2xl border border-beige-200 text-center space-y-1">
+                <span className="text-[11px] font-black uppercase tracking-wider text-brown-600 block">
+                  Total for Transactions on this Date
+                </span>
+                <div className="text-3xl sm:text-4xl font-black font-mono text-dark-green-900 tracking-tight">
+                  ${Math.round(selectedDayPopup.totalSpent)}
+                </div>
+                <span className="text-xs font-semibold text-sage-800 block">
+                  {selectedDayPopup.count} transaction{selectedDayPopup.count > 1 ? 's' : ''} with transaction date {selectedDayPopup.dateFormatted}
+                </span>
+              </div>
+
+              {/* Itemized Transactions with that transaction date */}
+              {selectedDayPopup.transactions.length > 0 && (
+                <div className="space-y-2">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-dark-green-900 block">
+                    Itemized Transactions ({selectedDayPopup.transactions.length})
+                  </span>
+                  <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                    {selectedDayPopup.transactions.map((tx) => {
+                      const cat = categories.find((c) => c.id === tx.categoryId);
+                      const payer = members.find((m) => m.userId === tx.loggedByUserId);
+                      return (
+                        <div
+                          key={tx.id}
+                          className="p-3 bg-white border border-beige-200 rounded-xl flex items-center justify-between gap-3 shadow-2xs"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="w-7 h-7 rounded-lg bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
+                              <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-3.5 h-3.5" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-dark-green-900 truncate">
+                                {tx.description}
+                              </p>
+                              <span className="text-[10px] text-brown-600">
+                                {cat?.name || 'Category'} &bull; Paid by {payer?.name || 'Member'}
+                              </span>
+                            </div>
+                          </div>
+                          <span className="text-xs font-black font-mono text-dark-green-900 shrink-0">
+                            ${Math.round(tx.amount)}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center justify-between gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedDayPopup(null);
+                    navigateToCategoryLedger(null);
+                  }}
+                  className="px-3.5 py-2 bg-beige-100 hover:bg-beige-200 text-dark-green-900 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <span>View in Ledger</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDayPopup(null)}
+                  className="px-5 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-black rounded-xl shadow-xs transition cursor-pointer"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

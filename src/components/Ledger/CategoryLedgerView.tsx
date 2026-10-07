@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { useHousehold } from '../../context/HouseholdContext';
+import React, { useState, useMemo, useEffect } from 'react';
+import { useHousehold, isExpenseOneTimeDeposit } from '../../context/HouseholdContext';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import {
   Search,
@@ -28,6 +28,10 @@ import {
   Sparkles,
   PieChart,
   Send,
+  ChevronDown,
+  ChevronUp,
+  ShoppingBag,
+  PiggyBank,
 } from 'lucide-react';
 import { Category, Expense, BillFrequency, CheckIn, OneOffDeposit } from '../../types';
 import { parseExpenseTimestamp, getWeekRange, getWeekId } from '../../lib/calculations';
@@ -44,7 +48,15 @@ import {
   calculateCategorySpending,
   getProratedExpenseAmount,
 } from '../../lib/calculations';
-import { getFiscalMonthForDate, getFiscalQuarterForDate, formatFiscalRecordTrackerString, getFiscalWeekId, getFiscalTrackerInfo } from '../../lib/fiscal445';
+import {
+  getFiscalMonthForDate,
+  getFiscalQuarterForDate,
+  getFiscalMonthRange,
+  getFiscalYearMonths,
+  formatFiscalRecordTrackerString,
+  getFiscalWeekId,
+  getFiscalTrackerInfo,
+} from '../../lib/fiscal445';
 
 export type LedgerDateFilterType =
   | 'week'
@@ -78,6 +90,7 @@ export const CategoryLedgerView: React.FC = () => {
     addCustomTag,
     renameTag,
     deleteTag,
+    setLedgerDateRangeLabel,
   } = useHousehold();
 
   // Search & Filters
@@ -104,9 +117,95 @@ export const CategoryLedgerView: React.FC = () => {
   // Tag Management State (Add / Rename / Delete dialogs)
   const [isAddTagOpen, setIsAddTagOpen] = useState(false);
   const [newTagInput, setNewTagInput] = useState('');
+  const [addTagTargetCategoryId, setAddTagTargetCategoryId] = useState<string>('');
   const [renamingTag, setRenamingTag] = useState<string | null>(null);
   const [renameTagInput, setRenameTagInput] = useState('');
   const [deletingTag, setDeletingTag] = useState<string | null>(null);
+  const [areTagGroupsCollapsed, setAreTagGroupsCollapsed] = useState<boolean>(true);
+  const [individualCollapsedGroups, setIndividualCollapsedGroups] = useState<Record<string, boolean>>({});
+
+  const handleOpenAddTagForGroup = (groupName?: string) => {
+    setNewTagInput('');
+    if (groupName) {
+      const matched = categories.find((c) => {
+        if (groupName === 'Bills') return c.group?.toLowerCase().includes('bill') || c.name.toLowerCase().includes('bill');
+        if (groupName === 'Essentials') return c.group?.toLowerCase().includes('essential') || c.name.toLowerCase().includes('essential');
+        if (groupName === 'Fun Money') return c.group?.toLowerCase().includes('fun') || c.name.toLowerCase().includes('fun');
+        if (groupName === 'Deposits') return c.type === 'savings' || c.group?.toLowerCase().includes('saving') || c.name.toLowerCase().includes('saving');
+        return c.group?.toLowerCase() === groupName.toLowerCase() || c.name.toLowerCase() === groupName.toLowerCase();
+      });
+      setAddTagTargetCategoryId(matched?.id || activeCategory?.id || categories[0]?.id || '');
+    } else {
+      setAddTagTargetCategoryId(activeCategory?.id || categories[0]?.id || '');
+    }
+    setIsAddTagOpen(true);
+  };
+
+  // Mobile Screen Detection for granular per-section collapsing
+  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return window.innerWidth < 640;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileScreen(window.innerWidth < 640);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const formatMMDD = (dateStr?: string): string => {
+    if (!dateStr) return '';
+    const clean = dateStr.split('T')[0];
+    const parts = clean.split('-');
+    if (parts.length === 3) {
+      return `${parts[1].padStart(2, '0')}/${parts[2].padStart(2, '0')}`;
+    }
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${mm}/${dd}`;
+  };
+
+  const isGroupCollapsed = (groupName: string): boolean => {
+    if (isMobileScreen || (typeof window !== 'undefined' && window.innerWidth < 640)) {
+      if (individualCollapsedGroups[groupName] !== undefined) {
+        return individualCollapsedGroups[groupName];
+      }
+      return areTagGroupsCollapsed;
+    }
+    return areTagGroupsCollapsed;
+  };
+
+  const handleToggleGroupCollapse = (groupName: string) => {
+    if (isMobileScreen || (typeof window !== 'undefined' && window.innerWidth < 640)) {
+      setIndividualCollapsedGroups((prev) => {
+        const current = prev[groupName] !== undefined ? prev[groupName] : areTagGroupsCollapsed;
+        return {
+          ...prev,
+          [groupName]: !current,
+        };
+      });
+    } else {
+      setAreTagGroupsCollapsed((prev) => {
+        const next = !prev;
+        setIndividualCollapsedGroups({});
+        return next;
+      });
+    }
+  };
+
+  const handleToggleAllTagGroups = () => {
+    setAreTagGroupsCollapsed((prev) => {
+      const next = !prev;
+      setIndividualCollapsedGroups({});
+      return next;
+    });
+  };
 
   // Edit Expense / Deposit modal state
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -217,10 +316,9 @@ export const CategoryLedgerView: React.FC = () => {
 
     if (dateFilterType === 'week') {
       const range = getWeekRange(today, firstDay, dateFilterOffset);
-      const isCurrent = dateFilterOffset === 0;
-      const label = isCurrent
-        ? `This Week (${formatDateDisplay(range.startDate.toISOString().split('T')[0])} - ${formatDateDisplay(range.endDate.toISOString().split('T')[0])})`
-        : `Week of ${formatDateDisplay(range.startDate.toISOString().split('T')[0])} - ${formatDateDisplay(range.endDate.toISOString().split('T')[0])}`;
+      const tracker = getFiscalTrackerInfo(range.startDate, fiscalYearEnd);
+      // Format: W[weekOfFiscalYear]: W[weekOfFiscalMonth] of M[fiscalMonthNumber] (e.g. "W40: W1 of M10")
+      const label = `W${tracker.weekOfFiscalYear}: W${tracker.weekOfFiscalMonth} of M${tracker.fiscalMonthNumber}`;
       return {
         startDate: range.startDate,
         endDate: range.endDate,
@@ -232,15 +330,14 @@ export const CategoryLedgerView: React.FC = () => {
     }
 
     if (dateFilterType === 'month') {
-      // Offset by months
-      const targetDate = new Date(today.getFullYear(), today.getMonth() + dateFilterOffset, 15);
-      const fiscalMonth = getFiscalMonthForDate(targetDate, fiscalYearEnd);
+      const monthRange = getFiscalMonthRange(today, dateFilterOffset, fiscalYearEnd);
+      const fiscalMonth = getFiscalMonthForDate(monthRange.startDate, fiscalYearEnd);
       const isCurrent = dateFilterOffset === 0;
       const isIncomplete = isCurrent && today.getTime() < fiscalMonth.endDate.getTime();
       return {
-        startDate: fiscalMonth.startDate,
-        endDate: fiscalMonth.endDate,
-        label: `${fiscalMonth.monthName} ${targetDate.getFullYear()}`,
+        startDate: monthRange.startDate,
+        endDate: monthRange.endDate,
+        label: `${fiscalMonth.monthName} ${monthRange.startDate.getFullYear()}`,
         filterType: 'month',
         isShorterThanMonth: false,
         isIncompleteMonth: isIncomplete,
@@ -248,16 +345,29 @@ export const CategoryLedgerView: React.FC = () => {
     }
 
     if (dateFilterType === 'quarter') {
-      const targetDate = new Date(today.getFullYear(), today.getMonth() + dateFilterOffset * 3, 15);
-      const fiscalQ = getFiscalQuarterForDate(targetDate, fiscalYearEnd);
+      const currentQ = getFiscalQuarterForDate(today, fiscalYearEnd);
+      let targetYear = currentQ.startDate.getFullYear();
+      let targetQNum = currentQ.quarterNumber + dateFilterOffset;
+      while (targetQNum < 1) {
+        targetQNum += 4;
+        targetYear -= 1;
+      }
+      while (targetQNum > 4) {
+        targetQNum -= 4;
+        targetYear += 1;
+      }
+      const yearMonths = getFiscalYearMonths(targetYear, fiscalYearEnd);
+      const qMonths = yearMonths.filter((m) => m.quarter === targetQNum);
+      const startDate = qMonths[0]?.startDate || currentQ.startDate;
+      const endDate = qMonths[qMonths.length - 1]?.endDate || currentQ.endDate;
       const isCurrent = dateFilterOffset === 0;
       return {
-        startDate: fiscalQ.startDate,
-        endDate: fiscalQ.endDate,
-        label: `${fiscalQ.quarterName} ${targetDate.getFullYear()}`,
+        startDate,
+        endDate,
+        label: `Q${targetQNum} ${targetYear}`,
         filterType: 'quarter',
         isShorterThanMonth: false,
-        isIncompleteMonth: isCurrent && today.getTime() < fiscalQ.endDate.getTime(),
+        isIncompleteMonth: isCurrent && today.getTime() < endDate.getTime(),
       };
     }
 
@@ -294,10 +404,13 @@ export const CategoryLedgerView: React.FC = () => {
       const end = new Date(today.getTime() + dateFilterOffset * 365 * 24 * 60 * 60 * 1000);
       const start = new Date(end);
       start.setFullYear(start.getFullYear() - 1);
+      const formatShortDate = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}`;
+      const dateRangeStr = `${formatShortDate(start)}-${formatShortDate(end)}`;
       return {
         startDate: start,
         endDate: end,
-        label: `Last 12 Months (${formatDateDisplay(start.toISOString().split('T')[0])} - ${formatDateDisplay(end.toISOString().split('T')[0])})`,
+        label: dateRangeStr,
+        headerLabel: `Last 12 Months: ${dateRangeStr}`,
         filterType: 'last12months',
         isShorterThanMonth: false,
         isIncompleteMonth: false,
@@ -305,12 +418,52 @@ export const CategoryLedgerView: React.FC = () => {
     }
 
     if (dateFilterType === 'alltime') {
-      const start = new Date(2020, 0, 1);
-      const end = new Date(2099, 11, 31);
+      // Earliest boundary: account / household creation date (or earliest record)
+      let start = new Date();
+      if (household?.createdAt) {
+        const created = new Date(household.createdAt);
+        if (!isNaN(created.getTime())) {
+          start = created;
+        }
+      } else if (user?.createdAt) {
+        const created = new Date(user.createdAt);
+        if (!isNaN(created.getTime())) {
+          start = created;
+        }
+      }
+
+      // Check if any expenses, check-ins, or deposits exist earlier
+      expenses.forEach((e) => {
+        const d = e.date ? new Date(e.date + (e.date.length === 10 ? 'T00:00:00' : '')) : (e.timestamp ? new Date(e.timestamp) : null);
+        if (d && !isNaN(d.getTime()) && d < start) {
+          start = d;
+        }
+      });
+      (checkIns || []).forEach((c) => {
+        const dStr = c.weekStartDate || (c.timestamp ? new Date(c.timestamp).toISOString().split('T')[0] : '');
+        if (dStr) {
+          const d = new Date(dStr + 'T00:00:00');
+          if (!isNaN(d.getTime()) && d < start) start = d;
+        }
+      });
+      (household?.oneOffDeposits || []).forEach((dep) => {
+        if (dep.date) {
+          const d = new Date(dep.date + 'T00:00:00');
+          if (!isNaN(d.getTime()) && d < start) start = d;
+        }
+      });
+
+      const normalizedStart = new Date(start.getFullYear(), start.getMonth(), start.getDate(), 0, 0, 0, 0);
+      const end = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 23, 59, 59, 999);
+
+      const formatShortDate = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}/${String(d.getFullYear()).slice(-2)}`;
+      const dateRangeStr = `${formatShortDate(normalizedStart)}-${formatShortDate(end)}`;
+
       return {
-        startDate: start,
+        startDate: normalizedStart,
         endDate: end,
-        label: 'All Time',
+        label: dateRangeStr,
+        headerLabel: `All Time: ${dateRangeStr}`,
         filterType: 'alltime',
         isShorterThanMonth: false,
         isIncompleteMonth: false,
@@ -329,7 +482,26 @@ export const CategoryLedgerView: React.FC = () => {
       isShorterThanMonth: diffDays < 28,
       isIncompleteMonth: today >= start && today <= end,
     };
-  }, [dateFilterType, dateFilterOffset, customStartDate, customEndDate, household?.firstDayOfWeek, household?.fiscalYearEndMonth]);
+  }, [
+    dateFilterType,
+    dateFilterOffset,
+    customStartDate,
+    customEndDate,
+    household?.firstDayOfWeek,
+    household?.fiscalYearEndMonth,
+    household?.createdAt,
+    household?.oneOffDeposits,
+    user?.createdAt,
+    expenses,
+    checkIns,
+  ]);
+
+  // Sync active Ledger date label to HouseholdContext so Navbar can display it when scrolling past visualizer header
+  useEffect(() => {
+    if (dateRangeMeta?.label) {
+      setLedgerDateRangeLabel(dateRangeMeta.headerLabel || dateRangeMeta.label);
+    }
+  }, [dateRangeMeta?.label, dateRangeMeta?.headerLabel, setLedgerDateRangeLabel]);
 
   // Helper to extract savings dollar contribution from completed check-in record
   const getCheckInSavingsAmount = (checkIn: CheckIn): number => {
@@ -355,15 +527,184 @@ export const CategoryLedgerView: React.FC = () => {
     if (activeCategory) {
       (activeCategory.subcategories || []).forEach((t) => tagSet.add(t.trim()));
       expenses
-        .filter((e) => e.categoryId === activeCategory.id)
+        .filter((e) => e.categoryId === activeCategory.id && !isExpenseOneTimeDeposit(e))
         .forEach((e) => (e.tags || []).forEach((t) => tagSet.add(t.trim())));
     } else {
       categories.forEach((c) => (c.subcategories || []).forEach((t) => tagSet.add(t.trim())));
-      expenses.forEach((e) => (e.tags || []).forEach((t) => tagSet.add(t.trim())));
+      expenses
+        .filter((e) => !isExpenseOneTimeDeposit(e))
+        .forEach((e) => (e.tags || []).forEach((t) => tagSet.add(t.trim())));
     }
 
     return Array.from(tagSet).filter(Boolean);
   }, [activeCategory, categories, expenses]);
+
+  // Group available tags by parent categories: Bills, Essentials, Fun Money, Deposits, Other
+  const groupedAvailableTags = useMemo(() => {
+    const groups: Record<
+      string,
+      {
+        tags: Set<string>;
+        icon: 'bills' | 'essentials' | 'fun' | 'deposits' | 'other';
+        color: string;
+      }
+    > = {
+      Bills: { tags: new Set(), icon: 'bills', color: 'text-blue-700 bg-blue-50 border-blue-200' },
+      Essentials: { tags: new Set(), icon: 'essentials', color: 'text-sage-800 bg-sage-50 border-sage-200' },
+      'Fun Money': { tags: new Set(), icon: 'fun', color: 'text-sky-800 bg-sky-50 border-sky-200' },
+      Deposits: { tags: new Set(), icon: 'deposits', color: 'text-dark-green-800 bg-emerald-50 border-emerald-200' },
+      Other: { tags: new Set(), icon: 'other', color: 'text-brown-800 bg-beige-100 border-beige-300' },
+    };
+
+    // 1. Map preset subcategories from categories
+    categories.forEach((c) => {
+      let gName = 'Essentials';
+      if (c.type === 'savings' || c.group?.toLowerCase() === 'savings') {
+        gName = 'Deposits';
+      } else if (c.group?.toLowerCase().includes('bill')) {
+        gName = 'Bills';
+      } else if (c.group?.toLowerCase().includes('essential')) {
+        gName = 'Essentials';
+      } else if (c.group?.toLowerCase().includes('fun')) {
+        gName = 'Fun Money';
+      } else {
+        gName = 'Other';
+      }
+
+      (c.subcategories || []).forEach((t) => {
+        const clean = t.trim().replace(/^#/, '');
+        if (clean) groups[gName]?.tags.add(clean);
+      });
+    });
+
+    // 2. Map tags from logged expenses
+    expenses.forEach((e) => {
+      if (isExpenseOneTimeDeposit(e)) {
+        (e.tags || []).forEach((t) => {
+          const clean = t.trim().replace(/^#/, '');
+          if (clean) groups.Deposits.tags.add(clean);
+        });
+        return;
+      }
+      const cat = categories.find((c) => c.id === e.categoryId);
+      let gName = 'Essentials';
+      if (cat?.type === 'savings' || cat?.group?.toLowerCase() === 'savings') {
+        gName = 'Deposits';
+      } else if (cat?.group?.toLowerCase().includes('bill')) {
+        gName = 'Bills';
+      } else if (cat?.group?.toLowerCase().includes('essential')) {
+        gName = 'Essentials';
+      } else if (cat?.group?.toLowerCase().includes('fun')) {
+        gName = 'Fun Money';
+      } else {
+        gName = 'Other';
+      }
+
+      (e.tags || []).forEach((t) => {
+        const clean = t.trim().replace(/^#/, '');
+        if (clean) {
+          // If already assigned to a primary group, don't duplicate into Other
+          let alreadyExists = false;
+          for (const [key, grp] of Object.entries(groups)) {
+            if (key !== 'Other' && grp.tags.has(clean)) {
+              alreadyExists = true;
+              break;
+            }
+          }
+          if (!alreadyExists) {
+            groups[gName]?.tags.add(clean);
+          }
+        }
+      });
+    });
+
+    // 3. Map tags from one-off deposits
+    (household?.oneOffDeposits || []).forEach((d) => {
+      if (d.notes) {
+        const match = d.notes.match(/#([\w-]+)/g);
+        if (match) {
+          match.forEach((m) => groups.Deposits.tags.add(m.replace('#', '').trim()));
+        } else {
+          d.notes.split(',').map((s) => s.trim().replace(/^#/, '')).filter(Boolean).forEach((t) => {
+            groups.Deposits.tags.add(t);
+          });
+        }
+      }
+    });
+
+    const order = ['Bills', 'Essentials', 'Fun Money', 'Deposits', 'Other'];
+    return order
+      .map((key) => {
+        const g = groups[key];
+        const tagList = Array.from(g.tags).filter(Boolean).sort((a, b) => a.localeCompare(b));
+        return {
+          groupName: key,
+          icon: g.icon,
+          color: g.color,
+          tags: tagList,
+        };
+      })
+      .filter((g) => g.tags.length > 0);
+  }, [categories, expenses, household?.oneOffDeposits]);
+
+  // Count of transactions applied to the tag being edited (total vs selected timeframe)
+  const tagUsageStats = useMemo(() => {
+    const targetTag = renamingTag || deletingTag;
+    if (!targetTag) return { total: 0, timeframe: 0 };
+    const tagLower = targetTag.trim().toLowerCase().replace(/^#/, '');
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+
+    const rawDeps = household?.oneOffDeposits || [];
+    const legacyDepositExpenses: OneOffDeposit[] = expenses
+      .filter(isExpenseOneTimeDeposit)
+      .filter((e) => !rawDeps.some((d) => d.id === e.id || d.id === e.id.replace('exp_', 'dep_')))
+      .map((e) => ({
+        id: e.id,
+        description: e.description,
+        amount: e.amount,
+        date: e.date || (e.timestamp ? new Date(e.timestamp).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]),
+        payerMemberId: e.loggedByUserId,
+        notes: (e.tags || []).join(', '),
+      }));
+    const allDeposits = [...rawDeps, ...legacyDepositExpenses];
+
+    const regularExpenses = expenses.filter((e) => !isExpenseOneTimeDeposit(e));
+
+    const totalExpenseCount = regularExpenses.filter((e) =>
+      (e.tags || []).some((t) => t.trim().toLowerCase().replace(/^#/, '') === tagLower)
+    ).length;
+
+    const totalDepositCount = allDeposits.filter((d) =>
+      (d.notes || '').toLowerCase().includes(tagLower)
+    ).length;
+
+    const total = totalExpenseCount + totalDepositCount;
+
+    const timeframeExpenseCount = regularExpenses.filter((exp) => {
+      const hasTag = (exp.tags || []).some((t) => t.trim().toLowerCase().replace(/^#/, '') === tagLower);
+      if (!hasTag) return false;
+      const prorated = getProratedExpenseAmount(
+        exp,
+        dateRangeMeta.startDate,
+        dateRangeMeta.endDate,
+        fiscalYearEnd
+      );
+      return prorated > 0;
+    }).length;
+
+    const startT = dateRangeMeta.startDate.getTime();
+    const endT = dateRangeMeta.endDate.getTime();
+    const timeframeDepositCount = allDeposits.filter((dep) => {
+      const hasTag = (dep.notes || '').toLowerCase().includes(tagLower);
+      if (!hasTag) return false;
+      const depTime = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : '')).getTime();
+      return depTime >= startT && depTime <= endT;
+    }).length;
+
+    const timeframe = timeframeExpenseCount + timeframeDepositCount;
+
+    return { total, timeframe };
+  }, [renamingTag, deletingTag, expenses, dateRangeMeta, household?.fiscalYearEndMonth, household?.oneOffDeposits]);
 
   // --------------------------------------------------------------------------
   // 3. FILTERED CHECK-INS, EXPENSES, & DEPOSITS (DATE RANGE & TAGS FILTER)
@@ -421,6 +762,9 @@ export const CategoryLedgerView: React.FC = () => {
 
     return expenses
       .filter((exp) => {
+        // Exclude one-time deposits from expense calculations
+        if (isExpenseOneTimeDeposit(exp)) return false;
+
         // Category filter
         if (selectedLedgerCategoryId && exp.categoryId !== selectedLedgerCategoryId) {
           return false;
@@ -431,7 +775,8 @@ export const CategoryLedgerView: React.FC = () => {
           if (selectedTagFilter === '__untagged') {
             if (exp.tags && exp.tags.length > 0) return false;
           } else {
-            if (!exp.tags || !exp.tags.some((t) => t.trim().toLowerCase() === selectedTagFilter.toLowerCase())) {
+            const cleanFilter = selectedTagFilter.toLowerCase().replace(/^#/, '');
+            if (!exp.tags || !exp.tags.some((t) => t.trim().toLowerCase().replace(/^#/, '') === cleanFilter)) {
               return false;
             }
           }
@@ -488,7 +833,22 @@ export const CategoryLedgerView: React.FC = () => {
     if (selectedLedgerCategoryId && selectedLedgerCategoryId !== 'deposits') {
       return [];
     }
-    const deps = household?.oneOffDeposits || [];
+    const rawDeps = household?.oneOffDeposits || [];
+    const legacyDepositExpenses: OneOffDeposit[] = expenses
+      .filter(isExpenseOneTimeDeposit)
+      .filter((e) => !rawDeps.some((d) => d.id === e.id || d.id === e.id.replace('exp_', 'dep_')))
+      .map((e) => ({
+        id: e.id,
+        description: e.description,
+        amount: e.amount,
+        date: e.date || (e.timestamp ? new Date(e.timestamp).toISOString().split('T')[0] : new Date().toISOString().split('T')[0]),
+        payerMemberId: e.loggedByUserId,
+        notes: (e.tags || []).join(', '),
+        comments: e.comments,
+        reactions: e.reactions,
+      }));
+
+    const deps = [...rawDeps, ...legacyDepositExpenses];
     const startT = dateRangeMeta.startDate.getTime();
     const endT = dateRangeMeta.endDate.getTime();
 
@@ -497,6 +857,17 @@ export const CategoryLedgerView: React.FC = () => {
         // Date range filter
         const depTime = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : '')).getTime();
         if (depTime < startT || depTime > endT) return false;
+
+        // Tag filter
+        if (selectedTagFilter) {
+          if (selectedTagFilter === '__untagged') {
+            if (dep.notes && dep.notes.trim()) return false;
+          } else {
+            const notesLower = (dep.notes || '').toLowerCase();
+            const tagClean = selectedTagFilter.toLowerCase().replace(/^#/, '');
+            if (!notesLower.includes(tagClean)) return false;
+          }
+        }
 
         // Member filter
         if (selectedMemberFilter !== 'all' && dep.payerMemberId && dep.payerMemberId !== selectedMemberFilter) {
@@ -510,7 +881,8 @@ export const CategoryLedgerView: React.FC = () => {
           const matchesAmount = dep.amount.toString().includes(q);
           const member = members.find((m) => m.userId === dep.payerMemberId);
           const matchesMember = member?.name.toLowerCase().includes(q);
-          if (!matchesDesc && !matchesAmount && !matchesMember) {
+          const matchesNotes = dep.notes ? dep.notes.toLowerCase().includes(q) : false;
+          if (!matchesDesc && !matchesAmount && !matchesMember && !matchesNotes) {
             return false;
           }
         }
@@ -525,7 +897,7 @@ export const CategoryLedgerView: React.FC = () => {
         if (sortBy === 'amount-asc') return a.amount - b.amount;
         return 0;
       });
-  }, [household?.oneOffDeposits, selectedLedgerCategoryId, dateRangeMeta, selectedMemberFilter, searchQuery, sortBy, members]);
+  }, [household?.oneOffDeposits, expenses, selectedLedgerCategoryId, selectedTagFilter, dateRangeMeta, selectedMemberFilter, searchQuery, sortBy, members]);
 
   // Aggregate metrics for active selection
   const totalSelectedAmount = useMemo(() => {
@@ -574,13 +946,13 @@ export const CategoryLedgerView: React.FC = () => {
     }
     if (selectedLedgerCategoryId === null) {
       return {
-        label: '+ Log Transactions',
+        label: 'Log Transactions',
         onClick: () => openLogExpenseModal(null, false), // Unlocked
       };
     }
     if (selectedLedgerCategoryId === 'deposits') {
       return {
-        label: '+ Log Deposit',
+        label: 'Log Deposit',
         onClick: () => openLogExpenseModal('cat_one_time_deposit', true), // Locked to deposits
       };
     }
@@ -589,10 +961,10 @@ export const CategoryLedgerView: React.FC = () => {
       const isEssentials = activeCategory.group === 'Essentials' || activeCategory.name.toLowerCase().includes('essential');
       const isFunMoney = activeCategory.group === 'Fun Money' || activeCategory.name.toLowerCase().includes('fun');
 
-      let label = `+ Log ${activeCategory.name} Expense`;
-      if (isBills) label = '+ Log Bills';
-      else if (isEssentials) label = '+ Log Essentials Expense';
-      else if (isFunMoney) label = '+ Log Fun Money Expense';
+      let label = `Log ${activeCategory.name} Expense`;
+      if (isBills) label = 'Log Bills';
+      else if (isEssentials) label = 'Log Essentials Expense';
+      else if (isFunMoney) label = 'Log Fun Money Expense';
 
       return {
         label,
@@ -600,7 +972,7 @@ export const CategoryLedgerView: React.FC = () => {
       };
     }
     return {
-      label: '+ Log Expense',
+      label: 'Log Expense',
       onClick: () => openLogExpenseModal(null, false),
     };
   }, [isSavingsCategory, selectedLedgerCategoryId, activeCategory, openLogExpenseModal]);
@@ -790,41 +1162,32 @@ export const CategoryLedgerView: React.FC = () => {
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-16">
       {/* Header Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-beige-200 pb-5">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
+      <div className="border-b border-beige-200 pb-5">
+        <h1 className="text-2xl sm:text-3xl font-black text-dark-green-900 tracking-tight mb-2">
+          {activeCategory ? `${activeCategory.name} Ledger` : selectedLedgerCategoryId === 'deposits' ? 'Income & Deposits' : 'All Household Transactions'}
+        </h1>
+
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2 shrink-0">
             <span className="px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-sage-100 text-dark-green-950 border border-sage-300">
               Transaction History
             </span>
-            <span className="text-xs text-dark-grey-600">
-              Lateral Category Drill-Down & Master Ledger
-            </span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-dark-green-900 tracking-tight">
-            {activeCategory ? `${activeCategory.name} Ledger` : selectedLedgerCategoryId === 'deposits' ? 'Income & Deposits' : 'All Household Transactions'}
-          </h1>
-          <p className="text-xs sm:text-sm text-brown-700">
-            {activeCategory
-              ? `Reviewing dedicated category activity, tags distribution, social notes, and line-item receipts.`
-              : selectedLedgerCategoryId === 'deposits'
-              ? `Reviewing household one-off deposits and savings additions.`
-              : `Consolidated transaction history across all ${categories.length} budget categories and household members.`}
-          </p>
-        </div>
 
-        {/* Dynamic Action Button - Strictly Hidden for Savings category */}
-        {loggingButtonConfig && (
-          <div className="flex items-center gap-2.5">
-            <button
-              id="ledger-dynamic-log-btn"
-              onClick={loggingButtonConfig.onClick}
-              className="flex items-center gap-2 px-4 sm:px-5 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>{loggingButtonConfig.label}</span>
-            </button>
-          </div>
-        )}
+          {/* Dynamic Action Button - in line with Transaction History badge */}
+          {loggingButtonConfig && (
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                id="ledger-dynamic-log-btn"
+                onClick={loggingButtonConfig.onClick}
+                className="flex items-center gap-2 px-4 sm:px-5 py-2 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition-transform active:scale-95 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>{loggingButtonConfig.label}</span>
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* LATERAL NAVIGATION BAR (Horizontal Scrolling Category Chips) */}
@@ -839,7 +1202,7 @@ export const CategoryLedgerView: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-beige-300">
-          {/* Master "All Transactions" Tab */}
+          {/* Master "All Transactions" Tab (1st Tab) */}
           <button
             id="tab-category-all"
             onClick={() => {
@@ -861,12 +1224,62 @@ export const CategoryLedgerView: React.FC = () => {
                   : 'bg-beige-200 text-dark-green-900'
               }`}
             >
-              {expenses.length + (household?.oneOffDeposits?.length || 0)}
+              {expenses.filter((e) => !isExpenseOneTimeDeposit(e)).length +
+                (household?.oneOffDeposits?.length || 0) +
+                expenses.filter(isExpenseOneTimeDeposit).filter(
+                  (e) =>
+                    !(household?.oneOffDeposits || []).some(
+                      (d) => d.id === e.id || d.id === e.id.replace('exp_', 'dep_')
+                    )
+                ).length}
             </span>
           </button>
 
+          {/* Savings Tab (2nd Tab in the list) */}
+          {categories
+            .filter(
+              (cat) =>
+                cat.id === 'cat_savings' ||
+                cat.type === 'savings' ||
+                cat.group?.toLowerCase() === 'savings' ||
+                cat.name.toLowerCase().includes('saving')
+            )
+            .map((cat) => {
+              const isSelected = selectedLedgerCategoryId === cat.id;
+              const catCount = (checkIns || []).filter((c) => c.status === 'completed').length;
+
+              return (
+                <button
+                  key={cat.id}
+                  id={`tab-category-${cat.id}`}
+                  onClick={() => {
+                    setSelectedLedgerCategoryId(cat.id);
+                    setSelectedTagFilter(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all flex-shrink-0 cursor-pointer border ${
+                    isSelected
+                      ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-sm'
+                      : 'bg-white text-dark-green-900 hover:bg-beige-100/80 border-beige-300'
+                  }`}
+                >
+                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-4 h-4" />
+                  <span>{cat.name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
+                      isSelected
+                        ? 'bg-dark-green-800 text-beige-100'
+                        : 'bg-beige-200 text-dark-green-900'
+                    }`}
+                  >
+                    {catCount}
+                  </span>
+                </button>
+              );
+            })}
+
           {/* Income & Deposits Tab */}
-          {(household?.oneOffDeposits?.length || 0) > 0 && (
+          {((household?.oneOffDeposits?.length || 0) > 0 ||
+            expenses.some(isExpenseOneTimeDeposit)) && (
             <button
               id="tab-category-deposits"
               onClick={() => {
@@ -888,51 +1301,60 @@ export const CategoryLedgerView: React.FC = () => {
                     : 'bg-sage-100 text-dark-green-900'
                 }`}
               >
-                {household?.oneOffDeposits?.length || 0}
+                {(household?.oneOffDeposits?.length || 0) +
+                  expenses.filter(isExpenseOneTimeDeposit).filter(
+                    (e) =>
+                      !(household?.oneOffDeposits || []).some(
+                        (d) => d.id === e.id || d.id === e.id.replace('exp_', 'dep_')
+                      )
+                  ).length}
               </span>
             </button>
           )}
 
-          {/* Individual Category Tabs */}
-          {categories.map((cat) => {
-            const isSelected = selectedLedgerCategoryId === cat.id;
-            const isCatSavings =
-              cat.id === 'cat_savings' ||
-              cat.type === 'savings' ||
-              cat.group?.toLowerCase() === 'savings' ||
-              cat.name.toLowerCase().includes('saving');
-            const catCount = isCatSavings
-              ? (checkIns || []).filter((c) => c.status === 'completed').length
-              : expenses.filter((e) => e.categoryId === cat.id).length;
+          {/* Other Individual Category Tabs */}
+          {categories
+            .filter(
+              (cat) =>
+                !(
+                  cat.id === 'cat_savings' ||
+                  cat.type === 'savings' ||
+                  cat.group?.toLowerCase() === 'savings' ||
+                  cat.name.toLowerCase().includes('saving')
+                )
+            )
+            .map((cat) => {
+              const isSelected = selectedLedgerCategoryId === cat.id;
+              const catCount = expenses.filter((e) => e.categoryId === cat.id).length;
 
-            return (
-              <button
-                key={cat.id}
-                id={`tab-category-${cat.id}`}
-                onClick={() => {
-                  setSelectedLedgerCategoryId(cat.id);
-                  setSelectedTagFilter(null);
-                }}
-                className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all flex-shrink-0 cursor-pointer border ${
-                  isSelected
-                    ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-sm'
-                    : 'bg-white text-dark-green-900 hover:bg-beige-100/80 border-beige-300'
-                }`}
-              >
-                <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-4 h-4" />
-                <span>{cat.name}</span>
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
+              return (
+                <button
+                  key={cat.id}
+                  id={`tab-category-${cat.id}`}
+                  onClick={() => {
+                    setSelectedLedgerCategoryId(cat.id);
+                    setSelectedTagFilter(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all flex-shrink-0 cursor-pointer border ${
                     isSelected
-                      ? 'bg-dark-green-800 text-beige-100'
-                      : 'bg-beige-200 text-dark-green-900'
+                      ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-sm'
+                      : 'bg-white text-dark-green-900 hover:bg-beige-100/80 border-beige-300'
                   }`}
                 >
-                  {catCount}
-                </span>
-              </button>
-            );
-          })}
+                  <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-4 h-4" />
+                  <span>{cat.name}</span>
+                  <span
+                    className={`px-2 py-0.5 rounded-full text-[11px] font-mono ${
+                      isSelected
+                        ? 'bg-dark-green-800 text-beige-100'
+                        : 'bg-beige-200 text-dark-green-900'
+                    }`}
+                  >
+                    {catCount}
+                  </span>
+                </button>
+              );
+            })}
         </div>
       </div>
 
@@ -947,6 +1369,14 @@ export const CategoryLedgerView: React.FC = () => {
         dateRangeMeta={dateRangeMeta}
         checkIns={checkIns}
         members={members}
+        dateFilterType={dateFilterType}
+        setDateFilterType={setDateFilterType}
+        dateFilterOffset={dateFilterOffset}
+        setDateFilterOffset={setDateFilterOffset}
+        customStartDate={customStartDate}
+        setCustomStartDate={setCustomStartDate}
+        customEndDate={customEndDate}
+        setCustomEndDate={setCustomEndDate}
       />
 
       {/* CATEGORY DRILL-DOWN BUDGET TRACKING (TAGS REMOVED, STRICT TIMEFRAME MATH) */}
@@ -1032,255 +1462,399 @@ export const CategoryLedgerView: React.FC = () => {
       )}
 
       {/* FILTER & CONTROL TOOLBAR (ADVANCED DATE FILTER, PAGINATION, TAG MANAGEMENT) */}
-      <div className="bg-white border border-beige-200/90 rounded-3xl p-4 sm:p-5 shadow-xs space-y-4">
-        {/* ROW 1: Advanced Date Range Selector & Pagination Controls */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-beige-200">
-          {/* Left: Date Range Dropdown & Time-Travel Pagination */}
-          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-            <div className="flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-3 py-1.5 rounded-xl">
-              <Calendar className="w-3.5 h-3.5 text-brown-700" />
-              <select
-                id="ledger-date-filter-select"
-                value={dateFilterType}
-                onChange={(e) => {
-                  setDateFilterType(e.target.value as LedgerDateFilterType);
-                  setDateFilterOffset(0);
-                }}
-                className="bg-transparent text-xs font-extrabold text-dark-green-900 focus:outline-hidden cursor-pointer"
-              >
-                <option value="week">Week</option>
-                <option value="month">Month</option>
-                <option value="quarter">Quarter</option>
-                <option value="year">Year</option>
-                <option value="ytd">YTD</option>
-                <option value="last12months">Last 12 Months</option>
-                <option value="alltime">All Time</option>
-                <option value="custom">Custom Date Range</option>
-              </select>
+      <div className="border-2 border-brown-800 rounded-3xl p-4 sm:p-5 space-y-4">
+        {/* COMBINED TITLE + CONTROLS TOOLBAR (WHITE BACKGROUND CARD) */}
+        <div className="bg-white border border-beige-200/90 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs space-y-4">
+          {/* Title: Ledger Transactions */}
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
+              <Receipt className="w-4 h-4 text-dark-green-800" />
             </div>
+            <h3 className="text-sm font-black text-dark-green-900 truncate">
+              Ledger Transactions
+            </h3>
+          </div>
 
-            {/* Pagination Controls (Left / Current / Right) */}
-            {dateFilterType !== 'alltime' && dateFilterType !== 'custom' && (
-              <div className="flex items-center gap-1 bg-beige-50 border border-beige-200 p-1 rounded-xl">
-                <button
-                  type="button"
-                  id="ledger-prev-period-btn"
-                  onClick={() => setDateFilterOffset((prev) => prev - 1)}
-                  title="Previous time block"
-                  className="p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer"
+          {/* ROW 1: Search Bar (first element) + Date Filters & Member/Sort Controls */}
+          <div className="space-y-3 pb-3 border-b border-beige-200">
+          {/* Search input - First Element */}
+          <div className="relative">
+            <Search className="w-4 h-4 text-brown-700 absolute left-3.5 top-1/2 -translate-y-1/2" />
+            <input
+              id="ledger-search-input"
+              type="text"
+              placeholder={isSavingsCategory ? "Search deposits by notes, member, or amount..." : "Search description, category, member, tags, or amount..."}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-9 pr-4 py-2 bg-beige-50 border border-beige-200 rounded-xl text-xs sm:text-sm text-dark-green-900 focus:outline-hidden focus:border-dark-green-700 focus:bg-white transition"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-brown-700 hover:text-dark-green-900"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Date Range Selector, Pagination Controls, and Member Filter & Sort By (2 Rows x 2 Columns) */}
+          <div className="flex flex-col gap-2.5 w-full">
+            {/* Row 1: Date Range Dropdown & Time-Travel Pagination (Side by Side 2 Columns) */}
+            <div className="grid grid-cols-2 gap-2.5 w-full">
+              <div className="w-full h-9 flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-2.5 sm:px-3 rounded-xl min-w-0 overflow-hidden">
+                <Calendar className="w-3.5 h-3.5 text-brown-700 shrink-0" />
+                <select
+                  id="ledger-date-filter-select"
+                  value={dateFilterType}
+                  onChange={(e) => {
+                    setDateFilterType(e.target.value as LedgerDateFilterType);
+                    setDateFilterOffset(0);
+                  }}
+                  className="w-full bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer truncate min-w-0"
                 >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <span className="text-xs font-extrabold text-dark-green-900 px-2 min-w-[90px] text-center font-mono">
-                  {dateRangeMeta.label}
-                </span>
-                <button
-                  type="button"
-                  id="ledger-next-period-btn"
-                  onClick={() => setDateFilterOffset((prev) => prev + 1)}
-                  title="Next time block"
-                  className="p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-                {dateFilterOffset !== 0 && (
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                  <option value="quarter">Quarter</option>
+                  <option value="year">Year</option>
+                  <option value="ytd">YTD</option>
+                  <option value="last12months">Last 12 Months</option>
+                  <option value="alltime">All Time</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+
+              {/* Pagination Controls (Left / Current / Right) */}
+              {dateFilterType !== 'alltime' && dateFilterType !== 'custom' && (
+                <div className="w-full h-9 flex items-center justify-between gap-0.5 sm:gap-1 bg-beige-50 border border-beige-200 px-1 sm:px-2 rounded-xl min-w-0 overflow-hidden">
                   <button
                     type="button"
-                    onClick={() => setDateFilterOffset(0)}
-                    title="Reset to current"
-                    className="p-1 rounded-lg hover:bg-beige-200 text-brown-700 hover:text-dark-green-900 transition ml-1"
+                    id="ledger-prev-period-btn"
+                    onClick={() => setDateFilterOffset((prev) => prev - 1)}
+                    title="Previous time block"
+                    className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
                   >
-                    <RotateCcw className="w-3.5 h-3.5" />
+                    <ChevronLeft className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  <span id="ledger-pagination-date-label" className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+                    {dateRangeMeta.label}
+                  </span>
+                  <button
+                    type="button"
+                    id="ledger-next-period-btn"
+                    onClick={() => setDateFilterOffset((prev) => prev + 1)}
+                    title="Next time block"
+                    className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200/80 text-dark-green-900 transition cursor-pointer flex items-center justify-center shrink-0"
+                  >
+                    <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+                  </button>
+                  {dateFilterOffset !== 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setDateFilterOffset(0)}
+                      title="Reset to current"
+                      className="p-0.5 sm:p-1 rounded-lg hover:bg-beige-200 text-brown-700 hover:text-dark-green-900 transition flex items-center justify-center shrink-0 ml-0.5"
+                    >
+                      <RotateCcw className="w-3 h-3 shrink-0" />
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* All Time Date Range Display Slot */}
+              {dateFilterType === 'alltime' && (
+                <div className="w-full h-9 flex items-center justify-center bg-beige-50 border border-beige-200 px-2 rounded-xl min-w-0 overflow-hidden">
+                  <span id="ledger-pagination-date-label" className="text-[11px] sm:text-xs font-bold text-dark-green-900 px-0.5 text-center font-mono whitespace-nowrap truncate min-w-0 flex-1">
+                    {dateRangeMeta.label}
+                  </span>
+                </div>
+              )}
+
+              {/* Custom Date Pickers */}
+              {dateFilterType === 'custom' && (
+                <div className="w-full h-9 flex items-center justify-between gap-1 bg-beige-50 border border-beige-200 px-1.5 sm:px-2 rounded-xl min-w-0 overflow-hidden">
+                  <input
+                    type="date"
+                    value={customStartDate}
+                    onChange={(e) => setCustomStartDate(e.target.value)}
+                    className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+                  />
+                  <span className="text-[11px] text-brown-700 font-bold shrink-0">-</span>
+                  <input
+                    type="date"
+                    value={customEndDate}
+                    onChange={(e) => setCustomEndDate(e.target.value)}
+                    className="w-16 sm:w-20 px-1 py-0.5 bg-transparent text-[11px] font-bold text-dark-green-900 focus:outline-hidden min-w-0"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Row 2: Member filter & Sort By (Side by Side 2 Columns) */}
+            <div className="grid grid-cols-2 gap-2.5 w-full">
+              {/* Member Filter */}
+              <div className="w-full h-9 flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-2.5 sm:px-3 rounded-xl min-w-0 overflow-hidden">
+                <User className="w-3.5 h-3.5 text-brown-700 shrink-0" />
+                <select
+                  id="ledger-member-filter"
+                  value={selectedMemberFilter}
+                  onChange={(e) => setSelectedMemberFilter(e.target.value)}
+                  className="w-full bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer truncate min-w-0"
+                >
+                  <option value="all">All Members</option>
+                  {members.map((m) => (
+                    <option key={m.userId} value={m.userId}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Sort By */}
+              <div className="w-full h-9 flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-2.5 sm:px-3 rounded-xl min-w-0 overflow-hidden">
+                <ArrowUpDown className="w-3.5 h-3.5 text-brown-700 shrink-0" />
+                <select
+                  id="ledger-sort-by"
+                  value={sortBy}
+                  onChange={(e) => setSortBy(e.target.value as any)}
+                  className="w-full bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer truncate min-w-0"
+                >
+                  <option value="date-desc">Newest First</option>
+                  <option value="date-asc">Oldest First</option>
+                  <option value="amount-desc">Highest Amount</option>
+                  <option value="amount-asc">Lowest Amount</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ROW 3: TAG MANAGEMENT & FILTER CHIPS (GROUPED BY PARENT CATEGORIES WITH COLLAPSIBLE ACCORDIONS) */}
+        {!isSavingsCategory && selectedLedgerCategoryId !== 'deposits' && (
+          <div className="space-y-2.5 pt-2 border-t border-beige-100">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-dark-green-900">
+                  <Tag className="w-3.5 h-3.5 text-sage-700" />
+                  <span>Filter by Tag:</span>
+                </div>
+
+                {/* Global tag filter buttons */}
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTagFilter(null)}
+                    className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      selectedTagFilter === null
+                        ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-2xs'
+                        : 'bg-beige-100 hover:bg-beige-200 text-dark-green-900 border-beige-300'
+                    }`}
+                  >
+                    All Tags
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTagFilter(selectedTagFilter === '__untagged' ? null : '__untagged')}
+                    className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      selectedTagFilter === '__untagged'
+                        ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-2xs'
+                        : 'bg-beige-100 hover:bg-beige-200 text-brown-700 border-beige-300'
+                    }`}
+                  >
+                    Untagged Only
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2.5">
+                {/* Expand / Collapse All Toggle (Desktop) */}
+                {groupedAvailableTags.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleToggleAllTagGroups}
+                    className="hidden sm:inline-block text-[11px] font-bold text-brown-700 hover:text-dark-green-900 transition cursor-pointer underline"
+                  >
+                    {areTagGroupsCollapsed ? 'Expand All' : 'Collapse All'}
                   </button>
                 )}
               </div>
-            )}
-
-            {/* Custom Date Pickers */}
-            {dateFilterType === 'custom' && (
-              <div className="flex items-center gap-2 flex-wrap">
-                <input
-                  type="date"
-                  value={customStartDate}
-                  onChange={(e) => setCustomStartDate(e.target.value)}
-                  className="px-2.5 py-1 bg-beige-50 border border-beige-200 rounded-xl text-xs font-bold text-dark-green-900"
-                />
-                <span className="text-xs text-brown-700 font-bold">to</span>
-                <input
-                  type="date"
-                  value={customEndDate}
-                  onChange={(e) => setCustomEndDate(e.target.value)}
-                  className="px-2.5 py-1 bg-beige-50 border border-beige-200 rounded-xl text-xs font-bold text-dark-green-900"
-                />
-              </div>
-            )}
-          </div>
-
-          {/* Right: Member filter & Sort By */}
-          <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
-            {/* Member Filter */}
-            <div className="flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-3 py-1.5 rounded-xl">
-              <User className="w-3.5 h-3.5 text-brown-700" />
-              <select
-                id="ledger-member-filter"
-                value={selectedMemberFilter}
-                onChange={(e) => setSelectedMemberFilter(e.target.value)}
-                className="bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer"
-              >
-                <option value="all">All Members</option>
-                {members.map((m) => (
-                  <option key={m.userId} value={m.userId}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
             </div>
 
-            {/* Sort By */}
-            <div className="flex items-center gap-1.5 bg-beige-50 border border-beige-200 px-3 py-1.5 rounded-xl">
-              <ArrowUpDown className="w-3.5 h-3.5 text-brown-700" />
-              <select
-                id="ledger-sort-by"
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value as any)}
-                className="bg-transparent text-xs font-bold text-dark-green-900 focus:outline-hidden cursor-pointer"
-              >
-                <option value="date-desc">Newest First</option>
-                <option value="date-asc">Oldest First</option>
-                <option value="amount-desc">Highest Amount</option>
-                <option value="amount-asc">Lowest Amount</option>
-              </select>
-            </div>
-          </div>
-        </div>
+            {/* Parent Category Groups in One Row Across (Bills, Essentials, Fun Money, Deposits) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {groupedAvailableTags.map((group) => {
+                const groupHasSelected = group.tags.some(
+                  (t) => selectedTagFilter?.toLowerCase() === t.toLowerCase()
+                );
+                const isThisGroupCollapsed = isGroupCollapsed(group.groupName);
 
-        {/* ROW 2: Search input */}
-        <div className="relative">
-          <Search className="w-4 h-4 text-brown-700 absolute left-3.5 top-1/2 -translate-y-1/2" />
-          <input
-            id="ledger-search-input"
-            type="text"
-            placeholder={isSavingsCategory ? "Search deposits by notes, member, or amount..." : "Search description, category, member, tags, or amount..."}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-beige-50 border border-beige-200 rounded-xl text-xs sm:text-sm text-dark-green-900 focus:outline-hidden focus:border-dark-green-700 focus:bg-white transition"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-brown-700 hover:text-dark-green-900"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
+                const renderGroupIcon = () => {
+                  switch (group.icon) {
+                    case 'bills':
+                      return <Receipt className="w-3.5 h-3.5 text-blue-600" />;
+                    case 'essentials':
+                      return <ShoppingBag className="w-3.5 h-3.5 text-sage-700" />;
+                    case 'fun':
+                      return <Sparkles className="w-3.5 h-3.5 text-sky-600" />;
+                    case 'deposits':
+                      return <PiggyBank className="w-3.5 h-3.5 text-emerald-700" />;
+                    default:
+                      return <Tag className="w-3.5 h-3.5 text-brown-600" />;
+                  }
+                };
 
-        {/* ROW 3: TAG MANAGEMENT & FILTER CHIPS (RELOCATED TO FILTER SECTION) */}
-        {!isSavingsCategory && selectedLedgerCategoryId !== 'deposits' && (
-          <div className="space-y-2 pt-1 border-t border-beige-100">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5 text-xs font-extrabold uppercase tracking-wider text-dark-green-900">
-                <Tag className="w-3.5 h-3.5 text-sage-700" />
-                <span>Filter by Tag / Manage Tags:</span>
-              </div>
-              <button
-                type="button"
-                id="ledger-add-tag-btn"
-                onClick={() => {
-                  setNewTagInput('');
-                  setIsAddTagOpen(true);
-                }}
-                className="inline-flex items-center gap-1 text-[11px] font-bold text-dark-green-900 hover:text-dark-green-950 bg-sage-50 hover:bg-sage-100 border border-sage-300 px-2.5 py-1 rounded-xl transition cursor-pointer"
-              >
-                <Plus className="w-3 h-3" />
-                <span>Add Tag</span>
-              </button>
-            </div>
+                const handleCategoryClick = () => {
+                  let targetCat: Category | undefined;
+                  if (group.groupName === 'Bills') {
+                    targetCat = categories.find((c) => c.group === 'Bills' || c.name.toLowerCase().includes('bill'));
+                  } else if (group.groupName === 'Essentials') {
+                    targetCat = categories.find((c) => c.group === 'Essentials' || c.name.toLowerCase().includes('essential'));
+                  } else if (group.groupName === 'Fun Money') {
+                    targetCat = categories.find((c) => c.group === 'Fun Money' || c.name.toLowerCase().includes('fun'));
+                  } else if (group.groupName === 'Deposits') {
+                    targetCat = categories.find((c) => c.type === 'savings' || c.group?.toLowerCase() === 'savings' || c.id === 'cat_savings');
+                  }
 
-            {/* Tag Chips List with Click-to-Filter and CRUD Actions */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              {/* All Tags chip */}
-              <button
-                type="button"
-                onClick={() => setSelectedTagFilter(null)}
-                className={`px-3 py-1 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                  selectedTagFilter === null
-                    ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-2xs'
-                    : 'bg-beige-50 hover:bg-beige-100 text-brown-900 border-beige-300'
-                }`}
-              >
-                All Tags
-              </button>
+                  if (targetCat) {
+                    setSelectedLedgerCategoryId(targetCat.id);
+                    setSelectedTagFilter(null);
+                  } else if (group.groupName === 'Deposits') {
+                    setSelectedLedgerCategoryId('deposits');
+                    setSelectedTagFilter(null);
+                  }
+                };
 
-              {/* Available Custom & Subcategory Tags */}
-              {availableTags.map((tag) => {
-                const isSelected = selectedTagFilter?.toLowerCase() === tag.toLowerCase();
                 return (
                   <div
-                    key={tag}
-                    className={`inline-flex items-center rounded-xl border text-xs font-bold transition shadow-2xs ${
-                      isSelected
-                        ? 'bg-dark-green-900 text-white border-dark-green-900'
-                        : 'bg-white hover:bg-beige-50 text-dark-green-950 border-beige-300'
+                    key={group.groupName}
+                    className={`rounded-2xl border transition overflow-hidden flex flex-col ${
+                      groupHasSelected
+                        ? 'border-dark-green-800 bg-white shadow-2xs ring-1 ring-dark-green-800/20'
+                        : 'border-beige-200/90 bg-beige-50/50'
                     }`}
                   >
-                    <button
-                      type="button"
-                      onClick={() => setSelectedTagFilter(isSelected ? null : tag)}
-                      className="px-2.5 py-1 cursor-pointer flex items-center gap-1"
-                    >
-                      <span>#{tag}</span>
-                    </button>
-
-                    {/* Tag CRUD Actions (Rename & Delete) */}
-                    <div className="flex items-center pr-1.5 pl-0.5 border-l border-current/20">
+                    {/* Header: Clicking Category navigates to that tab; clicking chevron toggles collapse */}
+                    <div className="w-full px-2.5 sm:px-3 py-2 flex items-center justify-between gap-1.5 hover:bg-beige-100/60 transition text-left">
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setRenamingTag(tag);
-                          setRenameTagInput(tag);
-                        }}
-                        title={`Rename #${tag} across all historical transactions`}
-                        className="p-1 hover:opacity-80 transition cursor-pointer"
+                        onClick={handleCategoryClick}
+                        className="flex items-center gap-1.5 min-w-0 flex-1 text-left cursor-pointer group"
+                        title={`Open ${group.groupName} ledger tab`}
                       >
-                        <Edit3 className="w-2.5 h-2.5" />
+                        <div className="w-5 h-5 rounded-md bg-white border border-beige-200 flex items-center justify-center shrink-0 shadow-2xs group-hover:scale-105 transition-transform">
+                          {renderGroupIcon()}
+                        </div>
+                        <span className="text-xs font-black text-dark-green-950 group-hover:text-dark-green-800 group-hover:underline truncate">
+                          {group.groupName}
+                        </span>
+                        <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-beige-200/70 text-dark-green-900 border border-beige-300 shrink-0">
+                          {group.tags.length}
+                        </span>
+                        {groupHasSelected && (
+                          <span className="w-1.5 h-1.5 rounded-full bg-dark-green-800 shrink-0" title="Active tag selected in this category" />
+                        )}
                       </button>
+
                       <button
                         type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeletingTag(tag);
-                        }}
-                        title={`Delete #${tag} from all transactions`}
-                        className="p-1 hover:opacity-80 text-alert-red-600 hover:text-alert-red-700 transition cursor-pointer"
+                        onClick={() => handleToggleGroupCollapse(group.groupName)}
+                        className="p-1 hover:bg-beige-200/70 rounded-lg text-brown-700 hover:text-dark-green-950 transition cursor-pointer shrink-0"
+                        title={
+                          isMobileScreen
+                            ? isThisGroupCollapsed
+                              ? `Expand ${group.groupName}`
+                              : `Collapse ${group.groupName}`
+                            : areTagGroupsCollapsed
+                            ? 'Expand all categories'
+                            : 'Collapse all categories'
+                        }
                       >
-                        <Trash2 className="w-2.5 h-2.5" />
+                        {isThisGroupCollapsed ? (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronUp className="w-3.5 h-3.5" />
+                        )}
                       </button>
                     </div>
+
+                    {/* Group Tag Chips: Listed strictly in one vertical column */}
+                    {!isThisGroupCollapsed && (
+                      <div className="p-2 pt-1 flex flex-col items-stretch gap-1.5 border-t border-beige-200/60 bg-white/70 flex-1">
+                        {group.tags.map((tag) => {
+                          const isSelected = selectedTagFilter?.toLowerCase() === tag.toLowerCase();
+                          return (
+                            <div
+                              key={tag}
+                              className={`w-full flex items-center justify-between rounded-xl border text-xs font-bold transition shadow-2xs ${
+                                isSelected
+                                  ? 'bg-dark-green-900 text-white border-dark-green-900 shadow-xs'
+                                  : 'bg-white hover:bg-beige-50 text-dark-green-950 border-beige-300'
+                              }`}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => setSelectedTagFilter(isSelected ? null : tag)}
+                                className="px-2.5 py-1 sm:py-1.5 cursor-pointer flex-1 text-left flex items-center gap-1 min-w-0 truncate"
+                              >
+                                <span className="truncate">#{tag}</span>
+                              </button>
+
+                              {/* Tag Edit Action */}
+                              <div className="flex items-center pr-1.5 pl-0.5 border-l border-current/20 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenamingTag(tag);
+                                    setRenameTagInput(tag);
+                                  }}
+                                  title={`Edit #${tag}`}
+                                  className="p-1 hover:opacity-80 transition cursor-pointer"
+                                >
+                                  <Edit3 className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Actions at bottom of each tag filter dropdown (Side by Side) */}
+                        <div className="pt-1.5 border-t border-beige-200/60 flex items-center justify-between gap-2 mt-0.5">
+                          {/* 1. Add Tag Button */}
+                          <button
+                            type="button"
+                            id="ledger-add-tag-btn"
+                            onClick={() => {
+                              handleOpenAddTagForGroup(group.groupName);
+                            }}
+                            className="flex-1 inline-flex items-center justify-center gap-1 text-[11px] font-bold text-dark-green-900 hover:text-dark-green-950 bg-sage-50 hover:bg-sage-100 border border-sage-300 py-1.5 px-2 rounded-xl transition cursor-pointer shadow-2xs min-w-0 truncate"
+                          >
+                            <Plus className="w-3 h-3 text-sage-700 shrink-0" />
+                            <span className="truncate">Add Tag</span>
+                          </button>
+
+                          {/* 2. Link to Expand / Collapse All Tag Filter Dropdowns */}
+                          <button
+                            type="button"
+                            onClick={handleToggleAllTagGroups}
+                            className="flex-1 text-[11px] font-bold text-brown-700 hover:text-dark-green-900 transition cursor-pointer underline text-center min-w-0 truncate py-1"
+                          >
+                            {areTagGroupsCollapsed ? 'Expand All' : 'Collapse All'}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
-
-              {/* Untagged filter chip */}
-              <button
-                type="button"
-                onClick={() => setSelectedTagFilter(selectedTagFilter === '__untagged' ? null : '__untagged')}
-                className={`px-2.5 py-1 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                  selectedTagFilter === '__untagged'
-                    ? 'bg-dark-green-900 text-white border-dark-green-900'
-                    : 'bg-beige-50/70 hover:bg-beige-100 text-brown-700 border-beige-300'
-                }`}
-              >
-                Untagged Only
-              </button>
             </div>
           </div>
         )}
-      </div>
+        </div>
 
-      {/* SUMMARY BANNER */}
-      <div className="flex items-center justify-between text-xs text-brown-700 px-1">
+        {/* SUMMARY BANNER */}
+        <div className="flex items-center justify-between text-xs text-brown-700 px-1">
         <span>
           Showing <strong>{isSavingsCategory ? filteredSavingsCheckIns.length : (filteredExpenses.length + filteredDeposits.length)}</strong> {(isSavingsCategory ? filteredSavingsCheckIns.length : (filteredExpenses.length + filteredDeposits.length)) === 1 ? 'record' : 'records'} in <strong>{dateRangeMeta.label}</strong>
           {selectedTagFilter && <span className="ml-1 text-dark-green-900 font-bold">(Filtered by #{selectedTagFilter})</span>}
@@ -1450,101 +2024,117 @@ export const CategoryLedgerView: React.FC = () => {
                 <div
                   key={dep.id}
                   id={`deposit-card-${dep.id}`}
-                  className="bg-white border border-sage-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-sage-300 transition-all space-y-3"
+                  className="bg-white border border-sage-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-sage-300 transition-all space-y-2.5"
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0">
-                        <DollarSign className="w-5 h-5" />
+                  {/* Line 1: Icon on left, Bold Title, Total on far right */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0 shadow-2xs">
+                        <DollarSign className="w-4 h-4 sm:w-4.5 sm:h-4.5 text-dark-green-800" />
                       </div>
-
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
-                            {dep.description}
-                          </h4>
-                          <span className="text-[10px] font-bold uppercase tracking-wider bg-sage-100 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1">
-                            <TrendingUp className="w-3 h-3 text-dark-green-700" />
-                            One-Off Income
-                          </span>
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-brown-700">
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDateDisplay(dep.date)}
-                          </span>
-                          <span>&bull;</span>
-                          <div className="flex items-center gap-1.5">
-                            {payer?.avatarUrl ? (
-                              <img
-                                src={payer.avatarUrl}
-                                alt={payer.name}
-                                className="w-4 h-4 rounded-full object-cover border border-beige-300"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <User className="w-3.5 h-3.5 text-brown-700" />
-                            )}
-                            <span className="font-medium">{payer?.name || 'Household Member'}</span>
-                          </div>
-                        </div>
-                      </div>
+                      <h4 className="font-bold text-dark-green-950 text-sm sm:text-base leading-tight truncate">
+                        {dep.description}
+                      </h4>
                     </div>
-
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
-                      <div className="text-lg sm:text-xl font-black text-dark-green-800 tracking-tight font-mono">
-                        +{formatCurrency(dep.amount)}
-                      </div>
-
-                      {/* Interactivity Buttons for Deposit (Comments, Edit, Delete) */}
-                      <div className="flex items-center gap-1">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleComments(dep.id);
-                          }}
-                          id={`comment-toggle-${dep.id}`}
-                          className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
-                            comments.length > 0 || isCommentsOpen
-                              ? 'bg-sage-100 text-dark-green-900 border-sage-300'
-                              : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
-                          }`}
-                          title="View or add comments"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          <span className="font-bold text-[11px]">{comments.length}</span>
-                        </button>
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startEditDeposit(dep);
-                          }}
-                          id={`edit-dep-${dep.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
-                          title="Edit deposit"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            await deleteDeposit(dep.id);
-                          }}
-                          id={`del-dep-${dep.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
-                          title="Delete deposit"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                    <div className="text-base sm:text-lg font-black text-dark-green-800 tracking-tight font-mono whitespace-nowrap shrink-0">
+                      +{formatCurrency(dep.amount)}
                     </div>
                   </div>
 
-                  {/* SOCIAL REACTIONS BAR */}
-                  <div className="pt-1.5 border-t border-sage-100">
+                  {/* Line 2: Parent category, date in MM/DD, payer picture ONLY, 3 action buttons on right */}
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-wrap text-brown-700">
+                      <span className="font-semibold text-dark-green-900">
+                        Deposits
+                      </span>
+
+                      <span className="text-beige-400">&bull;</span>
+
+                      <span className="text-brown-700 font-medium whitespace-nowrap">
+                        {formatMMDD(dep.date)}
+                      </span>
+
+                      <span className="text-beige-400">&bull;</span>
+
+                      <div className="flex items-center shrink-0" title={payer?.name ? `Paid by ${payer.name}` : 'Household Member'}>
+                        {payer?.avatarUrl ? (
+                          <img
+                            src={payer.avatarUrl}
+                            alt={payer.name || 'Payer'}
+                            className="w-5 h-5 rounded-full object-cover border border-beige-300 shadow-2xs"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-5 h-5 rounded-full bg-sage-100 border border-beige-300 flex items-center justify-center text-brown-700">
+                            <User className="w-3 h-3" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Three action buttons: Comment, Edit, Delete */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleComments(dep.id);
+                        }}
+                        id={`comment-toggle-${dep.id}`}
+                        className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
+                          comments.length > 0 || isCommentsOpen
+                            ? 'bg-sage-100 text-dark-green-900 border-sage-300'
+                            : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
+                        }`}
+                        title="View or add comments"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span className="font-bold text-[11px]">{comments.length}</span>
+                      </button>
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditDeposit(dep);
+                        }}
+                        id={`edit-dep-${dep.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
+                        title="Edit deposit"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await deleteDeposit(dep.id);
+                        }}
+                        id={`del-dep-${dep.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
+                        title="Delete deposit"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Line 3: Tags if any */}
+                  {dep.tags && dep.tags.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap text-xs pt-0.5">
+                      {dep.tags.map((tag, tIdx) => (
+                        <span
+                          key={tIdx}
+                          onClick={() => setSelectedTagFilter(tag)}
+                          className="text-[10px] font-bold text-brown-800 bg-beige-50 hover:bg-beige-100 border border-beige-300 px-2 py-0.5 rounded-md cursor-pointer transition flex items-center gap-1"
+                        >
+                          <Tag className="w-2.5 h-2.5 text-sage-700" />
+                          <span>#{tag}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* FAINT LINE BREAK + SOCIAL REACTIONS */}
+                  <div className="pt-2 border-t border-sage-200/60">
                     <EarthToneReaction
                       reactions={dep.reactions || []}
                       onReact={(reactionId) => addTransactionReaction(dep.id, reactionId)}
@@ -1644,146 +2234,143 @@ export const CategoryLedgerView: React.FC = () => {
                 <div
                   key={exp.id}
                   id={`expense-card-${exp.id}`}
-                  className="bg-white border border-beige-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-beige-300 transition-all space-y-3"
+                  className="bg-white border border-beige-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-beige-300 transition-all space-y-2.5"
                 >
-                  {/* TRANSACTION DISPLAY ROW */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    {/* Left: Category Icon, Description, Tags, Date, Payer */}
-                    <div className="flex items-start gap-3 min-w-0">
+                  {/* Line 1: Icon on left, Bold Title, Total on far right */}
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
                       <div
                         onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
-                        title={`Filter by ${cat?.name || 'Category'}`}
-                        className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0 cursor-pointer hover:scale-105 transition-transform"
+                        title={cat ? `Filter by ${cat.name}` : undefined}
+                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0 cursor-pointer hover:scale-105 transition-transform shadow-2xs"
                       >
-                        <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-5 h-5" />
+                        <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
                       </div>
-
-                      <div className="min-w-0 space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <h4 className="font-bold text-dark-green-900 text-sm sm:text-base leading-tight truncate">
-                            {exp.description}
-                          </h4>
-                          {cat && (
-                            <span
-                              onClick={() => setSelectedLedgerCategoryId(cat.id)}
-                              className="text-[10px] font-bold uppercase tracking-wider bg-beige-100 hover:bg-beige-200 text-dark-green-900 border border-beige-300 px-2 py-0.5 rounded-full cursor-pointer transition"
-                            >
-                              {cat.name}
-                            </span>
-                          )}
-
-                          {/* Render Assigned Tags */}
-                          {(exp.tags || []).map((tag, tIdx) => (
-                            <span
-                              key={tIdx}
-                              onClick={() => setSelectedTagFilter(tag)}
-                              className="text-[10px] font-bold text-brown-800 bg-beige-50 hover:bg-beige-100 border border-beige-300 px-2 py-0.5 rounded-full cursor-pointer transition flex items-center gap-0.5"
-                            >
-                              <Tag className="w-2.5 h-2.5 text-sage-700" />
-                              <span>{tag}</span>
-                            </span>
-                          ))}
-
-                          {exp.billFrequency && exp.billFrequency !== 'weekly' && (
-                            <span className="text-[10px] font-bold text-sage-800 bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-full capitalize flex items-center gap-1">
-                              <Tag className="w-2.5 h-2.5" />
-                              {exp.billFrequency} (Prorated)
-                            </span>
-                          )}
-                          {exp.receiptImgUrl && (
-                            <button
-                              onClick={() => setSelectedReceiptUrl(exp.receiptImgUrl || null)}
-                              className="text-[10px] font-bold text-sage-800 bg-sage-50 hover:bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1 cursor-pointer"
-                            >
-                              <Receipt className="w-3 h-3" />
-                              <span>Receipt</span>
-                            </button>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-3 text-xs text-brown-700">
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDateDisplay(exp.date)}
-                          </span>
-                          <span>&bull;</span>
-                          <div className="flex items-center gap-1.5">
-                            {member?.avatarUrl ? (
-                              <img
-                                src={member.avatarUrl}
-                                alt={member.name}
-                                className="w-4 h-4 rounded-full object-cover border border-beige-300"
-                                referrerPolicy="no-referrer"
-                              />
-                            ) : (
-                              <User className="w-3.5 h-3.5 text-brown-700" />
-                            )}
-                            <span className="font-medium">{member?.name || 'Household Member'}</span>
-                          </div>
-                        </div>
-                      </div>
+                      <h4 className="font-bold text-dark-green-950 text-sm sm:text-base leading-tight truncate">
+                        {exp.description}
+                      </h4>
                     </div>
-
-                    {/* Right: Amount & Actions */}
-                    <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center gap-2">
-                      <div className="text-right">
-                        <div className="text-lg sm:text-xl font-black text-dark-green-900 tracking-tight font-mono">
-                          {formatCurrency(exp.amount)}
-                        </div>
-                        {exp.billFrequency && exp.billFrequency !== 'weekly' && (
-                          <div className="text-[10px] font-bold text-sage-800 tracking-tight">
-                            Prorated: {formatCurrency(getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, household?.fiscalYearEndMonth || 12))}
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleComments(exp.id);
-                          }}
-                          id={`comment-toggle-${exp.id}`}
-                          className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
-                            comments.length > 0 || isCommentsOpen
-                              ? 'bg-sage-100 text-dark-green-900 border-sage-300'
-                              : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
-                          }`}
-                          title="View or add comments"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                          <span className="font-bold text-[11px]">{comments.length}</span>
-                        </button>
-
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startEditExpense(exp);
-                          }}
-                          id={`edit-exp-${exp.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
-                          title="Edit transaction"
-                        >
-                          <Edit3 className="w-3.5 h-3.5" />
-                        </button>
-
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            await handleDeleteExpenseClick(exp);
-                          }}
-                          id={`del-exp-${exp.id}`}
-                          className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
-                          title="Delete transaction"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
+                    <div className="text-base sm:text-lg font-black text-dark-green-950 tracking-tight font-mono whitespace-nowrap shrink-0">
+                      {formatCurrency(exp.amount)}
                     </div>
                   </div>
 
-                  {/* SOCIAL REACTIONS BAR (CUSTOM EARTH-TONE SVG ICONS WITH ANIMATION) */}
-                  <div className="pt-1.5 border-t border-beige-100">
+                  {/* Line 2: Parent category, date in MM/DD, payer picture ONLY, 3 action buttons on right */}
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2.5 min-w-0 flex-wrap text-brown-700">
+                      <span
+                        onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
+                        className="font-semibold text-dark-green-900 hover:text-dark-green-700 cursor-pointer transition truncate max-w-[140px] sm:max-w-none"
+                        title={cat ? `Category: ${cat.name}` : undefined}
+                      >
+                        {cat?.group || cat?.name || 'General'}
+                      </span>
+
+                      <span className="text-beige-400">&bull;</span>
+
+                      <span className="text-brown-700 font-medium whitespace-nowrap">
+                        {formatMMDD(exp.date)}
+                      </span>
+
+                      <span className="text-beige-400">&bull;</span>
+
+                      <div className="flex items-center shrink-0" title={member?.name ? `Paid by ${member.name}` : 'Household Member'}>
+                        {member?.avatarUrl ? (
+                          <img
+                            src={member.avatarUrl}
+                            alt={member.name || 'Payer'}
+                            className="w-5 h-5 rounded-full object-cover border border-beige-300 shadow-2xs"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="w-5 h-5 rounded-full bg-sage-100 border border-beige-300 flex items-center justify-center text-brown-700">
+                            <User className="w-3 h-3" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Three action buttons: Comment, Edit, Delete */}
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleComments(exp.id);
+                        }}
+                        id={`comment-toggle-${exp.id}`}
+                        className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
+                          comments.length > 0 || isCommentsOpen
+                            ? 'bg-sage-100 text-dark-green-900 border-sage-300'
+                            : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
+                        }`}
+                        title="View or add comments"
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span className="font-bold text-[11px]">{comments.length}</span>
+                      </button>
+
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          startEditExpense(exp);
+                        }}
+                        id={`edit-exp-${exp.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
+                        title="Edit transaction"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+
+                      <button
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          await handleDeleteExpenseClick(exp);
+                        }}
+                        id={`del-exp-${exp.id}`}
+                        className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
+                        title="Delete transaction"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Line 3: Proration details if it is a bill followed by tags */}
+                  {((exp.billFrequency && exp.billFrequency !== 'weekly') || (exp.tags && exp.tags.length > 0) || exp.receiptImgUrl) && (
+                    <div className="flex items-center gap-1.5 flex-wrap text-xs pt-0.5">
+                      {exp.billFrequency && exp.billFrequency !== 'weekly' && (
+                        <span className="text-[10px] font-bold text-sage-800 bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-md capitalize flex items-center gap-1">
+                          <Tag className="w-2.5 h-2.5 text-sage-700" />
+                          <span>Prorated: {formatCurrency(getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, household?.fiscalYearEndMonth || 12))} ({exp.billFrequency})</span>
+                        </span>
+                      )}
+
+                      {(exp.tags || []).map((tag, tIdx) => (
+                        <span
+                          key={tIdx}
+                          onClick={() => setSelectedTagFilter(tag)}
+                          className="text-[10px] font-bold text-brown-800 bg-beige-50 hover:bg-beige-100 border border-beige-300 px-2 py-0.5 rounded-md cursor-pointer transition flex items-center gap-1"
+                        >
+                          <Tag className="w-2.5 h-2.5 text-sage-700" />
+                          <span>#{tag}</span>
+                        </span>
+                      ))}
+
+                      {exp.receiptImgUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedReceiptUrl(exp.receiptImgUrl || null)}
+                          className="text-[10px] font-bold text-sage-800 bg-sage-50 hover:bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-md flex items-center gap-1 cursor-pointer"
+                        >
+                          <Receipt className="w-3 h-3" />
+                          <span>Receipt</span>
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* FAINT LINE BREAK + SOCIAL REACTIONS */}
+                  <div className="pt-2 border-t border-beige-200/60">
                     <EarthToneReaction
                       reactions={exp.reactions || []}
                       onReact={(reactionId) => addTransactionReaction(exp.id, reactionId)}
@@ -1867,6 +2454,7 @@ export const CategoryLedgerView: React.FC = () => {
           </div>
         )
       )}
+      </div>
 
       {/* RECEIPT IMAGE PREVIEW MODAL */}
       {selectedReceiptUrl && (
@@ -1915,12 +2503,13 @@ export const CategoryLedgerView: React.FC = () => {
               </div>
               <button
                 onClick={() => setIsAddTagOpen(false)}
-                className="p-1 text-brown-700 hover:text-dark-green-900"
+                className="p-1 text-brown-700 hover:text-dark-green-900 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
+            {/* Field 1: Tag Name */}
             <div className="space-y-1">
               <label className="text-xs font-bold text-dark-green-900">Tag Name</label>
               <input
@@ -1932,18 +2521,36 @@ export const CategoryLedgerView: React.FC = () => {
                 autoFocus
                 onKeyDown={async (e) => {
                   if (e.key === 'Enter' && newTagInput.trim()) {
-                    await addCustomTag(newTagInput.trim(), activeCategory?.id);
+                    const trimmed = newTagInput.trim().replace(/^#/, '');
+                    await addCustomTag(trimmed, addTagTargetCategoryId || activeCategory?.id || categories[0]?.id);
                     setIsAddTagOpen(false);
                   }
                 }}
               />
             </div>
 
+            {/* Field 2: Parent Category */}
+            <div className="space-y-1">
+              <label className="text-xs font-bold text-dark-green-900">Parent Category</label>
+              <select
+                id="add-tag-parent-category-select"
+                value={addTagTargetCategoryId}
+                onChange={(e) => setAddTagTargetCategoryId(e.target.value)}
+                className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 cursor-pointer"
+              >
+                {categories.map((cat) => (
+                  <option key={cat.id} value={cat.id}>
+                    {cat.name} {cat.group && cat.group !== cat.name ? `(${cat.group})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setIsAddTagOpen(false)}
-                className="px-3 py-1.5 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl"
+                className="px-3 py-1.5 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl cursor-pointer"
               >
                 Cancel
               </button>
@@ -1951,10 +2558,11 @@ export const CategoryLedgerView: React.FC = () => {
                 type="button"
                 disabled={!newTagInput.trim()}
                 onClick={async () => {
-                  await addCustomTag(newTagInput.trim(), activeCategory?.id);
+                  const trimmed = newTagInput.trim().replace(/^#/, '');
+                  await addCustomTag(trimmed, addTagTargetCategoryId || activeCategory?.id || categories[0]?.id);
                   setIsAddTagOpen(false);
                 }}
-                className="px-4 py-1.5 text-xs font-bold bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-xl disabled:opacity-50"
+                className="px-4 py-1.5 text-xs font-bold bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-xl disabled:opacity-50 cursor-pointer"
               >
                 Save Tag
               </button>
@@ -1963,69 +2571,121 @@ export const CategoryLedgerView: React.FC = () => {
         </div>
       )}
 
-      {/* TAG RENAME MODAL (CASCADING BATCH UPDATE) */}
+      {/* TAG EDIT MODAL (RENAME, TRANSACTION COUNTS, AND DELETE TRIGGER) */}
       {renamingTag && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/40 backdrop-blur-xs animate-in fade-in">
-          <div className="bg-white border border-beige-200 rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4">
-            <div className="flex items-center justify-between border-b border-beige-100 pb-2">
+          <div className="bg-white border border-beige-200 rounded-3xl p-6 shadow-2xl max-w-md w-full space-y-4">
+            <div className="flex items-center justify-between border-b border-beige-100 pb-3">
               <div className="flex items-center gap-2">
-                <Edit3 className="w-4 h-4 text-sage-700" />
-                <h3 className="text-sm font-extrabold text-dark-green-900">Rename Tag</h3>
+                <div className="w-8 h-8 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-extrabold text-dark-green-900">Edit Tag</h3>
+                  <p className="text-[11px] font-bold text-sage-800">#{renamingTag}</p>
+                </div>
               </div>
               <button
                 onClick={() => setRenamingTag(null)}
-                className="p-1 text-brown-700 hover:text-dark-green-900"
+                className="p-1.5 text-brown-700 hover:text-dark-green-900 rounded-xl hover:bg-beige-100 transition cursor-pointer"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <p className="text-xs text-brown-700">
-              Renaming <strong>#{renamingTag}</strong> will automatically update all historical transactions and categories that use this tag.
-            </p>
+            {/* Tag Transaction Usage Stats (Total vs Selected Timeframe) */}
+            <div className="p-3.5 bg-beige-50/90 border border-beige-200/90 rounded-2xl space-y-2">
+              <span className="text-[11px] font-extrabold uppercase tracking-wider text-dark-green-900 block">
+                Tag Transaction Usage
+              </span>
+              <div className="grid grid-cols-2 gap-2.5">
+                <div className="bg-white border border-beige-200 rounded-xl p-3 shadow-2xs">
+                  <span className="text-[11px] font-medium text-dark-grey-600 block leading-tight">Selected Timeframe:</span>
+                  <span className="text-base font-black text-dark-green-950 block mt-1">
+                    {tagUsageStats.timeframe} {tagUsageStats.timeframe === 1 ? 'transaction' : 'transactions'}
+                  </span>
+                  <span className="text-[10px] font-semibold text-brown-600 block truncate mt-0.5" title={dateRangeMeta.label}>
+                    {dateRangeMeta.label}
+                  </span>
+                </div>
+                <div className="bg-white border border-beige-200 rounded-xl p-3 shadow-2xs">
+                  <span className="text-[11px] font-medium text-dark-grey-600 block leading-tight">Total Applied:</span>
+                  <span className="text-base font-black text-dark-green-950 block mt-1">
+                    {tagUsageStats.total} {tagUsageStats.total === 1 ? 'transaction' : 'transactions'}
+                  </span>
+                  <span className="text-[10px] font-semibold text-brown-600 block mt-0.5">
+                    All-time historical ledger
+                  </span>
+                </div>
+              </div>
+            </div>
 
-            <div className="space-y-1">
-              <label className="text-xs font-bold text-dark-green-900">New Tag Name</label>
+            {/* Rename Input */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 block">
+                Rename Tag
+              </label>
               <input
                 type="text"
                 value={renameTagInput}
                 onChange={(e) => setRenameTagInput(e.target.value)}
-                className="w-full px-3 py-2 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800"
+                placeholder="Enter new tag name..."
+                className="w-full px-3.5 py-2.5 bg-beige-50 border border-beige-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-hidden focus:border-dark-green-800 focus:bg-white transition"
                 autoFocus
                 onKeyDown={async (e) => {
                   if (e.key === 'Enter' && renameTagInput.trim()) {
-                    await renameTag(renamingTag, renameTagInput.trim(), activeCategory?.id);
-                    if (selectedTagFilter === renamingTag) {
-                      setSelectedTagFilter(renameTagInput.trim());
+                    if (renameTagInput.trim() !== renamingTag) {
+                      await renameTag(renamingTag, renameTagInput.trim(), activeCategory?.id);
+                      if (selectedTagFilter === renamingTag) {
+                        setSelectedTagFilter(renameTagInput.trim());
+                      }
                     }
                     setRenamingTag(null);
                   }
                 }}
               />
+              <p className="text-[11px] text-brown-700 leading-tight">
+                Renaming will automatically update all {tagUsageStats.total} historical transaction records and category presets.
+              </p>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
+            {/* Modal Bottom Actions: Delete Button on left, Cancel & Save on right */}
+            <div className="flex items-center justify-between gap-2 pt-3 border-t border-beige-100">
               <button
                 type="button"
-                onClick={() => setRenamingTag(null)}
-                className="px-3 py-1.5 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl"
+                onClick={() => setDeletingTag(renamingTag)}
+                className="px-3.5 py-2 text-xs font-bold text-alert-red-600 hover:text-alert-red-700 hover:bg-alert-red-50 border border-alert-red-200 rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
               >
-                Cancel
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
               </button>
-              <button
-                type="button"
-                disabled={!renameTagInput.trim() || renameTagInput.trim() === renamingTag}
-                onClick={async () => {
-                  await renameTag(renamingTag, renameTagInput.trim(), activeCategory?.id);
-                  if (selectedTagFilter === renamingTag) {
-                    setSelectedTagFilter(renameTagInput.trim());
-                  }
-                  setRenamingTag(null);
-                }}
-                className="px-4 py-1.5 text-xs font-bold bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-xl disabled:opacity-50"
-              >
-                Rename Everywhere
-              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRenamingTag(null)}
+                  className="px-3.5 py-2 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={!renameTagInput.trim()}
+                  onClick={async () => {
+                    if (renameTagInput.trim() && renameTagInput.trim() !== renamingTag) {
+                      await renameTag(renamingTag, renameTagInput.trim(), activeCategory?.id);
+                      if (selectedTagFilter === renamingTag) {
+                        setSelectedTagFilter(renameTagInput.trim());
+                      }
+                    }
+                    setRenamingTag(null);
+                  }}
+                  className="px-4 py-2 text-xs font-bold bg-dark-green-800 hover:bg-dark-green-900 text-white rounded-xl shadow-xs transition cursor-pointer disabled:opacity-50"
+                >
+                  Save
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -2033,30 +2693,33 @@ export const CategoryLedgerView: React.FC = () => {
 
       {/* TAG DELETE CONFIRMATION MODAL (CASCADING BATCH REMOVAL) */}
       {deletingTag && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/40 backdrop-blur-xs animate-in fade-in">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-dark-green-950/50 backdrop-blur-xs animate-in fade-in">
           <div className="bg-white border border-beige-200 rounded-3xl p-6 shadow-2xl max-w-sm w-full space-y-4">
             <div className="flex items-center justify-between border-b border-beige-100 pb-2">
               <div className="flex items-center gap-2 text-alert-red-700">
-                <Trash2 className="w-4 h-4" />
-                <h3 className="text-sm font-extrabold">Delete Tag</h3>
+                <div className="w-8 h-8 rounded-xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-700">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <h3 className="text-sm font-extrabold text-alert-red-800">Delete Tag</h3>
               </div>
               <button
                 onClick={() => setDeletingTag(null)}
-                className="p-1 text-brown-700 hover:text-dark-green-900"
+                className="p-1 text-brown-700 hover:text-dark-green-900 rounded-xl hover:bg-beige-100 transition cursor-pointer"
+                title="Close"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <p className="text-xs text-brown-700 leading-relaxed">
-              Are you sure you want to remove tag <strong>#{deletingTag}</strong>? This will remove the tag from all historical transaction records across your household ledger.
+              Are you sure you want to remove tag <strong>#{deletingTag}</strong>? This will permanently delete this tag from all {tagUsageStats.total} historical transaction records across your household ledger.
             </p>
 
-            <div className="flex justify-end gap-2 pt-2">
+            <div className="flex justify-end gap-2 pt-3 border-t border-beige-100">
               <button
                 type="button"
                 onClick={() => setDeletingTag(null)}
-                className="px-3 py-1.5 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl"
+                className="px-3.5 py-2 text-xs font-bold text-brown-700 hover:bg-beige-100 rounded-xl transition cursor-pointer"
               >
                 Cancel
               </button>
@@ -2068,10 +2731,12 @@ export const CategoryLedgerView: React.FC = () => {
                     setSelectedTagFilter(null);
                   }
                   setDeletingTag(null);
+                  setRenamingTag(null);
                 }}
-                className="px-4 py-1.5 text-xs font-bold bg-alert-red-600 hover:bg-alert-red-700 text-white rounded-xl shadow-2xs"
+                className="px-4 py-2 text-xs font-bold bg-alert-red-600 hover:bg-alert-red-700 text-white rounded-xl shadow-xs transition cursor-pointer flex items-center gap-1.5"
               >
-                Remove Tag
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Confirm Delete</span>
               </button>
             </div>
           </div>

@@ -98,6 +98,7 @@ export function getFiscalYearMonths(year: number, fiscalYearEndMonth: number = 1
       startDate,
       endDate,
       label: `${startLabel} – ${endLabel}`,
+      fiscalYear: year,
     });
 
     // Advance to next month's Monday
@@ -143,7 +144,7 @@ export function getFiscalMonthRange(
 ): DateRange {
   const currentFM = getFiscalMonthForDate(refDate, fiscalYearEndMonth);
 
-  let targetYear = currentFM.startDate.getFullYear();
+  let targetYear = currentFM.fiscalYear || currentFM.endDate.getFullYear();
   let targetMonthIdx = (currentFM.fiscalMonthNumber - 1) + monthOffset;
 
   while (targetMonthIdx < 0) {

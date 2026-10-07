@@ -125,6 +125,7 @@ export interface FiscalMonth {
   startDate: Date;
   endDate: Date;
   label: string;
+  fiscalYear?: number;
 }
 
 export interface ExtraPaycheckInfo {
@@ -332,6 +333,9 @@ export interface FeedItem {
   timestamp: number;
   date?: string;
   linkedExpenseId?: string;
+  linkedCheckInId?: string;
+  weekStartDate?: string;
+  weekEndDate?: string;
   linkedExpense?: {
     id: string;
     description: string;

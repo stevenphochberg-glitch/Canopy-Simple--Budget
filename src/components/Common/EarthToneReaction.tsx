@@ -53,9 +53,9 @@ export const EARTH_TONE_REACTIONS: EarthToneReactionDef[] = [
     iconColor: 'text-[#8F6C47]',
   },
   {
-    id: 'love_you',
-    label: 'Love you',
-    shortLabel: 'Love you',
+    id: 'love_this',
+    label: 'Love this',
+    shortLabel: 'Love this',
     icon: Heart,
     tone: 'brown',
     bgClass: 'bg-[#FDF4F0] hover:bg-[#F6E5DE]',
@@ -124,8 +124,14 @@ export function getReactionDef(reactionKeyOrEmoji: string): EarthToneReactionDef
   if (reactionKeyOrEmoji === '💡' || reactionKeyOrEmoji === '✨' || reactionKeyOrEmoji === '💰') {
     return EARTH_TONE_REACTIONS[1]; // good_idea
   }
-  if (reactionKeyOrEmoji === '❤️' || reactionKeyOrEmoji === '💚' || reactionKeyOrEmoji === '🏡') {
-    return EARTH_TONE_REACTIONS[2]; // love_you
+  if (
+    reactionKeyOrEmoji === '❤️' ||
+    reactionKeyOrEmoji === '💚' ||
+    reactionKeyOrEmoji === '🏡' ||
+    reactionKeyOrEmoji === 'love_you' ||
+    reactionKeyOrEmoji === 'love_this'
+  ) {
+    return EARTH_TONE_REACTIONS[2]; // love_this
   }
   if (reactionKeyOrEmoji === '😬' || reactionKeyOrEmoji === '🔥' || reactionKeyOrEmoji === '⚠️' || reactionKeyOrEmoji === 'Yikes') {
     return EARTH_TONE_REACTIONS[3]; // yikes

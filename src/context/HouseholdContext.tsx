@@ -42,7 +42,7 @@ import {
   formatLocalDate,
   getTodayLocalDateString,
 } from '../lib/calculations';
-import { getFiscalWeekId } from '../lib/fiscal445';
+import { getFiscalWeekId, getFiscalMonthForDate } from '../lib/fiscal445';
 import { getReactionDef } from '../components/Common/EarthToneReaction';
 import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
 import {
@@ -107,6 +107,47 @@ export function sanitizeFirestorePayload<T>(data: T): T {
   return clean as T;
 }
 
+/**
+ * Universal evaluator for whether a transaction is a One-Time / One-Off Deposit.
+ * Accurately recognizes one-time deposits regardless of whether they were created
+ * through the direct one-time deposit flow or legacy/staged expense flow.
+ */
+export const isExpenseOneTimeDeposit = (
+  exp?: Partial<Expense> | Partial<StagedExpense> | null
+): boolean => {
+  if (!exp) return false;
+  if (exp.categoryId === 'cat_one_time_deposit' || (exp.depositDestination as string) === 'savings_budget') {
+    return true;
+  }
+  if (
+    exp.tags &&
+    exp.tags.some((t) => {
+      const l = t.toLowerCase();
+      return (
+        l === 'one-time deposit' ||
+        l === 'one-off deposit' ||
+        l.includes('deposit') ||
+        l.includes('budget expansion')
+      );
+    })
+  ) {
+    if (
+      exp.categoryId === 'cat_one_time_deposit' ||
+      Boolean(exp.description && exp.description.toLowerCase().includes('deposit'))
+    ) {
+      return true;
+    }
+  }
+  if (
+    exp.description &&
+    (exp.description.toLowerCase().startsWith('one-off deposit') ||
+      exp.description.toLowerCase().startsWith('one-time deposit'))
+  ) {
+    return true;
+  }
+  return false;
+};
+
 export interface HouseholdContextType {
   user: UserProfile | null;
   household: Household | null;
@@ -126,6 +167,8 @@ export interface HouseholdContextType {
   selectedLedgerCategoryId: string | null;
   setSelectedLedgerCategoryId: (catId: string | null) => void;
   navigateToCategoryLedger: (catId: string | null) => void;
+  ledgerDateRangeLabel: string;
+  setLedgerDateRangeLabel: (val: string) => void;
 
   // Social Feed & Transaction Interactions
   addTransactionComment: (expenseId: string, text: string) => Promise<void>;
@@ -306,6 +349,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   // Lateral Category Drill-Down Navigation State
   const [selectedLedgerCategoryId, setSelectedLedgerCategoryId] = useState<string | null>(null);
+  const [ledgerDateRangeLabel, setLedgerDateRangeLabel] = useState<string>('');
 
   const navigateToCategoryLedger = (catId: string | null) => {
     setSelectedLedgerCategoryId(catId);
@@ -607,7 +651,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const unsubExpenses = onSnapshot(
       collection(db, 'households', householdId, 'expenses'),
       (snapshot) => {
-        const loadedExpenses = snapshot.docs.map((d) => {
+        const rawExpenses = snapshot.docs.map((d) => {
           const data = d.data();
           const normalizedTs = parseExpenseTimestamp({
             timestamp: data.timestamp,
@@ -620,8 +664,73 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             timestamp: normalizedTs,
           };
         });
-        loadedExpenses.sort((a, b) => b.timestamp - a.timestamp);
-        setExpenses(loadedExpenses);
+
+        // Segregate genuine expenses vs one-time deposits
+        const legacyDepositExpenses = rawExpenses.filter(isExpenseOneTimeDeposit);
+        const regularExpenses = rawExpenses.filter((e) => !isExpenseOneTimeDeposit(e));
+
+        regularExpenses.sort((a, b) => b.timestamp - a.timestamp);
+        setExpenses(regularExpenses);
+
+        // If legacy deposit expenses are found, migrate them into household.oneOffDeposits
+        if (legacyDepositExpenses.length > 0) {
+          setHousehold((currentHh) => {
+            if (!currentHh) return currentHh;
+            const existingDeps = currentHh.oneOffDeposits || [];
+            let hasNew = false;
+            const updatedDeps = [...existingDeps];
+
+            legacyDepositExpenses.forEach((exp) => {
+              const alreadyExists = existingDeps.some(
+                (d) =>
+                  d.id === exp.id ||
+                  d.id === exp.id.replace('exp_', 'dep_') ||
+                  (d.date === exp.date &&
+                    Math.abs(d.amount - exp.amount) < 0.01 &&
+                    d.description === exp.description)
+              );
+              if (!alreadyExists) {
+                hasNew = true;
+                updatedDeps.push({
+                  id: exp.id,
+                  description: exp.description || 'One-off Deposit',
+                  amount: exp.amount,
+                  date:
+                    exp.date ||
+                    (exp.timestamp
+                      ? new Date(exp.timestamp).toISOString().split('T')[0]
+                      : new Date().toISOString().split('T')[0]),
+                  payerMemberId: exp.loggedByUserId,
+                  notes: (exp.tags || []).join(', '),
+                  comments: exp.comments,
+                  reactions: exp.reactions,
+                });
+              }
+            });
+
+            if (hasNew) {
+              if (isFirebaseConfigured && db && currentHh.id) {
+                const hhDocRef = doc(db, 'households', currentHh.id);
+                updateDoc(
+                  hhDocRef,
+                  sanitizeFirestorePayload({
+                    oneOffDeposits: updatedDeps,
+                    updatedAt: new Date().toISOString(),
+                  })
+                ).catch(console.error);
+
+                // Clean up legacy expense documents from Firestore
+                const batch = writeBatch(db);
+                legacyDepositExpenses.forEach((exp) => {
+                  batch.delete(doc(db, 'households', currentHh.id, 'expenses', exp.id));
+                });
+                batch.commit().catch(console.error);
+              }
+              return { ...currentHh, oneOffDeposits: updatedDeps };
+            }
+            return currentHh;
+          });
+        }
       },
       (err) => {
         console.warn(`[Firestore] Expenses listener note:`, err);
@@ -2194,7 +2303,82 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
 
     const now = Date.now();
-    const createdExpenses: Expense[] = validItems.map((item, idx) => {
+    const depositItems = validItems.filter(isExpenseOneTimeDeposit);
+    const regularExpenseItems = validItems.filter((it) => !isExpenseOneTimeDeposit(it));
+
+    // 1. Process One-Time Deposits
+    if (depositItems.length > 0) {
+      const firstDay = household.firstDayOfWeek || 'Monday';
+      const savingsCat = categories.find(
+        (c) =>
+          c.type === 'savings' ||
+          c.group === 'Savings' ||
+          c.group?.toLowerCase() === 'savings' ||
+          c.id === 'cat_savings' ||
+          c.name.toLowerCase().includes('saving')
+      );
+      const baseSavings = savingsCat ? Number(savingsCat.baselineBudget) || 0 : 0;
+
+      let updatedHouseholdDeposits = [...(household.oneOffDeposits || [])];
+      let updatedWeeklyOverrides = { ...(household.weeklyOverrides || {}) };
+
+      depositItems.forEach((item, idx) => {
+        const depDateStr = item.date || new Date().toISOString().split('T')[0];
+        const safeAmount = Number(item.amount);
+        const newDeposit: OneOffDeposit = {
+          id: `dep_${now}_${idx}_${Math.random().toString(36).substr(2, 4)}`,
+          amount: safeAmount,
+          description: item.description?.trim() || 'One-off Deposit',
+          date: depDateStr,
+          payerMemberId: item.loggedByUserId || user?.userId || 'usr_self',
+          notes: (item.tags || []).join(', '),
+        };
+        updatedHouseholdDeposits.push(newDeposit);
+
+        // Calculate and update expanded savings override
+        const depDateObj = new Date(depDateStr + 'T12:00:00');
+        const targetWeekRange = getWeekRange(depDateObj, firstDay, 0);
+        const weekId = formatLocalDate(targetWeekRange.startDate);
+
+        const weekOverrides = { ...(updatedWeeklyOverrides[weekId] || {}) };
+        const currentSavings =
+          weekOverrides.savings ??
+          (savingsCat ? weekOverrides[savingsCat.id] : undefined) ??
+          baseSavings;
+        const nextSavings = Number(currentSavings) + safeAmount;
+
+        updatedWeeklyOverrides[weekId] = {
+          ...weekOverrides,
+          savings: nextSavings,
+          ...(savingsCat ? { [savingsCat.id]: nextSavings } : {}),
+        };
+      });
+
+      setHousehold((prev) =>
+        prev
+          ? {
+              ...prev,
+              oneOffDeposits: updatedHouseholdDeposits,
+              weeklyOverrides: updatedWeeklyOverrides,
+            }
+          : prev
+      );
+
+      if (isFirebaseConfigured && db && household.id) {
+        const hhRef = doc(db, 'households', household.id);
+        updateDoc(
+          hhRef,
+          sanitizeFirestorePayload({
+            oneOffDeposits: updatedHouseholdDeposits,
+            weeklyOverrides: updatedWeeklyOverrides,
+            updatedAt: new Date().toISOString(),
+          })
+        ).catch(console.error);
+      }
+    }
+
+    // 2. Process Regular Expenses
+    const createdExpenses: Expense[] = regularExpenseItems.map((item, idx) => {
       const resolvedCategoryId =
         item.categoryId && categories.some((c) => c.id === item.categoryId)
           ? item.categoryId
@@ -2236,127 +2420,103 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       };
     });
 
-    // Process any goal deposits or savings budget expansions
+    // Process goal deposits
     createdExpenses.forEach((exp) => {
       if (exp.depositDestination === 'goal' && exp.targetGoalId) {
         allocateSavingsToGoals({ [exp.targetGoalId]: exp.amount });
-      } else if (exp.depositDestination === 'savings_budget' && household) {
-        const firstDay = household.firstDayOfWeek || 'Monday';
-        const expDate = new Date(exp.timestamp);
-        const wRange = getWeekRange(expDate, firstDay, 0);
-        const weekId = getWeekId(wRange, firstDay);
-        const curWeekly = household.weeklyOverrides || {};
-        const curWeekObj = curWeekly[weekId] || {};
-        const savingsCat = categories.find((c) => c.type === 'savings' || c.group === 'Savings' || c.id === 'cat_savings');
-        const baseSavings = savingsCat?.baselineBudget || 0;
-        const curSavings = curWeekObj.savings !== undefined ? curWeekObj.savings : baseSavings;
-        const nextSavings = curSavings + exp.amount;
-        const updatedOverrides = {
-          ...curWeekly,
-          [weekId]: {
-            ...curWeekObj,
-            savings: nextSavings,
-          },
-        };
-        setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: updatedOverrides } : prev));
-        if (isFirebaseConfigured && db && household?.id) {
-          const hhRef = doc(db, 'households', household.id);
-          updateDoc(hhRef, sanitizeFirestorePayload({
-            [`weeklyOverrides.${weekId}.savings`]: nextSavings,
-            ...(savingsCat ? { [`weeklyOverrides.${weekId}.${savingsCat.id}`]: nextSavings } : {}),
-            updatedAt: new Date().toISOString(),
-          })).catch(console.error);
-        }
       }
     });
 
-    // 1. Optimistic local state update
-    setExpenses((prev) => [...createdExpenses, ...prev]);
+    if (createdExpenses.length > 0) {
+      // 1. Optimistic local state update
+      setExpenses((prev) => [...createdExpenses, ...prev]);
 
-    setCategories((prevCats) =>
-      prevCats.map((cat) => {
-        const matching = createdExpenses.filter((e) => e.categoryId === cat.id);
-        if (matching.length === 0) return cat;
-        const sumAmount = matching.reduce((s, e) => s + e.amount, 0);
-        return {
-          ...cat,
-          totalLogged: (Number(cat.totalLogged) || 0) + sumAmount,
-          transactionCount: (Number(cat.transactionCount) || 0) + matching.length,
-        };
-      })
-    );
-
-    // 2. Live Firestore Batch Writes
-    if (isFirebaseConfigured && db && household?.id) {
-      try {
-        const batch = writeBatch(db);
-        const categoryIncrements: Record<string, { amount: number; count: number }> = {};
-
-        createdExpenses.forEach((exp) => {
-          const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
-          const expPayload = {
-            id: exp.id,
-            amount: exp.amount,
-            description: exp.description,
-            categoryId: exp.categoryId,
-            date: exp.date,
-            timestamp: exp.timestamp,
-            createdAt: serverTimestamp(),
-            loggedByUserId: exp.loggedByUserId,
-            receiptImgUrl: exp.receiptImgUrl || null,
-            billFrequency: exp.billFrequency || null,
-            tags: exp.tags || null,
-            subcategory: exp.subcategory || null,
-            depositDestination: exp.depositDestination || null,
-            targetGoalId: exp.targetGoalId || null,
+      setCategories((prevCats) =>
+        prevCats.map((cat) => {
+          const matching = createdExpenses.filter((e) => e.categoryId === cat.id);
+          if (matching.length === 0) return cat;
+          const sumAmount = matching.reduce((s, e) => s + e.amount, 0);
+          return {
+            ...cat,
+            totalLogged: (Number(cat.totalLogged) || 0) + sumAmount,
+            transactionCount: (Number(cat.transactionCount) || 0) + matching.length,
           };
-          batch.set(expRef, sanitizeFirestorePayload(expPayload));
+        })
+      );
 
-          if (exp.categoryId) {
-            if (!categoryIncrements[exp.categoryId]) {
-              categoryIncrements[exp.categoryId] = { amount: 0, count: 0 };
+      // 2. Live Firestore Batch Writes
+      if (isFirebaseConfigured && db && household?.id) {
+        try {
+          const batch = writeBatch(db);
+          const categoryIncrements: Record<string, { amount: number; count: number }> = {};
+
+          createdExpenses.forEach((exp) => {
+            const expRef = doc(db, 'households', household.id, 'expenses', exp.id);
+            const expPayload = {
+              id: exp.id,
+              amount: exp.amount,
+              description: exp.description,
+              categoryId: exp.categoryId,
+              date: exp.date,
+              timestamp: exp.timestamp,
+              createdAt: serverTimestamp(),
+              loggedByUserId: exp.loggedByUserId,
+              receiptImgUrl: exp.receiptImgUrl || null,
+              billFrequency: exp.billFrequency || null,
+              tags: exp.tags || null,
+              subcategory: exp.subcategory || null,
+              depositDestination: exp.depositDestination || null,
+              targetGoalId: exp.targetGoalId || null,
+            };
+            batch.set(expRef, sanitizeFirestorePayload(expPayload));
+
+            if (exp.categoryId) {
+              if (!categoryIncrements[exp.categoryId]) {
+                categoryIncrements[exp.categoryId] = { amount: 0, count: 0 };
+              }
+              categoryIncrements[exp.categoryId].amount += exp.amount;
+              categoryIncrements[exp.categoryId].count += 1;
             }
-            categoryIncrements[exp.categoryId].amount += exp.amount;
-            categoryIncrements[exp.categoryId].count += 1;
-          }
-        });
-
-        // Update each parent category document using Firestore increment()
-        Object.entries(categoryIncrements).forEach(([catId, { amount, count }]) => {
-          const catRef = doc(db, 'households', household.id, 'categories', catId);
-          batch.update(catRef, {
-            totalLogged: increment(amount),
-            transactionCount: increment(count),
           });
-        });
 
-        // Add activity feed item
-        const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
-        const totalAmount = createdExpenses.reduce((sum, e) => sum + e.amount, 0);
-        batch.set(
-          feedRef,
-          sanitizeFirestorePayload({
-            id: `feed_${now}`,
-            type: 'transaction',
-            content: `Logged ${createdExpenses.length} expense${createdExpenses.length > 1 ? 's' : ''} totaling $${totalAmount.toFixed(2)}`,
-            authorId: user?.userId || 'usr_self',
-            authorName: user?.name || 'Member',
-            authorAvatar: user?.avatarUrl,
-            timestamp: now,
-            date: new Date(now).toISOString().split('T')[0],
-          })
-        );
+          // Update each parent category document using Firestore increment()
+          Object.entries(categoryIncrements).forEach(([catId, { amount, count }]) => {
+            const catRef = doc(db, 'households', household.id, 'categories', catId);
+            batch.update(catRef, {
+              totalLogged: increment(amount),
+              transactionCount: increment(count),
+            });
+          });
 
-        await batch.commit();
-      } catch (err) {
-        console.error('Firestore Write Failed:', err);
-        handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/expenses`);
-        showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+          // Add activity feed item
+          const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
+          const totalAmount = createdExpenses.reduce((sum, e) => sum + e.amount, 0);
+          batch.set(
+            feedRef,
+            sanitizeFirestorePayload({
+              id: `feed_${now}`,
+              type: 'transaction',
+              content: `Logged ${createdExpenses.length} expense${createdExpenses.length > 1 ? 's' : ''} totaling $${totalAmount.toFixed(2)}`,
+              authorId: user?.userId || 'usr_self',
+              authorName: user?.name || 'Member',
+              authorAvatar: user?.avatarUrl,
+              timestamp: now,
+              date: new Date(now).toISOString().split('T')[0],
+            })
+          );
+
+          await batch.commit();
+        } catch (err) {
+          console.error('Firestore Write Failed:', err);
+          handleFirestoreError(err, OperationType.WRITE, `households/${household.id}/expenses`);
+          showToast(`Firestore Write Failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
+        }
       }
     }
 
     closeStagingModal();
-    showToast(`${createdExpenses.length} expense${createdExpenses.length > 1 ? 's' : ''} logged and synced to household.`);
+    const totalCount = depositItems.length + createdExpenses.length;
+    showToast(`${totalCount} item${totalCount > 1 ? 's' : ''} logged and synced to household.`);
   };
 
   const deleteExpense = async (id: string) => {
@@ -2401,6 +2561,16 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   const addExpense = async (expData: Omit<Expense, 'id'>) => {
+    if (isExpenseOneTimeDeposit(expData)) {
+      await addOneOffDeposit({
+        amount: Number(expData.amount),
+        description: expData.description?.trim() || 'One-off Deposit',
+        date: expData.date || new Date().toISOString().split('T')[0],
+        payerMemberId: expData.loggedByUserId,
+        notes: (expData.tags || []).join(', '),
+      });
+      return;
+    }
     const now = Date.now();
     let ts = expData.timestamp;
     if (!ts && expData.date) {
@@ -2979,21 +3149,30 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const householdRef = doc(db, 'households', household.id);
         batch.update(householdRef, sanitizeFirestorePayload(householdDocUpdates));
 
-        // Add activity feed item
+        // Add activity feed item - date set to the Sunday of the checked-in week
+        const checkinSunday = data.weekEndDate || formatLocalDate(new Date(data.weekStartDate));
         const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
-        batch.set(
-          feedRef,
-          sanitizeFirestorePayload({
-            id: `feed_${now}`,
-            type: 'checkin',
-            content: `Completed Weekly Check-In: Banked $${data.totalSaved} in savings pot and balanced category budgets.`,
-            authorId: user?.userId || 'usr_self',
-            authorName: user?.name || 'Member',
-            authorAvatar: user?.avatarUrl,
-            timestamp: now,
-            date: new Date(now).toISOString().split('T')[0],
-          })
-        );
+        const feedPayload: FeedItem = {
+          id: `feed_${now}`,
+          type: 'checkin',
+          content: `Completed Weekly Check-In: Banked $${data.totalSaved} in savings pot and balanced category budgets.`,
+          authorId: user?.userId || 'usr_self',
+          authorName: user?.name || 'Member',
+          authorAvatar: user?.avatarUrl,
+          timestamp: now,
+          date: checkinSunday,
+          linkedCheckInId: checkInId,
+          weekStartDate: data.weekStartDate,
+          weekEndDate: data.weekEndDate,
+          metadata: {
+            checkInId,
+            totalSaved: data.totalSaved,
+            totalSpent: data.totalSpent,
+            totalBudget: data.totalBudget,
+          },
+        };
+        batch.set(feedRef, sanitizeFirestorePayload(feedPayload));
+        setFeedItems((prev) => [feedPayload, ...prev]);
 
         await batch.commit();
       } catch (err) {
@@ -3007,7 +3186,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     showToast(`Weekly Check-In completed. $${data.totalSaved} banked into savings pot.`);
   };
 
-  // Delete Historical Weekly Check-In & State Reversal
+  // Delete Historical Weekly Check-In & State Reversal (Removes check-in and its feed items)
   const deleteWeeklyCheckIn = async (checkInId: string) => {
     if (!household) return;
 
@@ -3051,41 +3230,50 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     });
 
-    // 2. Optimistic local state update
+    // 2. Identify and remove any feed items associated with this deleted check-in
+    const feedItemsToDelete = feedItems.filter(
+      (it) =>
+        it.linkedCheckInId === checkInId ||
+        it.metadata?.checkInId === checkInId ||
+        (it.type === 'checkin' && (
+          it.id === `feed_${targetCheckIn.timestamp}` ||
+          it.date === targetCheckIn.weekEndDate ||
+          it.weekEndDate === targetCheckIn.weekEndDate ||
+          it.weekStartDate === targetCheckIn.weekStartDate ||
+          (it.content && it.content.includes(targetCheckIn.weekStartDate))
+        ))
+    );
+    const feedItemIdsToDelete = new Set(feedItemsToDelete.map((it) => it.id));
+
+    // 3. Optimistic local state update (Remove check-in, update overrides, delete feed items)
     setCheckIns((prev) => prev.filter((c) => c.id !== checkInId));
     setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: updatedWeeklyOverrides } : prev));
+    setFeedItems((prev) => prev.filter((it) => !feedItemIdsToDelete.has(it.id)));
 
-    showToast('Weekly check-in deleted and budget prorations reversed.', 'info');
+    showToast('Weekly check-in removed from feed and budget prorations reversed.', 'info');
 
-    // 3. Firestore Deletion and Overrides Clean-up via updateDoc with deleteField()
+    // 4. Firestore Deletion of checkin document and associated feed item documents
     if (isFirebaseConfigured && db && household?.id) {
       try {
+        const batch = writeBatch(db);
+
         // Delete checkin document
         const checkinRef = doc(db, 'households', household.id, 'checkins', checkInId);
-        await deleteDoc(checkinRef);
+        batch.delete(checkinRef);
+
+        // Delete associated feed items from Firestore
+        feedItemsToDelete.forEach((fi) => {
+          const feedDocRef = doc(db, 'households', household.id, 'feed', fi.id);
+          batch.delete(feedDocRef);
+        });
 
         // Update household document with cleaned weeklyOverrides
         if (Object.keys(householdDocUpdates).length > 0) {
           const householdRef = doc(db, 'households', household.id);
-          await updateDoc(householdRef, householdDocUpdates);
+          batch.update(householdRef, householdDocUpdates);
         }
 
-        // Add activity feed item for deletion
-        const now = Date.now();
-        const feedRef = doc(db, 'households', household.id, 'feed', `feed_${now}`);
-        await setDoc(
-          feedRef,
-          sanitizeFirestorePayload({
-            id: `feed_${now}`,
-            type: 'milestone',
-            title: 'Weekly Check-In Reverted',
-            description: `Weekly check-in for ${targetCheckIn.weekStartDate} – ${targetCheckIn.weekEndDate} was deleted. Budget prorations were reversed back to baseline.`,
-            timestamp: now,
-            authorId: user?.userId || 'usr_self',
-            authorName: user?.name || 'Household Member',
-            date: formatLocalDate(new Date(now)),
-          })
-        );
+        await batch.commit();
       } catch (err) {
         console.error('Firestore Check-In Deletion Failed:', err);
         handleFirestoreError(err, OperationType.DELETE, `households/${household.id}/checkins/${checkInId}`);
@@ -3235,7 +3423,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!household) return;
 
     const now = Date.now();
-    const todayStr = new Date().toISOString().split('T')[0];
+    // Monthly Reviews should display on the Sunday of the last day of the fiscal month
+    const fiscalMonthOfReset = getFiscalMonthForDate(new Date(now), household?.fiscalYearEndMonth || 12);
+    const lastDaySundayStr = formatLocalDate(fiscalMonthOfReset.endDate);
 
     // Monthly Reset: Roll-overs only happen within a month.
     // At the end of the month, the budget is reset to default baseline and weeklyOverrides is cleared.
@@ -3255,19 +3445,18 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         );
 
         const feedRef = doc(db, 'households', household.id, 'feed', `feed_month_reset_${now}`);
-        batch.set(
-          feedRef,
-          sanitizeFirestorePayload({
-            id: `feed_month_reset_${now}`,
-            type: 'monthEndReset',
-            content: `Month-End Reset: All category budgets refreshed for the new calendar month.`,
-            authorId: user?.userId || 'usr_self',
-            authorName: user?.name || 'Member',
-            authorAvatar: user?.avatarUrl,
-            timestamp: now,
-            date: todayStr,
-          })
-        );
+        const feedPayload: FeedItem = {
+          id: `feed_month_reset_${now}`,
+          type: 'monthEndReset',
+          content: `Month-End Reset: All category budgets refreshed for the new calendar month.`,
+          authorId: user?.userId || 'usr_self',
+          authorName: user?.name || 'Member',
+          authorAvatar: user?.avatarUrl,
+          timestamp: now,
+          date: lastDaySundayStr,
+        };
+        batch.set(feedRef, sanitizeFirestorePayload(feedPayload));
+        setFeedItems((prev) => [feedPayload, ...prev]);
 
         await batch.commit();
       } catch (err) {
@@ -3607,6 +3796,8 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         selectedLedgerCategoryId,
         setSelectedLedgerCategoryId,
         navigateToCategoryLedger,
+        ledgerDateRangeLabel,
+        setLedgerDateRangeLabel,
 
         addTransactionComment,
         addTransactionReaction,

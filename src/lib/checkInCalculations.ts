@@ -121,17 +121,18 @@ export function calculateCheckInStatus(
 
   // 3. Evaluate status:
   // - If completed for current week -> 'completed'
-  // - If previous week was not completed -> 'past-due' (Action Required!)
+  // - If there are past-due weeks that ended without completed check-in -> 'past-due' (Action Required!)
   // - If today is lastDayOfWeek (check-in day) and current week not completed -> 'pending' (Check-in Ready!)
   // - Otherwise -> 'upcoming'
+  const pastDueWeeks = getAllPastDueCheckInWeeks(household, checkIns, refDate);
+  const isPastDue = pastDueWeeks.length > 0;
+
   let status: 'pending' | 'past-due' | 'completed' | 'upcoming' = 'upcoming';
-  let isPastDue = false;
 
   if (currentWeekCheckIn) {
     status = 'completed';
-  } else if (!prevWeekCheckIn) {
+  } else if (isPastDue) {
     status = 'past-due';
-    isPastDue = true;
   } else if (isToday) {
     status = 'pending';
   } else {
@@ -140,17 +141,8 @@ export function calculateCheckInStatus(
 
   const remainingWeeksInMonth = getRemainingWeeksInMonth(refDate);
 
-  // Estimate missed weeks
-  let missedWeeksCount = 0;
-  if (isPastDue) {
-    if (household?.createdAt) {
-      const createdDate = new Date(household.createdAt);
-      const diffWeeks = Math.floor((refDate.getTime() - createdDate.getTime()) / (1000 * 60 * 60 * 24 * 7));
-      missedWeeksCount = Math.max(1, diffWeeks);
-    } else {
-      missedWeeksCount = 1;
-    }
-  }
+  // Missed weeks count based on pastDueWeeks
+  const missedWeeksCount = pastDueWeeks.length;
 
   return {
     status,

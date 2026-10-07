@@ -38,6 +38,16 @@ export const ShortcutBar: React.FC = () => {
     return getOldestPastDueCheckInWeek(household, checkIns);
   }, [household, checkIns]);
 
+  // Find the most recent check-in (completed or recorded)
+  const mostRecentCheckIn = React.useMemo(() => {
+    if (!checkIns || checkIns.length === 0) return null;
+    return [...checkIns].sort((a, b) => {
+      const bTime = new Date(b.weekEndDate || b.weekStartDate).getTime();
+      const aTime = new Date(a.weekEndDate || a.weekStartDate).getTime();
+      return bTime - aTime;
+    })[0];
+  }, [checkIns]);
+
   const weeklyPastDueStatus = React.useMemo(() => {
     if (!household) return { isPastDue: false, title: '', description: '', fiscalWeekLabel: '' };
     const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
@@ -138,66 +148,128 @@ export const ShortcutBar: React.FC = () => {
           {/* CASE 1: ONE SHORTCUT IS EXPANDED -> ALL OTHER ICONS ARE HIDDEN */}
           {/* ========================================================================= */}
 
-          {/* 1. EXPANDED WEEKLY PAST DUE BANNER */}
-          {expandedShortcut === 'weekly_review' && weeklyPastDueStatus.isPastDue && (
-            <div
-              id="dashboard-review-due-alert"
-              className="w-full bg-white border border-alert-red-400/90 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative overflow-hidden transition-all duration-200 animate-in fade-in zoom-in-95"
-            >
-              {/* Icon & Aligned Title + Past Due badge */}
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="relative shrink-0">
-                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-600 shadow-2xs">
-                    <CheckCircle className="w-5 h-5" />
+          {/* 1. EXPANDED WEEKLY PAST DUE / UP-TO-DATE BANNER */}
+          {expandedShortcut === 'weekly_review' && (
+            weeklyPastDueStatus.isPastDue ? (
+              <div
+                id="dashboard-review-due-alert"
+                className="w-full bg-white border border-alert-red-400/90 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative overflow-hidden transition-all duration-200 animate-in fade-in zoom-in-95"
+              >
+                {/* Icon & Aligned Title + Past Due badge */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="relative shrink-0">
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-600 shadow-2xs">
+                      <CheckCircle className="w-5 h-5" />
+                    </div>
+                    <span
+                      id="dashboard-review-notification-dot"
+                      className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-alert-red-600 rounded-full ring-2 ring-white"
+                      title="Actionable alert"
+                      aria-label="Actionable alert"
+                    />
                   </div>
-                  <span
-                    id="dashboard-review-notification-dot"
-                    className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-alert-red-600 rounded-full ring-2 ring-white"
-                    title="Actionable alert"
-                    aria-label="Actionable alert"
-                  />
+
+                  <div className="space-y-0.5 min-w-0">
+                    {weeklyPastDueStatus.description && (
+                      <p className="text-[11px] sm:text-xs text-brown-700 leading-normal max-w-2xl">
+                        {weeklyPastDueStatus.description}
+                      </p>
+                    )}
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm sm:text-base font-black text-dark-green-950 tracking-tight leading-none">
+                        {weeklyPastDueStatus.title}
+                      </h3>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-alert-red-700 bg-alert-red-100/90 border border-alert-red-300 px-2 py-0.5 rounded-full leading-none">
+                        {weeklyPastDueStatus.fiscalWeekLabel ? `${weeklyPastDueStatus.fiscalWeekLabel} Past Due` : 'Past Due'}
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
-                <div className="space-y-0.5 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h3 className="text-sm sm:text-base font-black text-dark-green-950 tracking-tight leading-none">
-                      {weeklyPastDueStatus.title}
-                    </h3>
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-alert-red-700 bg-alert-red-100/90 border border-alert-red-300 px-2 py-0.5 rounded-full leading-none">
-                      {weeklyPastDueStatus.fiscalWeekLabel ? `${weeklyPastDueStatus.fiscalWeekLabel} Past Due` : 'Past Due'}
-                    </span>
+                {/* CTA Button & Collapse Button */}
+                <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-1 sm:pt-0 pl-12 sm:pl-0">
+                  <button
+                    id="dashboard-start-review-cta"
+                    onClick={() => openWeeklyCheckInModal(oldestPastDueWeek ? oldestPastDueWeek.range : undefined)}
+                    className="flex items-center justify-start text-left gap-1.5 px-4 py-2 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                  >
+                    <span>Complete Check-In</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDismissWeeklyReview}
+                    className="p-1.5 sm:p-2 text-brown-600 hover:text-dark-green-950 hover:bg-beige-100 rounded-xl transition cursor-pointer ml-auto sm:ml-0"
+                    title="Collapse notification banner"
+                    aria-label="Collapse notification banner"
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div
+                id="dashboard-review-due-alert"
+                className="w-full bg-white border border-beige-300 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative overflow-hidden transition-all duration-200 animate-in fade-in zoom-in-95"
+              >
+                {/* Brown Icon & Message */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-beige-100 border border-beige-300 flex items-center justify-center text-brown-800 shadow-2xs shrink-0">
+                    <CheckCircle className="w-5 h-5 text-brown-800" />
                   </div>
 
-                  {weeklyPastDueStatus.description && (
+                  <div className="space-y-0.5 min-w-0">
                     <p className="text-[11px] sm:text-xs text-brown-700 leading-normal max-w-2xl">
-                      {weeklyPastDueStatus.description}
+                      There are currently no past due check-ins.
                     </p>
-                  )}
+
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm sm:text-base font-black text-dark-green-950 tracking-tight leading-none">
+                        Weekly Check-In
+                      </h3>
+                      <span className="text-[10px] font-extrabold uppercase tracking-wider text-brown-800 bg-beige-200/80 border border-beige-300 px-2 py-0.5 rounded-full leading-none">
+                        Up to Date
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Review Most Recent Check-In CTA & Collapse Button */}
+                <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-1 sm:pt-0 pl-12 sm:pl-0">
+                  <button
+                    id="dashboard-start-review-cta"
+                    type="button"
+                    onClick={() => {
+                      if (mostRecentCheckIn) {
+                        openWeeklyCheckInModal({
+                          startDate: new Date(mostRecentCheckIn.weekStartDate),
+                          endDate: new Date(mostRecentCheckIn.weekEndDate),
+                        });
+                      } else {
+                        openWeeklyCheckInModal();
+                      }
+                      setExpandedShortcut(null);
+                    }}
+                    className="flex items-center justify-start text-left gap-1.5 px-4 py-2 bg-brown-700 hover:bg-brown-800 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                  >
+                    <span>Review Most Recent Check-In</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleDismissWeeklyReview}
+                    className="p-1.5 sm:p-2 text-brown-600 hover:text-dark-green-950 hover:bg-beige-100 rounded-xl transition cursor-pointer ml-auto sm:ml-0"
+                    title="Collapse notification banner"
+                    aria-label="Collapse notification banner"
+                  >
+                    <ChevronUp className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-
-              {/* CTA Button & Collapse Button */}
-              <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-1 sm:pt-0 pl-12 sm:pl-0">
-                <button
-                  id="dashboard-start-review-cta"
-                  onClick={() => openWeeklyCheckInModal(oldestPastDueWeek ? oldestPastDueWeek.range : undefined)}
-                  className="flex items-center justify-start text-left gap-1.5 px-4 py-2 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
-                >
-                  <span>Complete Check-In</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDismissWeeklyReview}
-                  className="p-1.5 sm:p-2 text-brown-600 hover:text-dark-green-950 hover:bg-beige-100 rounded-xl transition cursor-pointer ml-auto sm:ml-0"
-                  title="Collapse notification banner"
-                  aria-label="Collapse notification banner"
-                >
-                  <ChevronUp className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+            )
           )}
 
           {/* 2. EXPANDED MONTHLY RETROSPECTIVE PAST DUE BANNER */}
@@ -221,6 +293,12 @@ export const ShortcutBar: React.FC = () => {
                 </div>
 
                 <div className="space-y-0.5 min-w-0">
+                  {monthlyPastDueStatus.description && (
+                    <p className="text-[11px] sm:text-xs text-brown-700 leading-normal max-w-2xl">
+                      {monthlyPastDueStatus.description}
+                    </p>
+                  )}
+
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-sm sm:text-base font-black text-dark-green-950 tracking-tight leading-none">
                       {monthlyPastDueStatus.title}
@@ -229,12 +307,6 @@ export const ShortcutBar: React.FC = () => {
                       Past Due
                     </span>
                   </div>
-
-                  {monthlyPastDueStatus.description && (
-                    <p className="text-[11px] sm:text-xs text-brown-700 leading-normal max-w-2xl">
-                      {monthlyPastDueStatus.description}
-                    </p>
-                  )}
                 </div>
               </div>
 
@@ -320,8 +392,8 @@ export const ShortcutBar: React.FC = () => {
           {/* ========================================================================= */}
           {expandedShortcut === null && (
             <div className="flex items-center gap-2.5 sm:gap-3 min-w-max">
-              {/* CONDITIONAL RED ICON 1: Weekly Check-In Past Due */}
-              {weeklyPastDueStatus.isPastDue && (
+              {/* WEEKLY CHECK-IN ICON: Red when past due, Brown when not past due */}
+              {weeklyPastDueStatus.isPastDue ? (
                 <button
                   type="button"
                   id="dashboard-review-due-alert"
@@ -337,6 +409,17 @@ export const ShortcutBar: React.FC = () => {
                     title="Actionable alert"
                     aria-label="Actionable alert"
                   />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  id="dashboard-review-due-alert"
+                  onClick={() => setExpandedShortcut('weekly_review')}
+                  className="group relative shrink-0 w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-beige-100 hover:bg-beige-200 border border-beige-300 flex items-center justify-center text-brown-800 shadow-2xs transition active:scale-95 cursor-pointer"
+                  title="Weekly Check-In (Click to expand)"
+                  aria-label="Weekly Check-In (Click to expand)"
+                >
+                  <CheckCircle className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-brown-800 group-hover:scale-110 transition-transform" />
                 </button>
               )}
 

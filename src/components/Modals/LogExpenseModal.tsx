@@ -1267,14 +1267,14 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
               </div>
 
               {/* Action Buttons: Save & Add Another + Review & Confirm */}
-              <div className="pt-3 border-t border-beige-200 flex flex-col sm:flex-row items-center gap-3">
+              <div className="pt-3 border-t border-beige-200 flex flex-col items-stretch gap-2.5">
                 <button
                   type="button"
                   id="btn-save-add-another"
                   onClick={handleSaveAndAddAnother}
-                  className="w-full sm:w-auto flex-1 py-3 px-4 rounded-2xl bg-beige-100 hover:bg-beige-200 border border-beige-300 text-dark-green-900 text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer"
+                  className="w-full py-3 px-4 rounded-2xl bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
                 >
-                  <Plus className="w-4 h-4 text-sage-700" />
+                  <Plus className="w-4 h-4 text-white" />
                   <span>Save & Add Another</span>
                 </button>
 
@@ -1282,9 +1282,9 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                   type="button"
                   id="btn-manual-proceed-staging"
                   onClick={handleManualProceedToStaging}
-                  className="w-full sm:w-auto flex-1 py-3 px-4 rounded-2xl bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
+                  className="w-full py-3 px-4 rounded-2xl bg-beige-100 hover:bg-beige-200 border border-beige-300 text-dark-green-900 text-xs font-extrabold flex items-center justify-center gap-2 transition cursor-pointer"
                 >
-                  <CheckCircle2 className="w-4 h-4" />
+                  <CheckCircle2 className="w-4 h-4 text-sage-700" />
                   <span>
                     {isOneTimeDeposit
                       ? getCompletedCheckInForDate(manualDate)
