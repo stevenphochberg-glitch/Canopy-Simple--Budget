@@ -625,21 +625,22 @@ export function calculateCategoryDecisions(
     };
   });
 
+    const round2 = (val: number) => Math.round((Number(val) || 0) * 100) / 100;
   const finalSavingsGoalMet = currentSavingsDeficit <= 0;
-  const totalSaved = totalSavedFromSurplus;
+  const totalSaved = round2(totalSavedFromSurplus);
 
   return {
     decisions,
-    baselineSavingsGoal,
-    effectiveSavingsGoal: availableSavingsGoal + totalSavedFromSurplus,
+    baselineSavingsGoal: round2(baselineSavingsGoal),
+    effectiveSavingsGoal: round2(availableSavingsGoal + totalSavedFromSurplus),
     isSavingsGoalMet: finalSavingsGoalMet,
     totalSaved,
-    totalSurplus,
-    totalDeficit,
-    totalSpent,
-    totalBudget,
-    totalSavingsDeducted,
-    billsTotalBudget,
-    billsTotalSpent,
+    totalSurplus: round2(totalSurplus),
+    totalDeficit: round2(totalDeficit),
+    totalSpent: round2(totalSpent),
+    totalBudget: round2(totalBudget),
+    totalSavingsDeducted: round2(totalSavingsDeducted),
+    billsTotalBudget: round2(billsTotalBudget),
+    billsTotalSpent: round2(billsTotalSpent),
   };
 }

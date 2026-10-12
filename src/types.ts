@@ -230,6 +230,10 @@ export interface Expense {
   targetGoalId?: string;
   comments?: TransactionComment[];
   reactions?: TransactionReaction[];
+  categoryName?: string;
+  categoryIcon?: string;
+  payerMemberId?: string;
+  splitRatio?: any;
 }
 
 export interface StagedExpense {
@@ -325,7 +329,7 @@ export interface MonthlyRetrospectiveData {
 
 export interface FeedItem {
   id: string;
-  type: 'transaction' | 'comment' | 'reaction' | 'checkin' | 'freshStart' | 'monthEndReset' | 'message' | 'savingsGoalAchieved' | 'milestone';
+  type: 'transaction' | 'comment' | 'reaction' | 'checkin' | 'freshStart' | 'monthEndReset' | 'message' | 'savingsGoalAchieved' | 'milestone' | 'member_leave' | 'member_join' | 'system';
   content: string;
   authorId: string;
   authorName: string;

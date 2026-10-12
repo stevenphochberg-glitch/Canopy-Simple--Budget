@@ -68,14 +68,61 @@ export function generateSyncCode(): string {
 }
 
 /**
- * Formats currency values
+ * Rounds a number to at most two decimal places (hundredths place).
+ */
+export function roundToHundredths(amount: number): number {
+  if (amount === undefined || amount === null || isNaN(Number(amount))) return 0;
+  return Math.round(Number(amount) * 100) / 100;
+}
+
+/**
+ * Ensures any monetary / dollar amount within a text string shows at most 2 decimal places (hundredths place).
+ * If a number was calculated to more than two decimal places (e.g. $160.71428571428572),
+ * it is rounded to the hundredths decimal place ($160.71).
+ */
+export function roundAmountsInText(text: string): string {
+  if (!text || typeof text !== 'string') return text || '';
+  // 1. Dollar amounts with currency symbol: $123.456789 -> $123.46
+  let res = text.replace(/([+-]?\$)([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/g, (fullMatch, prefix, numStr) => {
+    const rawVal = parseFloat(numStr.replace(/,/g, ''));
+    if (isNaN(rawVal)) return fullMatch;
+    const parts = numStr.split('.');
+    if (parts.length === 2 && parts[1].length > 2) {
+      const rounded = Math.round(rawVal * 100) / 100;
+      const formatted = rounded % 1 === 0
+        ? rounded.toLocaleString('en-US')
+        : rounded.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `${prefix}${formatted}`;
+    }
+    return fullMatch;
+  });
+
+  // 2. Numbers with >2 decimals following common financial keywords
+  // e.g. "Banked 160.71428571428572" -> "Banked 160.71"
+  res = res.replace(/(\b(?:banked|spent|saved|budget|total|totaling|deposit|deposited|expense|income|drawdown|balance)\s+)([0-9]+(?:\.[0-9]{3,}))/gi, (_m, word, numStr) => {
+    const rawVal = parseFloat(numStr);
+    if (isNaN(rawVal)) return _m;
+    const rounded = Math.round(rawVal * 100) / 100;
+    const formatted = rounded % 1 === 0 ? rounded.toString() : rounded.toFixed(2);
+    return `${word}${formatted}`;
+  });
+
+  return res;
+}
+
+/**
+ * Formats currency values: shows at most hundredths decimal place (maximum 2 fraction digits).
+ * If calculated to more than two decimal places, rounds to the hundredths place.
  */
 export function formatCurrency(amount: number): string {
+  const num = roundToHundredths(amount);
+  const hasCents = num % 1 !== 0;
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(amount || 0);
+    minimumFractionDigits: hasCents ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(num);
 }
 
 /**
@@ -687,6 +734,68 @@ export function getCategoryEffectiveWeeklyBudget(
     budget: baseline,
     baseline,
     isOverridden: false,
+  };
+}
+
+/**
+ * Resolves the accurate creation timestamp and local date string for a savings goal.
+ * Default Emergency Savings Fund aligns with account creation date.
+ * Goals created later on extract their embedded creation timestamp from goal.id (goal_<timestamp>_<random>).
+ */
+export function getSavingsGoalCreationTime(
+  goal: { id: string; createdAt?: string; timestamp?: number },
+  fallbackHouseholdCreatedAt?: string | number
+): { timestamp: number; date: string } {
+  // Emergency savings fund is default and aligns with account creation
+  if (goal.id.includes('emergency')) {
+    const hhTs = typeof fallbackHouseholdCreatedAt === 'number'
+      ? fallbackHouseholdCreatedAt
+      : fallbackHouseholdCreatedAt
+      ? new Date(fallbackHouseholdCreatedAt).getTime()
+      : 1788816023722;
+    const finalTs = isNaN(hhTs) || hhTs <= 0 ? 1788816023722 : hhTs;
+    return {
+      timestamp: finalTs,
+      date: formatLocalDate(new Date(finalTs)),
+    };
+  }
+
+  // 1. Explicit createdAt property
+  if (goal.createdAt) {
+    const parsed = new Date(goal.createdAt).getTime();
+    if (!isNaN(parsed) && parsed > 0) {
+      return {
+        timestamp: parsed,
+        date: goal.createdAt.includes('T') ? goal.createdAt.split('T')[0] : formatLocalDate(new Date(parsed)),
+      };
+    }
+  }
+
+  // 2. Extract timestamp embedded in ID: goal_<timestamp>_<random> or goal_<timestamp>
+  const match = goal.id.match(/^goal_(\d{10,13})/);
+  if (match) {
+    const ts = parseInt(match[1], 10);
+    if (!isNaN(ts) && ts > 0) {
+      return {
+        timestamp: ts,
+        date: formatLocalDate(new Date(ts)),
+      };
+    }
+  }
+
+  // 3. Fallback to goal.timestamp if present
+  if (goal.timestamp && typeof goal.timestamp === 'number' && goal.timestamp > 0) {
+    return {
+      timestamp: goal.timestamp,
+      date: formatLocalDate(new Date(goal.timestamp)),
+    };
+  }
+
+  // 4. Default fallback to current time
+  const now = Date.now();
+  return {
+    timestamp: now,
+    date: formatLocalDate(new Date(now)),
   };
 }
 

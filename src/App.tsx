@@ -191,7 +191,7 @@ const MainLayout: React.FC = () => {
       {toastMessage && (
         <div
           id="global-toast-notification"
-          className={`fixed bottom-16 sm:bottom-6 right-6 z-50 px-4 py-3 text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-4 duration-200 max-w-md ${
+          className={`fixed bottom-32 sm:bottom-20 right-6 z-50 px-4 py-3 text-xs font-bold rounded-2xl shadow-xl flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-4 duration-200 max-w-md ${
             toastType === 'error'
               ? 'bg-alert-red-900 text-white border border-alert-red-700/80 shadow-alert-red-950/40'
               : 'bg-dark-green-900 text-white border border-sage-700/60'

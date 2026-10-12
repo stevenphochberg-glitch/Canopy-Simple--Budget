@@ -604,7 +604,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
       </header>
 
       {/* Mobile Bottom Navigation Bar with Centrally Elevated Log Expense Button */}
-      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 bg-white/95 backdrop-blur-lg border-t border-beige-200 px-2 py-1.5 flex items-center justify-around shadow-lg">
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-30 h-14 bg-white/95 backdrop-blur-lg border-t border-beige-200 px-2 flex items-center justify-around shadow-lg">
         {/* Left items: Dashboard, Ledger */}
         <button
           id="mobile-nav-dashboard"

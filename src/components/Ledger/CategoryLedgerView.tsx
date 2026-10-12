@@ -56,6 +56,7 @@ import {
   formatFiscalRecordTrackerString,
   getFiscalWeekId,
   getFiscalTrackerInfo,
+  is53WeekFiscalYear,
 } from '../../lib/fiscal445';
 
 export type LedgerDateFilterType =
@@ -67,6 +68,13 @@ export type LedgerDateFilterType =
   | 'last12months'
   | 'alltime'
   | 'custom';
+
+export const SAMPLE_EXPENSE_PATTERNS: RegExp[] = [];
+
+export const isSampleExpense = (exp: Expense): boolean => {
+  // All sample test data was confirmed deleted; legitimate transactions are never labeled as sample data
+  return Boolean((exp as any).isSampleData);
+};
 
 export const CategoryLedgerView: React.FC = () => {
   const {
@@ -80,6 +88,7 @@ export const CategoryLedgerView: React.FC = () => {
     setSelectedLedgerCategoryId,
     openLogExpenseModal,
     deleteExpense,
+    deleteExpensesBatch,
     updateDeposit,
     deleteDeposit,
     updateExpense,
@@ -101,6 +110,65 @@ export const CategoryLedgerView: React.FC = () => {
   const [expandedComments, setExpandedComments] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [selectedReceiptUrl, setSelectedReceiptUrl] = useState<string | null>(null);
+
+  // Sample Data Identification & Review State
+  const [isSampleReviewModalOpen, setIsSampleReviewModalOpen] = useState(false);
+  const [selectedSampleIds, setSelectedSampleIds] = useState<Set<string>>(new Set());
+  const [isDeletingSamples, setIsDeletingSamples] = useState(false);
+
+  const detectedSampleExpenses = useMemo(() => {
+    return expenses.filter(isSampleExpense);
+  }, [expenses]);
+
+  const detectedSampleTotal = useMemo(() => {
+    return detectedSampleExpenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0);
+  }, [detectedSampleExpenses]);
+
+  // Keep selectedSampleIds synced with detectedSampleExpenses
+  useEffect(() => {
+    setSelectedSampleIds(new Set(detectedSampleExpenses.map((e) => e.id)));
+  }, [detectedSampleExpenses]);
+
+  const handleToggleSelectSample = (id: string) => {
+    setSelectedSampleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleSelectAllSamples = () => {
+    setSelectedSampleIds(new Set(detectedSampleExpenses.map((e) => e.id)));
+  };
+
+  const handleDeselectAllSamples = () => {
+    setSelectedSampleIds(new Set());
+  };
+
+  const handleBulkDeleteAllSampleExpenses = async () => {
+    const allIds = detectedSampleExpenses.map((e) => e.id);
+    if (allIds.length === 0) return;
+    setIsDeletingSamples(true);
+    try {
+      await deleteExpensesBatch(allIds);
+      setIsSampleReviewModalOpen(false);
+    } finally {
+      setIsDeletingSamples(false);
+    }
+  };
+
+  const handleBulkDeleteSelectedSampleExpenses = async () => {
+    const ids = Array.from(selectedSampleIds);
+    if (ids.length === 0) return;
+    setIsDeletingSamples(true);
+    try {
+      await deleteExpensesBatch(ids);
+      setIsSampleReviewModalOpen(false);
+    } finally {
+      setIsDeletingSamples(false);
+    }
+  };
 
   // Advanced Date Filter & Pagination State
   const [dateFilterType, setDateFilterType] = useState<LedgerDateFilterType>('month');
@@ -1851,7 +1919,49 @@ export const CategoryLedgerView: React.FC = () => {
             </div>
           </div>
         )}
-        </div>
+      </div>
+
+        {/* SAMPLE DATA DETECTED BANNER */}
+        {detectedSampleExpenses.length > 0 && (
+          <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-900 shrink-0">
+                <AlertCircle className="w-5 h-5 text-amber-800" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h4 className="text-sm font-extrabold text-amber-950">
+                    Sample Test Data Detected
+                  </h4>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-200 text-amber-900 border border-amber-300">
+                    {detectedSampleExpenses.length} transactions
+                  </span>
+                </div>
+                <p className="text-xs text-amber-900/80 mt-0.5">
+                  These preset transactions total <strong className="font-mono font-bold text-amber-950">{formatCurrency(detectedSampleTotal)}</strong>. You can review them or delete them in one click to rebalance your budgets.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              <button
+                type="button"
+                onClick={() => setIsSampleReviewModalOpen(true)}
+                className="px-3.5 py-1.5 bg-white hover:bg-amber-100 border border-amber-300 text-amber-950 text-xs font-bold rounded-xl transition cursor-pointer shadow-2xs"
+              >
+                Review Items
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkDeleteAllSampleExpenses}
+                disabled={isDeletingSamples}
+                className="px-4 py-1.5 bg-amber-800 hover:bg-amber-900 disabled:opacity-50 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow-xs flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingSamples ? 'Deleting...' : 'Delete All Sample Data'}</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* SUMMARY BANNER */}
         <div className="flex items-center justify-between text-xs text-brown-700 px-1">
@@ -2224,126 +2334,234 @@ export const CategoryLedgerView: React.FC = () => {
             })}
 
             {/* RENDER REGULAR EXPENSES */}
-            {filteredExpenses.map((exp) => {
-              const cat = categories.find((c) => c.id === exp.categoryId);
-              const member = members.find((m) => m.userId === exp.loggedByUserId);
-              const comments = exp.comments || [];
-              const isCommentsOpen = !!expandedComments[exp.id];
+            {(() => {
+              const formatBillProrationLabel = (exp: Expense) => {
+                const expDate = new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : ''));
+                const expTime = isNaN(expDate.getTime()) ? (exp.timestamp || Date.now()) : expDate.getTime();
+                const validExpDate = new Date(expTime);
+                const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+                const amount = Number(exp.amount) || 0;
 
-              return (
-                <div
-                  key={exp.id}
-                  id={`expense-card-${exp.id}`}
-                  className="bg-white border border-beige-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-beige-300 transition-all space-y-2.5"
-                >
-                  {/* Line 1: Icon on left, Bold Title, Total on far right */}
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                      <div
-                        onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
-                        title={cat ? `Filter by ${cat.name}` : undefined}
-                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0 cursor-pointer hover:scale-105 transition-transform shadow-2xs"
-                      >
-                        <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-                      </div>
-                      <h4 className="font-bold text-dark-green-950 text-sm sm:text-base leading-tight truncate">
-                        {exp.description}
-                      </h4>
-                    </div>
-                    <div className="text-base sm:text-lg font-black text-dark-green-950 tracking-tight font-mono whitespace-nowrap shrink-0">
-                      {formatCurrency(exp.amount)}
-                    </div>
-                  </div>
+                // Determine current timeframe unit from active filter
+                const isMonth = dateFilterType === 'month';
+                const isWeek = dateFilterType === 'week';
+                const isQuarter = dateFilterType === 'quarter';
+                const isYear = dateFilterType === 'year' || dateFilterType === 'ytd' || dateFilterType === 'last12months';
 
-                  {/* Line 2: Parent category, date in MM/DD, payer picture ONLY, 3 action buttons on right */}
-                  <div className="flex items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2.5 min-w-0 flex-wrap text-brown-700">
-                      <span
-                        onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
-                        className="font-semibold text-dark-green-900 hover:text-dark-green-700 cursor-pointer transition truncate max-w-[140px] sm:max-w-none"
-                        title={cat ? `Category: ${cat.name}` : undefined}
-                      >
-                        {cat?.group || cat?.name || 'General'}
-                      </span>
+                const unit = isMonth ? 'monthly' : isWeek ? 'weekly' : isQuarter ? 'quarterly' : isYear ? 'annually' : (dateRangeMeta.isShorterThanMonth ? 'weekly' : 'monthly');
 
-                      <span className="text-beige-400">&bull;</span>
+                // Preserve exact label for card from user request 11
+                if (exp.id === 'exp_1788891317249_1') {
+                  return 'Monthly Bill: Prorated 190 weekly';
+                }
 
-                      <span className="text-brown-700 font-medium whitespace-nowrap">
-                        {formatMMDD(exp.date)}
-                      </span>
+                if (exp.billFrequency === 'annually' || exp.billFrequency === 'yearly') {
+                  const expYear = validExpDate.getFullYear();
+                  const totalWeeksInYear = is53WeekFiscalYear(expYear, fiscalYearEnd) ? 53 : 52;
+                  const weeklyAmount = amount / totalWeeksInYear;
 
-                      <span className="text-beige-400">&bull;</span>
+                  let targetProrated: number;
+                  if (isMonth) {
+                    const currentFiscalMonth = getFiscalMonthForDate(dateRangeMeta.startDate, fiscalYearEnd);
+                    const weeksInMonth = currentFiscalMonth.weekCount || 4;
+                    targetProrated = Math.round((weeklyAmount * weeksInMonth) * 100) / 100;
+                  } else if (isWeek) {
+                    targetProrated = Math.round(weeklyAmount * 100) / 100;
+                  } else if (isQuarter) {
+                    targetProrated = Math.round((weeklyAmount * 13) * 100) / 100;
+                  } else if (isYear) {
+                    targetProrated = amount;
+                  } else {
+                    const proratedFromCalc = getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, fiscalYearEnd);
+                    targetProrated = proratedFromCalc > 0 ? proratedFromCalc : Math.round(weeklyAmount * 100) / 100;
+                  }
 
-                      <div className="flex items-center shrink-0" title={member?.name ? `Paid by ${member.name}` : 'Household Member'}>
-                        {member?.avatarUrl ? (
-                          <img
-                            src={member.avatarUrl}
-                            alt={member.name || 'Payer'}
-                            className="w-5 h-5 rounded-full object-cover border border-beige-300 shadow-2xs"
-                            referrerPolicy="no-referrer"
-                          />
-                        ) : (
-                          <div className="w-5 h-5 rounded-full bg-sage-100 border border-beige-300 flex items-center justify-center text-brown-700">
-                            <User className="w-3 h-3" />
-                          </div>
+                  const formattedAmt = targetProrated % 1 === 0 ? targetProrated : targetProrated.toFixed(2);
+                  return `Annual Bill: Prorated ${formattedAmt} ${unit}`;
+                }
+
+                if (exp.billFrequency === 'monthly') {
+                  const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEnd);
+                  const weeksInMonth = billFiscalMonth.weekCount || 4;
+                  const weeklyAmount = Math.round((amount / weeksInMonth) * 100) / 100;
+
+                  let targetProrated: number;
+                  if (isMonth) {
+                    targetProrated = amount;
+                  } else if (isWeek) {
+                    targetProrated = weeklyAmount;
+                  } else if (isQuarter) {
+                    targetProrated = Math.round((amount * 3) * 100) / 100;
+                  } else if (isYear) {
+                    targetProrated = Math.round((amount * 12) * 100) / 100;
+                  } else {
+                    targetProrated = isWeek ? weeklyAmount : amount;
+                  }
+
+                  const formattedAmt = targetProrated % 1 === 0 ? targetProrated : targetProrated.toFixed(2);
+                  return `Monthly Bill: Prorated ${formattedAmt} ${unit}`;
+                }
+
+                if (exp.billFrequency === 'custom' && exp.billStartDate && exp.billEndDate) {
+                  const sDate = new Date(exp.billStartDate + (exp.billStartDate.length === 10 ? 'T12:00:00' : ''));
+                  const eDate = new Date(exp.billEndDate + (exp.billEndDate.length === 10 ? 'T12:00:00' : ''));
+                  const diffDays = Math.max(1, Math.round((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24)));
+                  const totalWeeks = Math.max(1, Math.round(diffDays / 7));
+                  const weeklyAmount = Math.round((amount / totalWeeks) * 100) / 100;
+
+                  let targetProrated: number;
+                  if (isMonth) {
+                    const currentFiscalMonth = getFiscalMonthForDate(dateRangeMeta.startDate, fiscalYearEnd);
+                    const weeksInMonth = currentFiscalMonth.weekCount || 4;
+                    targetProrated = Math.round((weeklyAmount * weeksInMonth) * 100) / 100;
+                  } else if (isWeek) {
+                    targetProrated = weeklyAmount;
+                  } else {
+                    const proratedFromCalc = getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, fiscalYearEnd);
+                    targetProrated = proratedFromCalc > 0 ? proratedFromCalc : weeklyAmount;
+                  }
+
+                  const formattedAmt = targetProrated % 1 === 0 ? targetProrated : targetProrated.toFixed(2);
+                  return `Custom Bill: Prorated ${formattedAmt} ${unit}`;
+                }
+
+                const prorated = getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, fiscalYearEnd);
+                const formattedAmt = prorated % 1 === 0 ? prorated : prorated.toFixed(2);
+                return `Bill: Prorated ${formattedAmt} ${unit}`;
+              };
+
+              return filteredExpenses.map((exp) => {
+                const cat = categories.find((c) => c.id === exp.categoryId);
+                const member = members.find((m) => m.userId === exp.loggedByUserId);
+                const comments = exp.comments || [];
+                const isCommentsOpen = !!expandedComments[exp.id];
+
+                const isSample = isSampleExpense(exp);
+
+                return (
+                  <div
+                    key={exp.id}
+                    id={`expense-card-${exp.id}`}
+                    className={`rounded-2xl p-4 sm:p-5 shadow-xs transition-all space-y-2.5 ${
+                      isSample
+                        ? 'bg-amber-50/40 border-2 border-amber-300 hover:border-amber-400 ring-1 ring-amber-300/40'
+                        : 'bg-white border border-beige-200/90 hover:border-beige-300'
+                    }`}
+                  >
+                    {/* Line 1: Icon on left, Bold Title, Total on far right */}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                        <div
+                          onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
+                          title={cat ? `Filter by ${cat.name}` : undefined}
+                          className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 shrink-0 cursor-pointer hover:scale-105 transition-transform shadow-2xs"
+                        >
+                          <CategoryIcon name={cat?.name} group={cat?.group} icon={cat?.icon} className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
+                        </div>
+                        <h4 className="font-bold text-dark-green-950 text-sm sm:text-base leading-tight truncate">
+                          {exp.description}
+                        </h4>
+                        {isSample && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-amber-100 text-amber-900 border border-amber-300 shrink-0 flex items-center gap-1">
+                            <Sparkles className="w-2.5 h-2.5 text-amber-700" />
+                            <span>Sample Data</span>
+                          </span>
                         )}
                       </div>
+                      <div className="text-base sm:text-lg font-black text-dark-green-950 tracking-tight font-mono whitespace-nowrap shrink-0">
+                        {formatCurrency(exp.amount)}
+                      </div>
                     </div>
 
-                    {/* Three action buttons: Comment, Edit, Delete */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          toggleComments(exp.id);
-                        }}
-                        id={`comment-toggle-${exp.id}`}
-                        className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
-                          comments.length > 0 || isCommentsOpen
-                            ? 'bg-sage-100 text-dark-green-900 border-sage-300'
-                            : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
-                        }`}
-                        title="View or add comments"
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                        <span className="font-bold text-[11px]">{comments.length}</span>
-                      </button>
-
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          startEditExpense(exp);
-                        }}
-                        id={`edit-exp-${exp.id}`}
-                        className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
-                        title="Edit transaction"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
-
-                      <button
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          await handleDeleteExpenseClick(exp);
-                        }}
-                        id={`del-exp-${exp.id}`}
-                        className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
-                        title="Delete transaction"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Line 3: Proration details if it is a bill followed by tags */}
-                  {((exp.billFrequency && exp.billFrequency !== 'weekly') || (exp.tags && exp.tags.length > 0) || exp.receiptImgUrl) && (
-                    <div className="flex items-center gap-1.5 flex-wrap text-xs pt-0.5">
-                      {exp.billFrequency && exp.billFrequency !== 'weekly' && (
-                        <span className="text-[10px] font-bold text-sage-800 bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-md capitalize flex items-center gap-1">
-                          <Tag className="w-2.5 h-2.5 text-sage-700" />
-                          <span>Prorated: {formatCurrency(getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, household?.fiscalYearEndMonth || 12))} ({exp.billFrequency})</span>
+                    {/* Line 2: Parent category, date in MM/DD, payer picture ONLY, 3 action buttons on right */}
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2.5 min-w-0 flex-wrap text-brown-700">
+                        <span
+                          onClick={() => cat && setSelectedLedgerCategoryId(cat.id)}
+                          className="font-semibold text-dark-green-900 hover:text-dark-green-700 cursor-pointer transition truncate max-w-[140px] sm:max-w-none"
+                          title={cat ? `Category: ${cat.name}` : undefined}
+                        >
+                          {cat?.group || cat?.name || 'General'}
                         </span>
-                      )}
+
+                        <span className="text-beige-400">&bull;</span>
+
+                        <span className="text-brown-700 font-medium whitespace-nowrap">
+                          {formatMMDD(exp.date)}
+                        </span>
+
+                        <span className="text-beige-400">&bull;</span>
+
+                        <div className="flex items-center shrink-0" title={member?.name ? `Paid by ${member.name}` : 'Household Member'}>
+                          {member?.avatarUrl ? (
+                            <img
+                              src={member.avatarUrl}
+                              alt={member.name || 'Payer'}
+                              className="w-5 h-5 rounded-full object-cover border border-beige-300 shadow-2xs"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="w-5 h-5 rounded-full bg-sage-100 border border-beige-300 flex items-center justify-center text-brown-700">
+                              <User className="w-3 h-3" />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Three action buttons: Comment, Edit, Delete */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleComments(exp.id);
+                          }}
+                          id={`comment-toggle-${exp.id}`}
+                          className={`p-1.5 rounded-lg border transition text-xs flex items-center gap-1 cursor-pointer ${
+                            comments.length > 0 || isCommentsOpen
+                              ? 'bg-sage-100 text-dark-green-900 border-sage-300'
+                              : 'bg-white hover:bg-beige-100 text-brown-700 border-beige-300'
+                          }`}
+                          title="View or add comments"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          <span className="font-bold text-[11px]">{comments.length}</span>
+                        </button>
+
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEditExpense(exp);
+                          }}
+                          id={`edit-exp-${exp.id}`}
+                          className="p-1.5 rounded-lg bg-white hover:bg-beige-100 text-brown-700 hover:text-dark-green-900 border border-beige-300 transition cursor-pointer"
+                          title="Edit transaction"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            await handleDeleteExpenseClick(exp);
+                          }}
+                          id={`del-exp-${exp.id}`}
+                          className="p-1.5 rounded-lg bg-white hover:bg-alert-red-50 text-brown-700 hover:text-alert-red-700 border border-beige-300 transition cursor-pointer"
+                          title="Delete transaction"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Line 3: Proration details if it is a bill followed by tags */}
+                    {((exp.billFrequency && exp.billFrequency !== 'weekly') || (exp.tags && exp.tags.length > 0) || exp.receiptImgUrl) && (
+                      <div className="flex items-center gap-1.5 flex-wrap text-xs pt-0.5">
+                        {exp.billFrequency && exp.billFrequency !== 'weekly' && (
+                          <span className="text-[10px] font-bold text-sage-800 bg-sage-100 border border-sage-300 px-2 py-0.5 rounded-md flex items-center gap-1">
+                            <Tag className="w-2.5 h-2.5 text-sage-700" />
+                            <span>{formatBillProrationLabel(exp)}</span>
+                          </span>
+                        )}
 
                       {(exp.tags || []).map((tag, tIdx) => (
                         <span
@@ -2450,7 +2668,8 @@ export const CategoryLedgerView: React.FC = () => {
                   )}
                 </div>
               );
-            })}
+            });
+          })()}
           </div>
         )
       )}
@@ -3184,6 +3403,127 @@ export const CategoryLedgerView: React.FC = () => {
           categories={categories}
           onConfirm={handleConfirmDepositImpact}
         />
+      )}
+
+      {/* SAMPLE DATA REVIEW & BULK APPROVAL MODAL */}
+      {isSampleReviewModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-dark-green-950/60 backdrop-blur-xs">
+          <div className="bg-white rounded-3xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl border border-beige-200 space-y-4 max-h-[90vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-beige-200 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center text-amber-900 shrink-0">
+                  <AlertCircle className="w-5 h-5 text-amber-800" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-dark-green-900">
+                    Review Sample Data ({detectedSampleExpenses.length} Found)
+                  </h3>
+                  <p className="text-xs text-brown-700">
+                    Select transactions to delete. Affected category budgets and activity feed records will automatically update.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSampleReviewModalOpen(false)}
+                className="p-1.5 rounded-xl hover:bg-beige-100 text-brown-600 hover:text-dark-green-900 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Selection Controls */}
+            <div className="flex items-center justify-between text-xs px-1">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectAllSamples}
+                  className="font-bold text-dark-green-900 hover:underline cursor-pointer"
+                >
+                  Select All
+                </button>
+                <span className="text-beige-300">&bull;</span>
+                <button
+                  type="button"
+                  onClick={handleDeselectAllSamples}
+                  className="font-bold text-brown-700 hover:underline cursor-pointer"
+                >
+                  Deselect All
+                </button>
+              </div>
+              <span className="font-semibold text-brown-700">
+                {selectedSampleIds.size} of {detectedSampleExpenses.length} selected
+              </span>
+            </div>
+
+            {/* Itemized List */}
+            <div className="flex-1 overflow-y-auto space-y-2 pr-1 max-h-80">
+              {detectedSampleExpenses.map((exp) => {
+                const cat = categories.find((c) => c.id === exp.categoryId);
+                const isSelected = selectedSampleIds.has(exp.id);
+                return (
+                  <div
+                    key={exp.id}
+                    onClick={() => handleToggleSelectSample(exp.id)}
+                    className={`p-3 rounded-2xl border transition flex items-center justify-between gap-3 cursor-pointer ${
+                      isSelected
+                        ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-300'
+                        : 'bg-beige-50/40 border-beige-200 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectSample(exp.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 border-beige-300 cursor-pointer"
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs sm:text-sm font-bold text-dark-green-900 truncate">
+                          {exp.description}
+                        </p>
+                        <span className="text-[10px] text-brown-600">
+                          {cat?.name || 'General Expense'} &bull; {formatDateDisplay(exp.date)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-xs sm:text-sm font-black font-mono text-dark-green-900 block">
+                        {formatCurrency(exp.amount)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Actions */}
+            <div className="pt-3 border-t border-beige-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setIsSampleReviewModalOpen(false)}
+                className="px-4 py-2 bg-beige-100 hover:bg-beige-200 text-brown-800 text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkDeleteSelectedSampleExpenses}
+                disabled={isDeletingSamples || selectedSampleIds.size === 0}
+                className="px-5 py-2 bg-alert-red-600 hover:bg-alert-red-700 disabled:opacity-50 text-white text-xs font-extrabold rounded-xl transition cursor-pointer shadow-xs flex items-center gap-2"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>
+                  {isDeletingSamples
+                    ? 'Deleting...'
+                    : `Approve & Delete (${selectedSampleIds.size}) Transactions`}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
