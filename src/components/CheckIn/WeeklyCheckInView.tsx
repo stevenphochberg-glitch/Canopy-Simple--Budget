@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange, getCategoryEffectiveWeeklyBudget, getWeekId } from '../../lib/calculations';
-import { calculateCheckInStatus } from '../../lib/checkInCalculations';
+import { calculateCheckInStatus, getOldestPastDueCheckInWeek, getPrecedingUncompletedMonthReview } from '../../lib/checkInCalculations';
 import { formatFiscalRecordTrackerString } from '../../lib/fiscal445';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { CheckIn } from '../../types';
@@ -12,6 +12,7 @@ import {
   AlertCircle,
   Sparkles,
   Calendar,
+  CalendarClock,
   ArrowRight,
   RotateCcw,
   Shield,
@@ -63,6 +64,14 @@ export const WeeklyCheckInView: React.FC = () => {
   const statusInfo = useMemo(() => {
     return calculateCheckInStatus(household, checkIns, expenses);
   }, [household, checkIns, expenses]);
+
+  const oldestPastDueWeek = useMemo(() => {
+    return getOldestPastDueCheckInWeek(household, checkIns, new Date(), expenses);
+  }, [household, checkIns, expenses]);
+
+  const precedingUncompletedMonth = useMemo(() => {
+    return getPrecedingUncompletedMonthReview(statusInfo.activeWeekRange, household, checkIns, expenses);
+  }, [statusInfo.activeWeekRange, household, checkIns, expenses]);
 
   const {
     status,
@@ -188,16 +197,35 @@ export const WeeklyCheckInView: React.FC = () => {
           </button>
 
           <button
-            onClick={() => openWeeklyCheckInModal()}
+            onClick={() => {
+              if (precedingUncompletedMonth) {
+                showToast(
+                  `You must complete the ${precedingUncompletedMonth.monthName} monthly review before completing weekly check-ins of future months.`,
+                  'error'
+                );
+                openMonthlyRetroModal(precedingUncompletedMonth);
+                return;
+              }
+              openWeeklyCheckInModal(isPastDue && oldestPastDueWeek ? oldestPastDueWeek.range : undefined);
+            }}
             className={`flex items-center gap-2 px-5 py-2.5 text-xs sm:text-sm font-extrabold rounded-2xl shadow-sm transition active:scale-95 cursor-pointer ${
-              isPastDue
+              precedingUncompletedMonth
+                ? 'bg-beige-200 text-dark-grey-600 border border-beige-300'
+                : isPastDue
                 ? 'bg-alert-red-600 hover:bg-alert-red-700 text-white animate-pulse'
                 : 'bg-dark-green-800 hover:bg-dark-green-900 text-white'
             }`}
+            title={
+              precedingUncompletedMonth
+                ? `You must complete the ${precedingUncompletedMonth.monthName} monthly review before checking in future months.`
+                : undefined
+            }
           >
             <Clock className="w-4 h-4" />
             <span>
-              {isPastDue
+              {precedingUncompletedMonth
+                ? `Locked: ${precedingUncompletedMonth.monthName} Review Due`
+                : isPastDue
                 ? 'Complete Past-Due Check-In'
                 : isLastDayOfWeek || status === 'pending'
                 ? 'Weekly Check-in Ready'
@@ -206,6 +234,44 @@ export const WeeklyCheckInView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Preceding Uncompleted Monthly Review Required Banner */}
+      {precedingUncompletedMonth && (
+        <div
+          id="checkin-view-preceding-month-review-alert"
+          className="bg-alert-red-50 border-2 border-alert-red-300 rounded-3xl p-5 sm:p-6 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in"
+        >
+          <div className="flex items-start gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-alert-red-600 text-white flex items-center justify-center flex-shrink-0 shadow-xs">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-black uppercase tracking-wider bg-alert-red-200 text-alert-red-900 px-2 py-0.5 rounded-full">
+                  Prerequisite Required
+                </span>
+                <span className="text-xs font-bold text-alert-red-800">
+                  {precedingUncompletedMonth.monthName} Monthly Review Pending
+                </span>
+              </div>
+              <h3 className="text-lg font-black text-alert-red-950">
+                Complete {precedingUncompletedMonth.monthName} Monthly Review First
+              </h3>
+              <p className="text-xs text-alert-red-900 leading-relaxed max-w-xl">
+                All weekly check-ins for {precedingUncompletedMonth.monthName} are completed. You must complete the {precedingUncompletedMonth.monthName} monthly review before completing weekly check-ins of future months.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => openMonthlyRetroModal(precedingUncompletedMonth)}
+            className="flex items-center gap-1.5 px-5 py-3 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs sm:text-sm font-extrabold rounded-2xl shadow-xs transition active:scale-95 cursor-pointer shrink-0"
+          >
+            <CalendarClock className="w-4 h-4" />
+            <span>Complete {precedingUncompletedMonth.monthName} Review</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Main Status Hero Banner */}
       {isPastDue ? (
@@ -243,7 +309,7 @@ export const WeeklyCheckInView: React.FC = () => {
               </button>
 
               <button
-                onClick={() => openWeeklyCheckInModal()}
+                onClick={() => openWeeklyCheckInModal(oldestPastDueWeek ? oldestPastDueWeek.range : undefined)}
                 className="px-5 py-2.5 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-2xl shadow-sm transition cursor-pointer"
               >
                 Complete Check-In Now

@@ -468,20 +468,27 @@ export function getProratedExpenseAmount(
   const amount = Number(exp.amount) || 0;
   if (amount <= 0) return 0;
 
-  // If no billFrequency or weekly bill, use standard date range check
-  if (!exp.billFrequency || exp.billFrequency === 'weekly') {
-    return isExpenseInDateRange(exp, start, end) ? amount : 0;
-  }
-
   const expDate = new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : ''));
   const expTime = isNaN(expDate.getTime()) ? (exp.timestamp || Date.now()) : expDate.getTime();
   const validExpDate = new Date(expTime);
 
+  // If a target fiscal month was chosen (for Bills), use that fiscal month directly.
+  // Otherwise, default to the fiscal month derived from the transaction date.
+  const hasChosenFiscalMonth = !!exp.billFiscalMonthStart || !!exp.billFiscalMonth;
+  const targetFiscalMonthDate = exp.billFiscalMonthStart
+    ? new Date(exp.billFiscalMonthStart + (exp.billFiscalMonthStart.length === 10 ? 'T12:00:00' : ''))
+    : validExpDate;
+  const billFiscalMonth = getFiscalMonthForDate(targetFiscalMonthDate, fiscalYearEndMonth);
+
+  // If no billFrequency and no chosen fiscal month, or weekly bill, use standard date range check
+  if (!hasChosenFiscalMonth && (!exp.billFrequency || exp.billFrequency === 'weekly')) {
+    return isExpenseInDateRange(exp, start, end) ? amount : 0;
+  }
+
   const diffDays = Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24));
   const isWeeklyView = diffDays <= 9;
 
-  if (exp.billFrequency === 'monthly') {
-    const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEndMonth);
+  if (exp.billFrequency === 'monthly' || (hasChosenFiscalMonth && (!exp.billFrequency || exp.billFrequency === 'weekly'))) {
     const mStart = billFiscalMonth.startDate.getTime();
     const mEnd = billFiscalMonth.endDate.getTime();
 
@@ -501,20 +508,21 @@ export function getProratedExpenseAmount(
   }
 
   if (exp.billFrequency === 'annually' || exp.billFrequency === 'yearly') {
-    const expYear = validExpDate.getFullYear();
+    const expYear = billFiscalMonth.fiscalYear || billFiscalMonth.startDate.getFullYear();
     const totalWeeksInYear = is53WeekFiscalYear(expYear, fiscalYearEndMonth) ? 53 : 52;
     const weeklyAmount = amount / totalWeeksInYear;
 
-    // Active timeframe: totalWeeksInYear weeks starting from the fiscal week of validExpDate
-    const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEndMonth);
+    // Active timeframe: totalWeeksInYear weeks starting from the fiscal week of the chosen bill fiscal month
     const daysFromMonthStart = Math.max(
       0,
       Math.floor((validExpDate.getTime() - billFiscalMonth.startDate.getTime()) / (1000 * 60 * 60 * 24))
     );
-    const weekOfFiscalMonth = Math.min(
-      billFiscalMonth.weekCount,
-      Math.floor(daysFromMonthStart / 7) + 1
-    );
+    const weekOfFiscalMonth = hasChosenFiscalMonth
+      ? 1
+      : Math.min(
+          billFiscalMonth.weekCount,
+          Math.floor(daysFromMonthStart / 7) + 1
+        );
     const weekStartTime = billFiscalMonth.startDate.getTime() + (weekOfFiscalMonth - 1) * 7 * 24 * 60 * 60 * 1000;
     const activeStartTime = weekStartTime;
     const activeEndTime = activeStartTime + totalWeeksInYear * 7 * 24 * 60 * 60 * 1000 - 1;

@@ -463,6 +463,13 @@ export const ReviewAndConfirmModal: React.FC = () => {
                       </span>
                     </div>
 
+                    {item.billFiscalMonthName && (
+                      <div className="flex items-center gap-1.5 text-[11px] text-brown-800 bg-beige-100/90 px-2.5 py-1.5 rounded-lg font-medium">
+                        <Calendar className="w-3 h-3 text-sage-700" />
+                        <span>Allocated Fiscal Month: <strong>{item.billFiscalMonthName}</strong></span>
+                      </div>
+                    )}
+
                     <select
                       value={item.billFrequency || 'monthly'}
                       onChange={(e) =>

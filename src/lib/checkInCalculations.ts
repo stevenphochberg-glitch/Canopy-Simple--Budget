@@ -7,6 +7,8 @@ import {
   CategoryRolloverDecision,
   DateRange,
   DayOfWeek,
+  FiscalMonth,
+  FeedItem,
 } from '../types';
 import {
   getWeekRange,
@@ -16,7 +18,13 @@ import {
   getCategoryEffectiveWeeklyBudget,
   getWeekId,
 } from './calculations';
-import { getFiscalWeekId, getFiscalTrackerInfo, getFiscalYearStartMonday } from './fiscal445';
+import {
+  getFiscalWeekId,
+  getFiscalTrackerInfo,
+  getFiscalYearStartMonday,
+  getFiscalMonthForDate,
+  getFiscalYearMonths,
+} from './fiscal445';
 
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Sunday',
@@ -124,7 +132,7 @@ export function calculateCheckInStatus(
   // - If there are past-due weeks that ended without completed check-in -> 'past-due' (Action Required!)
   // - If today is lastDayOfWeek (check-in day) and current week not completed -> 'pending' (Check-in Ready!)
   // - Otherwise -> 'upcoming'
-  const pastDueWeeks = getAllPastDueCheckInWeeks(household, checkIns, refDate);
+  const pastDueWeeks = getAllPastDueCheckInWeeks(household, checkIns, refDate, expenses);
   const isPastDue = pastDueWeeks.length > 0;
 
   let status: 'pending' | 'past-due' | 'completed' | 'upcoming' = 'upcoming';
@@ -171,29 +179,69 @@ export interface PastDueWeekInfo {
  * Returns all past fiscal weeks that have ended but do not have a completed check-in,
  * ordered chronologically (oldest first).
  */
+/**
+ * Returns all past fiscal weeks that have ended but do not have a completed check-in,
+ * ordered chronologically (oldest first).
+ *
+ * CRITICAL SEQUENTIAL ENFORCEMENT:
+ * Preceding weeks of the fiscal month must always have completed check-ins before future weeks.
+ * Search starts at Week 1 of the earliest active fiscal month (derived from household creation,
+ * recorded expenses, or check-ins).
+ */
 export function getAllPastDueCheckInWeeks(
   household: Household | null,
   checkIns: CheckIn[],
-  refDate: Date = new Date()
+  refDate: Date = new Date(),
+  expenses?: Expense[]
 ): PastDueWeekInfo[] {
   if (!household) return [];
   const firstDay = household.firstDayOfWeek || 'Monday';
   const fiscalYearEndMonth = household.fiscalYearEndMonth || 12;
 
   // Anchor: find start of search range.
-  // Prioritize the household's creation date so we only search for past-due check-ins that occurred
-  // since the creation date of the household.
-  let searchStart: Date;
+  // 1. Determine earliest activity timestamp among createdAt, expenses, and check-ins.
+  let earliestActivityDate: Date | null = null;
   if (household.createdAt) {
     const created = new Date(household.createdAt);
     if (!isNaN(created.getTime())) {
-      searchStart = new Date(created);
-    } else {
-      searchStart = getFiscalYearStartMonday(refDate.getFullYear(), fiscalYearEndMonth);
+      earliestActivityDate = created;
     }
-  } else {
-    searchStart = getFiscalYearStartMonday(refDate.getFullYear(), fiscalYearEndMonth);
   }
+
+  if (expenses && expenses.length > 0) {
+    expenses.forEach((e) => {
+      const d = e.date
+        ? new Date(e.date + (e.date.length === 10 ? 'T12:00:00' : ''))
+        : new Date(e.timestamp);
+      if (!isNaN(d.getTime())) {
+        if (!earliestActivityDate || d < earliestActivityDate) {
+          earliestActivityDate = d;
+        }
+      }
+    });
+  }
+
+  if (checkIns && checkIns.length > 0) {
+    checkIns.forEach((c) => {
+      const d = c.weekStartDate
+        ? new Date(c.weekStartDate + (c.weekStartDate.length === 10 ? 'T12:00:00' : ''))
+        : new Date(c.timestamp || 0);
+      if (!isNaN(d.getTime()) && d.getTime() > 0) {
+        if (!earliestActivityDate || d < earliestActivityDate) {
+          earliestActivityDate = d;
+        }
+      }
+    });
+  }
+
+  if (!earliestActivityDate) {
+    earliestActivityDate = getFiscalYearStartMonday(refDate.getFullYear(), fiscalYearEndMonth);
+  }
+
+  // Preceding weeks of the month must always be evaluated before future weeks:
+  // Align searchStart to Week 1 of the fiscal month containing earliestActivityDate.
+  const earliestFiscalMonth = getFiscalMonthForDate(earliestActivityDate, fiscalYearEndMonth);
+  const searchStart = new Date(earliestFiscalMonth.startDate);
 
   // Align searchStart to firstDayOfWeek
   const initialWeek = getWeekRange(searchStart, firstDay, 0);
@@ -247,10 +295,215 @@ export function getAllPastDueCheckInWeeks(
 export function getOldestPastDueCheckInWeek(
   household: Household | null,
   checkIns: CheckIn[],
-  refDate: Date = new Date()
+  refDate: Date = new Date(),
+  expenses?: Expense[]
 ): PastDueWeekInfo | null {
-  const weeks = getAllPastDueCheckInWeeks(household, checkIns, refDate);
+  const weeks = getAllPastDueCheckInWeeks(household, checkIns, refDate, expenses);
   return weeks.length > 0 ? weeks[0] : null;
+}
+
+/**
+ * Checks if the specified week has any uncompleted preceding week in the same fiscal month
+ * (or earlier elapsed weeks since tracking began), enforcing the rule that preceding weeks of
+ * the month must have a completed check-in before future weeks can be checked in.
+ */
+export function getPrecedingUncompletedWeek(
+  targetWeekRange: DateRange,
+  household: Household | null,
+  checkIns: CheckIn[],
+  refDate: Date = new Date(),
+  expenses?: Expense[]
+): PastDueWeekInfo | null {
+  const allPastDue = getAllPastDueCheckInWeeks(household, checkIns, refDate, expenses);
+  const targetStartTime = targetWeekRange.startDate.getTime();
+
+  // Find past-due weeks that started strictly before the target week
+  const precedingUncompleted = allPastDue.filter(
+    (w) => w.range.startDate.getTime() < targetStartTime
+  );
+
+  return precedingUncompleted.length > 0 ? precedingUncompleted[0] : null;
+}
+
+/**
+ * Checks whether all weekly check-ins for a given fiscal month have been completed.
+ */
+export function areAllWeeklyCheckInsCompletedForMonth(
+  fiscalMonth: FiscalMonth,
+  checkIns: CheckIn[]
+): boolean {
+  if (!checkIns || checkIns.length === 0) return false;
+
+  const weekCount = fiscalMonth.weekCount;
+  const monthStartT = fiscalMonth.startDate.getTime();
+  const monthEndT = fiscalMonth.endDate.getTime();
+
+  // 1. Check if total unique completed check-ins in this month range >= weekCount
+  const completedInMonth = checkIns.filter((c) => {
+    if (c.status !== 'completed') return false;
+    const cStart = c.weekStartDate
+      ? new Date(c.weekStartDate + (c.weekStartDate.length === 10 ? 'T12:00:00' : '')).getTime()
+      : 0;
+    const cEnd = c.weekEndDate
+      ? new Date(c.weekEndDate + (c.weekEndDate.length === 10 ? 'T12:00:00' : '')).getTime()
+      : 0;
+    return (
+      (cStart >= monthStartT - 86400000 && cStart <= monthEndT) ||
+      (cEnd >= monthStartT && cEnd <= monthEndT + 86400000)
+    );
+  });
+
+  if (completedInMonth.length >= weekCount) {
+    return true;
+  }
+
+  // 2. Week-by-week verification
+  const startMonday = new Date(fiscalMonth.startDate);
+  startMonday.setHours(0, 0, 0, 0);
+
+  for (let i = 0; i < weekCount; i++) {
+    const wStart = new Date(startMonday.getTime() + i * 7 * 24 * 60 * 60 * 1000);
+    const wEnd = new Date(wStart.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+    const wStartStr = formatLocalDate(wStart);
+    const wEndStr = formatLocalDate(wEnd);
+
+    const isWeekDone = checkIns.some((c) => {
+      if (c.status !== 'completed') return false;
+      if (c.weekStartDate === wStartStr || c.weekEndDate === wEndStr) return true;
+      if (c.id && (c.id.includes(wStartStr) || c.id.includes(wEndStr))) return true;
+      const cStartTime = c.weekStartDate
+        ? new Date(c.weekStartDate + (c.weekStartDate.length === 10 ? 'T12:00:00' : '')).getTime()
+        : 0;
+      const cEndTime = c.weekEndDate
+        ? new Date(c.weekEndDate + (c.weekEndDate.length === 10 ? 'T12:00:00' : '')).getTime()
+        : 0;
+      if (cStartTime >= wStart.getTime() - 86400000 && cStartTime <= wEnd.getTime()) return true;
+      if (cEndTime >= wStart.getTime() && cEndTime <= wEnd.getTime() + 86400000) return true;
+      return false;
+    });
+
+    if (!isWeekDone) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Checks whether the monthly retrospective/review for a given fiscal month has been completed.
+ */
+export function isMonthlyReviewCompletedForMonth(
+  fiscalMonth: FiscalMonth,
+  household: Household | null,
+  feedItems?: FeedItem[]
+): boolean {
+  if (!household) return false;
+
+  const monthKey = `${fiscalMonth.fiscalYear || fiscalMonth.endDate.getFullYear()}-M${fiscalMonth.fiscalMonthNumber}`;
+
+  // 1. Explicitly recorded completed monthly reviews
+  if (household.completedMonthlyReviews && household.completedMonthlyReviews[monthKey]) {
+    return true;
+  }
+
+  // 2. Verified via lastMonthEndReset timestamp
+  if (household.lastMonthEndReset) {
+    const resetTime = household.lastMonthEndReset;
+    const finalWeekStart = fiscalMonth.endDate.getTime() - 7 * 24 * 60 * 60 * 1000;
+    if (resetTime >= finalWeekStart && resetTime >= fiscalMonth.startDate.getTime()) {
+      return true;
+    }
+  }
+
+  // 3. Verified via feedItems
+  if (feedItems && feedItems.length > 0) {
+    const monthEndStr = formatLocalDate(fiscalMonth.endDate);
+    const hasFeedItem = feedItems.some(
+      (f) =>
+        f.type === 'monthEndReset' &&
+        (f.date === monthEndStr ||
+          (f.timestamp &&
+            f.timestamp >= fiscalMonth.endDate.getTime() - 7 * 24 * 60 * 60 * 1000 &&
+            f.timestamp <= fiscalMonth.endDate.getTime() + 14 * 24 * 60 * 60 * 1000))
+    );
+    if (hasFeedItem) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Finds the earliest (or active) fiscal month where all weekly check-ins have been completed,
+ * but the monthly review has not yet been completed.
+ */
+export function getUnreviewedCompletedMonth(
+  household: Household | null,
+  checkIns: CheckIn[],
+  expenses?: Expense[],
+  feedItems?: FeedItem[]
+): FiscalMonth | null {
+  if (!household || !checkIns || checkIns.length === 0) return null;
+
+  const fiscalYearEnd = household.fiscalYearEndMonth || 12;
+  const now = new Date();
+  const currentFiscalMonth = getFiscalMonthForDate(now, fiscalYearEnd);
+  const currentYear = currentFiscalMonth.fiscalYear || now.getFullYear();
+
+  // Check chronological months for previous year and current year
+  for (const year of [currentYear - 1, currentYear, currentYear + 1]) {
+    const fMonths = getFiscalYearMonths(year, fiscalYearEnd);
+    for (const fm of fMonths) {
+      // Only consider months where all weekly check-ins have been completed
+      if (areAllWeeklyCheckInsCompletedForMonth(fm, checkIns)) {
+        if (!isMonthlyReviewCompletedForMonth(fm, household, feedItems)) {
+          return fm;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Checks if the target week belongs to a future fiscal month while a preceding fiscal month
+ * has all weekly check-ins completed but its monthly review has NOT been completed.
+ * Enforces the rule: Users should not be able to complete weekly check-ins of future months
+ * until the monthly review of preceding completed months is completed.
+ */
+export function getPrecedingUncompletedMonthReview(
+  targetWeekRange: DateRange,
+  household: Household | null,
+  checkIns: CheckIn[],
+  expenses?: Expense[],
+  feedItems?: FeedItem[]
+): FiscalMonth | null {
+  if (!household) return null;
+
+  const fiscalYearEnd = household.fiscalYearEndMonth || 12;
+  const targetFiscalMonth = getFiscalMonthForDate(targetWeekRange.startDate, fiscalYearEnd);
+  const targetStartTime = targetFiscalMonth.startDate.getTime();
+  const currentYear = targetFiscalMonth.fiscalYear || targetWeekRange.startDate.getFullYear();
+
+  // Search chronological preceding months
+  for (const year of [currentYear - 1, currentYear]) {
+    const fMonths = getFiscalYearMonths(year, fiscalYearEnd);
+    for (const fm of fMonths) {
+      // Must be strictly preceding the target fiscal month
+      if (fm.endDate.getTime() < targetStartTime) {
+        // If all weekly check-ins of this preceding month are completed
+        if (areAllWeeklyCheckInsCompletedForMonth(fm, checkIns)) {
+          // And its monthly review is NOT completed
+          if (!isMonthlyReviewCompletedForMonth(fm, household, feedItems)) {
+            return fm;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**

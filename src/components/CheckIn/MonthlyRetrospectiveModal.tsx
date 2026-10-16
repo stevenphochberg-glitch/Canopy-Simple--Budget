@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { formatCurrency, getMonthRange, calculateCategorySpending } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
+import { areAllWeeklyCheckInsCompletedForMonth, getUnreviewedCompletedMonth } from '../../lib/checkInCalculations';
 import {
   Calendar,
   Sparkles,
@@ -39,6 +40,7 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     savingsGoals,
     allocateSavingsToGoals,
     executeMonthEndResetAction,
+    monthlyRetroTargetMonth,
     showToast,
   } = useHousehold();
 
@@ -53,54 +55,124 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
   // Allocations to savings goals: map of goalId -> dollar amount
   const [allocations, setAllocations] = useState<Record<string, number>>({});
 
+  // Target fiscal month: dynamically resolves from context or unreviewed completed month
+  const targetFiscalMonth = useMemo(() => {
+    if (monthlyRetroTargetMonth) {
+      return monthlyRetroTargetMonth;
+    }
+    const unreviewed = getUnreviewedCompletedMonth(household, checkIns, expenses);
+    if (unreviewed) return unreviewed;
+    return getFiscalMonthForDate(new Date(), household?.fiscalYearEndMonth || 12);
+  }, [monthlyRetroTargetMonth, household, checkIns, expenses]);
+
   // Month range
   const monthRange = useMemo(() => {
-    return getMonthRange(new Date(), 0);
-  }, []);
+    const startMonth = targetFiscalMonth.startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const endMonth = targetFiscalMonth.endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    return {
+      startDate: targetFiscalMonth.startDate,
+      endDate: targetFiscalMonth.endDate,
+      label: `${targetFiscalMonth.monthName} ${targetFiscalMonth.fiscalYear || targetFiscalMonth.startDate.getFullYear()} (${startMonth} – ${endMonth})`,
+    };
+  }, [targetFiscalMonth]);
 
-  // Check whether the final weekly check-in of the current fiscal month is complete
+  // Check whether all weekly check-ins of this fiscal month are complete
   const isFinalWeeklyCheckInComplete = useMemo(() => {
-    const fiscalMonth = getFiscalMonthForDate(new Date(), household?.fiscalYearEndMonth || 12);
-    // End date of the fiscal month
-    const monthEndTime = fiscalMonth.endDate.getTime();
-    const finalWeekStartTime = monthEndTime - 6 * 24 * 60 * 60 * 1000;
-
-    return (checkIns || []).some((c) => {
-      const cEndTime = new Date(c.weekEndDate).getTime();
-      return cEndTime >= finalWeekStartTime;
-    });
-  }, [checkIns, household?.fiscalYearEndMonth]);
+    return areAllWeeklyCheckInsCompletedForMonth(targetFiscalMonth, checkIns);
+  }, [targetFiscalMonth, checkIns]);
 
   // Compute month metrics and isolate Bills evaluation
   const monthStats = useMemo(() => {
     let totalMonthlyBudget = 0;
     let totalSpent = 0;
 
-    const isBills = (c: { group?: string; name: string }) =>
-      c.group?.toLowerCase() === 'bills' || c.name.toLowerCase() === 'bills';
+    const isBills = (c: { group?: string; name: string; id?: string }) =>
+      c.group?.toLowerCase() === 'bills' || c.name.toLowerCase() === 'bills' || c.id === 'cat_bills';
+
+    const isSavings = (c: { type?: string; group?: string; name: string; id?: string }) =>
+      c.id === 'cat_savings' || c.type === 'savings' || c.group?.toLowerCase() === 'savings' || c.name.toLowerCase().includes('saving');
 
     const fiscalMonth = getFiscalMonthForDate(monthRange.startDate, household?.fiscalYearEndMonth || 12);
     const weeksInMonth = fiscalMonth.weekCount || 4;
 
+    const mStart = monthRange.startDate.getTime();
+    const mEnd = monthRange.endDate.getTime();
+
+    const monthCompletedCheckIns = (checkIns || []).filter((c) => {
+      if (c.status !== 'completed') return false;
+      const cStart = new Date(c.weekStartDate + (c.weekStartDate?.length === 10 ? 'T12:00:00' : '')).getTime();
+      const cEnd = new Date(c.weekEndDate + (c.weekEndDate?.length === 10 ? 'T12:00:00' : '')).getTime();
+      return (cEnd >= mStart && cStart <= mEnd) || (cStart >= mStart - 86400000 && cEnd <= mEnd + 86400000);
+    });
+
+    let totalSavingsBankedFromCheckIns = 0;
+    monthCompletedCheckIns.forEach((c) => {
+      if (typeof c.totalSaved === 'number' && c.totalSaved > 0) {
+        totalSavingsBankedFromCheckIns += c.totalSaved;
+      } else {
+        const savDec = (c.decisions || []).find(
+          (d) => d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('saving')
+        );
+        if (savDec && savDec.spent !== undefined) {
+          totalSavingsBankedFromCheckIns += Number(savDec.spent);
+        } else if (savDec && savDec.budget !== undefined) {
+          const deduction = Number(savDec.savingsDeduction) || 0;
+          totalSavingsBankedFromCheckIns += Math.max(0, Number(savDec.budget) - deduction);
+        }
+      }
+    });
+
+    const directDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= monthRange.startDate && depDate <= monthRange.endDate;
+    });
+    const depositTotal = directDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+    const totalSavingsBanked = totalSavingsBankedFromCheckIns + depositTotal;
+
     const categoryDetails = categories.map((cat) => {
-      // Statically derived constant: Baseline Weekly Allocation × Weeks in Fiscal Month
       const monthlyBudget = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
+      const isSavCat = isSavings(cat);
+      const isBillsCat = isBills(cat);
+
+      totalMonthlyBudget += monthlyBudget;
+
+      if (isSavCat) {
+        const isSurplus = totalSavingsBanked > monthlyBudget;
+        const surplusAmount = isSurplus ? totalSavingsBanked - monthlyBudget : 0;
+        return {
+          ...cat,
+          monthlyBudget,
+          spent: 0,
+          banked: totalSavingsBanked,
+          difference: surplusAmount,
+          isSavings: true,
+          isBills: false,
+          isSurplus,
+          surplusAmount,
+        };
+      }
+
       const { totalSpent: spent } = calculateCategorySpending(
         expenses,
         cat.id,
         monthRange.startDate,
-        monthRange.endDate
+        monthRange.endDate,
+        household?.fiscalYearEndMonth || 12
       );
 
-      totalMonthlyBudget += monthlyBudget;
       totalSpent += spent;
+      const difference = monthlyBudget - spent;
 
       return {
         ...cat,
         monthlyBudget,
         spent,
-        difference: monthlyBudget - spent,
-        isBills: isBills(cat),
+        banked: 0,
+        difference,
+        isSavings: false,
+        isBills: isBillsCat,
+        isSurplus: difference > 0,
+        surplusAmount: Math.max(0, difference),
       };
     });
 
@@ -109,23 +181,27 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     const billsTotalSpent = billsCategories.reduce((sum, c) => sum + c.spent, 0);
     const billsDifference = billsMonthlyBudget - billsTotalSpent; // positive = surplus, negative = deficit
 
+    // Underspent surplus across non-savings, non-bills expense categories
     const totalSurplus = categoryDetails
-      .filter((c) => c.difference > 0)
+      .filter((c) => !c.isSavings && !c.isBills && c.difference > 0)
       .reduce((sum, c) => sum + c.difference, 0);
 
     const totalDeficit = categoryDetails
-      .filter((c) => c.difference < 0)
+      .filter((c) => !c.isSavings && c.difference < 0)
       .reduce((sum, c) => sum + Math.abs(c.difference), 0);
 
-    const topWins = [...categoryDetails]
-      .filter((c) => c.difference > 0)
-      .sort((a, b) => b.difference - a.difference)
-      .slice(0, 3);
+    // Every category is referenced in either topWins (surplus/on track) or topOverspent (deficits)
+    const topWins = categoryDetails
+      .filter((c) => c.isSavings || c.difference >= 0)
+      .sort((a, b) => {
+        if (a.isSavings) return -1;
+        if (b.isSavings) return 1;
+        return b.difference - a.difference;
+      });
 
-    const topOverspent = [...categoryDetails]
-      .filter((c) => c.difference < 0)
-      .sort((a, b) => a.difference - b.difference)
-      .slice(0, 3);
+    const topOverspent = categoryDetails
+      .filter((c) => !c.isSavings && c.difference < 0)
+      .sort((a, b) => a.difference - b.difference);
 
     return {
       weeksInMonth,
@@ -141,8 +217,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       billsMonthlyBudget,
       billsTotalSpent,
       billsDifference,
+      totalSavingsBanked,
     };
-  }, [categories, expenses, monthRange, household?.fiscalYearEndMonth]);
+  }, [categories, expenses, monthRange, household?.fiscalYearEndMonth, household?.oneOffDeposits, checkIns]);
 
   // Compute Total Saved Funds Available to Allocate
   const totalSavedFunds = useMemo(() => {
@@ -150,15 +227,17 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       .filter((c) => c.group?.toLowerCase() === 'savings' || c.name.toLowerCase().includes('saving'))
       .reduce((sum, c) => sum + (Number(c.baselineBudget) || 0) * monthStats.weeksInMonth, 0);
 
+    const baseSavings = monthStats.totalSavingsBanked > 0 ? monthStats.totalSavingsBanked : savingsCatMonthly;
     const surplusContribution = isSwept ? monthStats.totalSurplus : 0;
     const billsSurplus = isBillsSurplusTransferred ? Math.max(0, monthStats.billsDifference) : 0;
     const billsDeduction = isBillsDeficitDeducted ? Math.abs(Math.min(0, monthStats.billsDifference)) : 0;
 
-    const computed = savingsCatMonthly + surplusContribution + billsSurplus - billsDeduction;
+    const computed = baseSavings + surplusContribution + billsSurplus - billsDeduction;
     return Math.max(0, computed);
   }, [
     categories,
     monthStats.weeksInMonth,
+    monthStats.totalSavingsBanked,
     monthStats.totalSurplus,
     monthStats.billsDifference,
     isSwept,
@@ -258,13 +337,28 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
         await allocateSavingsToGoals(allocationList);
       }
 
-      // 2. Execute month-end hard reset
-      await executeMonthEndResetAction();
+      const allocationListWithNames = allocationList.map((item) => {
+        const goal = savingsGoals.find((g) => g.id === item.goalId);
+        return {
+          ...item,
+          goalName: goal?.name || 'Savings Goal',
+        };
+      });
+
+      // 2. Execute month-end review finalization
+      await executeMonthEndResetAction(targetFiscalMonth, {
+        allocations: allocationListWithNames,
+        totalAllocated,
+        extraCovered: isBillsDeficitDeducted ? Math.abs(monthStats.billsDifference) : 0,
+        extraSaved: (isSwept ? monthStats.totalSurplus : 0) + (isBillsSurplusTransferred ? Math.max(0, monthStats.billsDifference) : 0),
+        billsDifference: monthStats.billsDifference,
+        intentions: intentionsText,
+      });
       setIsCompleted(true);
-      showToast('Month-End Hard Reset executed and Savings Goals funded!', 'success');
+      showToast(`${targetFiscalMonth.monthName} Monthly Review completed and Savings Goals funded!`, 'success');
     } catch (err) {
       console.error('Failed to execute month-end reset:', err);
-      showToast(`Error executing reset: ${err instanceof Error ? err.message : String(err)}`, 'error');
+      showToast(`Error executing review: ${err instanceof Error ? err.message : String(err)}`, 'error');
     } finally {
       setIsExecutingReset(false);
     }
@@ -383,10 +477,10 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                 <div className="p-4 bg-sage-50/70 border border-sage-200 rounded-2xl space-y-2">
                   <div className="flex items-center gap-1.5 text-xs font-bold text-sage-900">
                     <Award className="w-4 h-4 text-sage-700" />
-                    <span>Top Budget Wins (Surplus)</span>
+                    <span>Top Budget Wins & On Track</span>
                   </div>
                   {monthStats.topWins.length === 0 ? (
-                    <p className="text-xs text-brown-700">No surplus recorded this month.</p>
+                    <p className="text-xs text-brown-700">No surplus or banked savings recorded this month.</p>
                   ) : (
                     <div className="space-y-1.5">
                       {monthStats.topWins.map((cat) => (
@@ -396,7 +490,17 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
                         >
                           <span className="font-medium text-dark-green-900">{cat.name}</span>
                           <span className="font-extrabold text-sage-800">
-                            +{formatCurrency(cat.difference)} under
+                            {cat.isSavings ? (
+                              cat.isSurplus ? (
+                                `+${formatCurrency(cat.surplusAmount)} surplus (${formatCurrency(cat.banked)} banked)`
+                              ) : (
+                                `${formatCurrency(cat.banked)} Banked`
+                              )
+                            ) : cat.difference > 0 ? (
+                              `+${formatCurrency(cat.difference)} under`
+                            ) : (
+                              `On budget (${formatCurrency(cat.spent)} spent)`
+                            )}
                           </span>
                         </div>
                       ))}
@@ -584,10 +688,10 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
               <div className="p-4 bg-gold-50 border border-gold-200 rounded-2xl space-y-1.5">
                 <div className="flex items-center gap-2 text-xs font-bold text-gold-900">
                   <RotateCcw className="w-4 h-4 text-gold-700" />
-                  <span>The Fiscal Month-End Hard Reset</span>
+                  <span>The Fiscal Month-End Boundary & Hard Reset</span>
                 </div>
                 <p className="text-xs text-gold-950 leading-relaxed">
-                  In Canopy, rollovers and deficit adjustments <strong>do not roll over across month boundaries</strong>. Executing the Hard Reset returns all category weekly budgets back to their default baseline values, providing a clean slate for next month.
+                  In Canopy, completed weekly budgets and check-in history of the reviewed month <strong>remain permanently preserved and will not change</strong>. The "Hard Reset" language communicates that <strong>there are no rollovers across months</strong>: you will never pull savings from another month to cover overspending or prorate budgets across month boundaries. Each month starts with a clean slate.
                 </p>
               </div>
 

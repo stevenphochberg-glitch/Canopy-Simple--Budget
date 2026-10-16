@@ -117,26 +117,17 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
   // 2. POST-CHECK-IN EXPENSE STACKED SPLIT VIEW (when surplus was resolved for an expense):
   if (!isSavings && showSurplusSplit && percentage < 100) {
     const activeHeight = heightClass === 'h-2.5' ? 'h-5 sm:h-5.5' : heightClass;
-    const spentPercent = Math.max(0, Math.min(100, percentage));
-    const totalRemainingPercent = Math.max(0, 100 - spentPercent);
+    const covAmt = overspendCoverageAmount || 0;
+    const leftAmt = leftoverSurplusAmount || 0;
+    const totalPool = Math.max(budget, spent + covAmt + leftAmt, 1);
 
-    // Calculate proportional split between Overspend Coverage and Leftover Surplus
-    let coveragePercent = 0;
-    let leftoverPercent = totalRemainingPercent;
-
-    if (overspendCoverageAmount !== undefined || leftoverSurplusAmount !== undefined) {
-      const covAmt = overspendCoverageAmount || 0;
-      const leftAmt = leftoverSurplusAmount || 0;
-      const totalSurplus = covAmt + leftAmt;
-      if (totalSurplus > 0) {
-        coveragePercent = Math.max(0, (covAmt / totalSurplus) * totalRemainingPercent);
-        leftoverPercent = Math.max(0, totalRemainingPercent - coveragePercent);
-      }
-    }
+    const spentPercent = Math.max(0, Math.min(100, (spent / totalPool) * 100));
+    const coveragePercent = Math.max(0, Math.min(100 - spentPercent, (covAmt / totalPool) * 100));
+    const leftoverPercent = Math.max(0, Math.min(100 - spentPercent - coveragePercent, (leftAmt / totalPool) * 100));
 
     return (
       <div
-        className={`w-full ${activeHeight} rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1.5 sm:gap-2 relative shadow-2xs ${className}`}
+        className={`w-full ${activeHeight} rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1 sm:gap-1.5 relative shadow-2xs overflow-hidden ${className}`}
       >
         {/* Spent portion Pill */}
         {spentPercent > 0 && (
@@ -145,7 +136,7 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
               e.stopPropagation();
               setSpentMode((prev) => cycleMode(prev));
             }}
-            className="h-full bg-sage-600 text-brown-100 rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none"
+            className="h-full bg-sage-600 text-brown-100 rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 min-w-0 flex-shrink overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none"
             style={{ width: `${spentPercent}%` }}
             title={`Spent: ${formatCurrency(spent)} (${spentPercent.toFixed(1)}%) - Click to toggle display`}
           >
@@ -166,34 +157,34 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
               e.stopPropagation();
               setCoverageMode((prev) => cycleMode(prev));
             }}
-            className="h-full bg-brown-700 text-[#F5F5DC] rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 tracking-tight truncate overflow-hidden whitespace-nowrap flex-shrink-0 cursor-pointer hover:brightness-110 active:scale-95 select-none"
+            className="h-full bg-brown-700 text-[#F5F5DC] rounded-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 tracking-tight truncate min-w-0 flex-shrink overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none"
             style={{ width: `${coveragePercent}%` }}
-            title={`Overspend coverage: ${formatCurrency(overspendCoverageAmount || 0)} (${coveragePercent.toFixed(1)}%) - Click to toggle display`}
+            title={`Overspend coverage: ${formatCurrency(covAmt)} (${coveragePercent.toFixed(1)}%) - Click to toggle display`}
           >
             <span className="truncate text-[#F5F5DC] drop-shadow-xs select-none">
               {coverageMode === 'desc'
                 ? 'Coverage'
                 : coverageMode === 'amount'
-                ? formatCurrency(overspendCoverageAmount || 0)
+                ? formatCurrency(covAmt)
                 : `${Math.round(coveragePercent)}%`}
             </span>
           </div>
         )}
 
-        {/* Surplus Portion Pill */}
+        {/* Surplus Portion Pill (Sent to savings) */}
         {leftoverPercent > 0 && (
           <div
             onClick={(e) => {
               e.stopPropagation();
               setSurplusMode((prev) => cycleMode(prev));
             }}
-            className={`h-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white px-1.5 rounded-full tracking-tight truncate overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none ${
+            className={`h-full transition-all duration-300 relative flex items-center justify-center text-[9px] sm:text-[10px] font-bold text-white px-1.5 rounded-full tracking-tight truncate min-w-0 flex-shrink overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-110 active:scale-95 select-none ${
               surplusChoice === 'rollover'
                 ? 'bg-sky-blue-500'
                 : 'bg-dark-green-800'
             }`}
             style={{ width: `${leftoverPercent}%` }}
-            title={`${surplusChoice === 'rollover' ? prorateLabel : savingsLabel}: ${formatCurrency(leftoverSurplusAmount || 0)} (${leftoverPercent.toFixed(1)}%) - Click to toggle display`}
+            title={`${surplusChoice === 'rollover' ? prorateLabel : savingsLabel}: ${formatCurrency(leftAmt)} (${leftoverPercent.toFixed(1)}%) - Click to toggle display`}
           >
             <span className="truncate drop-shadow-xs select-none">
               {surplusMode === 'desc'
@@ -201,7 +192,7 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
                   ? prorateLabel
                   : savingsLabel
                 : surplusMode === 'amount'
-                ? formatCurrency(leftoverSurplusAmount || 0)
+                ? formatCurrency(leftAmt)
                 : `${Math.round(leftoverPercent)}%`}
             </span>
           </div>

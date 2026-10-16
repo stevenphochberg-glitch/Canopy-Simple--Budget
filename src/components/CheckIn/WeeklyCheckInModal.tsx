@@ -17,6 +17,8 @@ import {
   calculateCheckInStatus,
   getRemainingWeeksInMonth,
   getOldestPastDueCheckInWeek,
+  getPrecedingUncompletedWeek,
+  getPrecedingUncompletedMonthReview,
 } from '../../lib/checkInCalculations';
 import { getFiscalTrackerInfo } from '../../lib/fiscal445';
 import {
@@ -64,6 +66,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     checkIns,
     weeklyCheckInTargetRange,
     completeWeeklyCheckIn,
+    openMonthlyRetroModal,
     addExpense,
     showToast,
     timeframeMode,
@@ -80,8 +83,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   // Step 2 Overspend inputs: categoryId -> { potPull, savingsPull, overrideMode }
   const [overspendInputs, setOverspendInputs] = useState<Record<string, OverspendInputState>>({});
 
-  // Step 2 Explicit user choice to route Transfer Pot funds into Savings
-  const [sendPotToSavings, setSendPotToSavings] = useState<boolean>(false);
+  // Step 2 Explicit user choice to route Transfer Pot funds into Savings (defaults to true)
+  const [sendPotToSavings, setSendPotToSavings] = useState<boolean>(true);
 
   const [intentionsNote, setIntentionsNote] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
@@ -102,8 +105,8 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   }, [household, checkIns, expenses]);
 
   const oldestPastDueWeek = useMemo(() => {
-    return getOldestPastDueCheckInWeek(household, checkIns);
-  }, [household, checkIns]);
+    return getOldestPastDueCheckInWeek(household, checkIns, new Date(), expenses);
+  }, [household, checkIns, expenses]);
 
   // Selected week range for check-in: allows historical navigation
   const [selectedWeekRange, setSelectedWeekRange] = useState<DateRange>(() => {
@@ -118,6 +121,16 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     }
     return statusInfo.activeWeekRange;
   });
+
+  // Enforce sequential check-in: preceding week of the month must have a completed check-in first
+  const precedingUncompletedWeek = useMemo(() => {
+    return getPrecedingUncompletedWeek(selectedWeekRange, household, checkIns, new Date(), expenses);
+  }, [selectedWeekRange, household, checkIns, expenses]);
+
+  // Enforce monthly review prerequisite: preceding months must have completed monthly review before future months' check-ins
+  const precedingUncompletedMonth = useMemo(() => {
+    return getPrecedingUncompletedMonthReview(selectedWeekRange, household, checkIns, expenses);
+  }, [selectedWeekRange, household, checkIns, expenses]);
 
   // Whenever modal opens or activeDateRange changes, sync selectedWeekRange
   useEffect(() => {
@@ -338,7 +351,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
     const baseTarget = thisWeekSavingsTarget;
     const baseSaved = Math.max(0, baseTarget - totalSavingsPulledForDeficits);
 
-    const totalBudgetThisWeek = baseTarget + bonus;
+    const totalBudgetThisWeek = baseTarget;
     const totalSavedThisWeek = baseSaved + bonus;
 
     // Calculate any future savings reductions chosen via overspend overrides
@@ -524,7 +537,15 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         adjustmentPerWeek: proj.followingWeeksBudget - proj.baseline,
         previousWeeklyBudget: proj.budget,
         newWeeklyBudget: proj.followingWeeksBudget,
-        savingsContribution: proj.isUnderspent && underspendChoices[cat.id] === 'transfer_pot' ? proj.leftover : 0,
+        savingsContribution: (() => {
+          if (!proj.isUnderspent || (underspendChoices[cat.id] !== 'transfer_pot' && underspendChoices[cat.id] !== undefined)) {
+            return 0;
+          }
+          const coverageShare = (totalTransferPotGenerated > 0 && totalPotPulledForDeficits > 0)
+            ? (proj.leftover / totalTransferPotGenerated) * totalPotPulledForDeficits
+            : 0;
+          return Math.max(0, proj.leftover - coverageShare);
+        })(),
       });
     });
 
@@ -640,6 +661,20 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
   const handleConfirmCheckIn = async () => {
     if (isPreviewMode) {
       showToast('Check-in submission is disabled during Preview mode.', 'info');
+      return;
+    }
+    if (precedingUncompletedWeek) {
+      showToast(
+        `The preceding week (${precedingUncompletedWeek.fiscalWeekLabel}) of the month must have a completed check-in before this week can be checked in.`,
+        'error'
+      );
+      return;
+    }
+    if (precedingUncompletedMonth) {
+      showToast(
+        `You must complete the ${precedingUncompletedMonth.monthName} monthly review before completing weekly check-ins of future months.`,
+        'error'
+      );
       return;
     }
     if (hasUnresolvedExcessDeficit) {
@@ -797,6 +832,64 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
 
         {/* Modal Body Scroll Area */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+          {/* Preceding Uncompleted Week Warning Banner */}
+          {precedingUncompletedWeek && (
+            <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950 animate-in fade-in">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <div className="font-extrabold text-amber-900">
+                    Preceding Week Check-In Required ({precedingUncompletedWeek.fiscalWeekLabel})
+                  </div>
+                  <p className="text-amber-800 leading-relaxed">
+                    The preceding week ({precedingUncompletedWeek.fiscalWeekLabel}) of this month must have a completed check-in before future weeks can be checked in.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedWeekRange(precedingUncompletedWeek.range);
+                  setStep(1);
+                }}
+                className="shrink-0 px-3.5 py-2 bg-amber-700 hover:bg-amber-800 text-white font-extrabold text-xs rounded-xl transition cursor-pointer shadow-xs"
+              >
+                Switch to {precedingUncompletedWeek.fiscalWeekLabel} Check-In
+              </button>
+            </div>
+          )}
+
+          {/* Preceding Uncompleted Monthly Review Required Warning Banner */}
+          {precedingUncompletedMonth && (
+            <div
+              id="preceding-month-review-required-alert"
+              className="p-4 bg-alert-red-50 border-2 border-alert-red-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-alert-red-950 animate-in fade-in"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-alert-red-700 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <div className="font-extrabold text-alert-red-900 text-sm">
+                    Monthly Review Required ({precedingUncompletedMonth.monthName})
+                  </div>
+                  <p className="text-alert-red-800 leading-relaxed">
+                    All weekly check-ins for {precedingUncompletedMonth.monthName} are completed. You must complete the {precedingUncompletedMonth.monthName} monthly review before completing weekly check-ins of future months.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  openMonthlyRetroModal(precedingUncompletedMonth);
+                }}
+                className="shrink-0 px-4 py-2 bg-alert-red-600 hover:bg-alert-red-700 text-white font-extrabold text-xs rounded-xl transition cursor-pointer shadow-xs flex items-center gap-1.5"
+              >
+                <span>Complete {precedingUncompletedMonth.monthName} Review</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {/* ========================================================================= */}
           {/* STEP 1: REVIEW TRANSACTIONS                                               */}
           {/* ========================================================================= */}
@@ -1318,11 +1411,11 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   <div className="flex items-center justify-between gap-2 mb-1">
                                     <span className="text-xs font-black flex items-center gap-1.5">
                                       <Layers className="w-3.5 h-3.5 text-sage-300" />
-                                      Choice 1: Transfer Pot
+                                      Choice 1: Send to Savings / Pot
                                     </span>
                                     <span
                                       className={`text-[9px] font-extrabold px-1.5 py-0.2 rounded ${
-                                        currentChoice === 'transfer_pot'
+                                        currentChoice === 'transfer_pot' || !currentChoice
                                           ? 'bg-white/20 text-white'
                                           : 'bg-dark-green-100 text-dark-green-900'
                                       }`}
@@ -1332,12 +1425,12 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                                   </div>
                                   <p
                                     className={`text-[10px] leading-relaxed ${
-                                      currentChoice === 'transfer_pot'
+                                      currentChoice === 'transfer_pot' || !currentChoice
                                         ? 'text-sage-100'
                                         : 'text-dark-grey-600'
                                     }`}
                                   >
-                                    Adds leftover into global Transfer Pot to cover deficits or expand Savings. Following weeks keep baseline ({formatCurrency(p.baseline)}/wk).
+                                    Routes leftover into Transfer Pot & weekly Savings deposit. Following weeks keep baseline ({formatCurrency(p.baseline)}/wk).
                                   </p>
                                 </button>
 
@@ -1846,7 +1939,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                       {formatCurrency(savingsSavedThisWeek)}
                     </span>
                     <span className="text-[10px] text-sage-800 block">
-                      out of {formatCurrency(savingsBudgetThisWeek)} total
+                      from {formatCurrency(savingsBudgetThisWeek)} budget
                     </span>
                   </div>
                 </div>
@@ -2008,11 +2101,15 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
               <button
                 type="button"
                 onClick={handleConfirmCheckIn}
-                disabled={isSubmitting || isPreviewMode || hasUnresolvedExcessDeficit}
+                disabled={isSubmitting || isPreviewMode || hasUnresolvedExcessDeficit || Boolean(precedingUncompletedWeek) || Boolean(precedingUncompletedMonth)}
                 className="flex items-center gap-2 px-6 py-2.5 bg-dark-green-800 hover:bg-dark-green-900 text-white text-xs font-extrabold rounded-xl shadow-sm transition active:scale-98 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (
                   <span>Saving Check-In...</span>
+                ) : precedingUncompletedMonth ? (
+                  <span>Locked: {precedingUncompletedMonth.monthName} Review Required</span>
+                ) : precedingUncompletedWeek ? (
+                  <span>Locked: {precedingUncompletedWeek.fiscalWeekLabel} Required First</span>
                 ) : isPreviewMode ? (
                   <span>Preview Mode (Submission Locked)</span>
                 ) : (
@@ -2026,7 +2123,17 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
                   </>
                 )}
               </button>
-              {isPreviewMode && (
+              {precedingUncompletedMonth && (
+                <span className="text-[11px] text-alert-red-700 font-bold italic">
+                  * Monthly review for {precedingUncompletedMonth.monthName} must be completed before checking in future months.
+                </span>
+              )}
+              {!precedingUncompletedMonth && precedingUncompletedWeek && (
+                <span className="text-[11px] text-amber-800 font-bold italic">
+                  * Preceding week {precedingUncompletedWeek.fiscalWeekLabel} must be completed before checking in this week.
+                </span>
+              )}
+              {!precedingUncompletedMonth && !precedingUncompletedWeek && isPreviewMode && (
                 <span className="text-[11px] text-gold-800 font-semibold italic">
                   * Check-ins cannot be submitted until the last day of the week.
                 </span>

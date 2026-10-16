@@ -26,6 +26,7 @@ import {
   TransactionReaction,
   OneOffDeposit,
   SavingsGoal,
+  FiscalMonth,
 } from '../types';
 import {
   calculateWeeklyPool,
@@ -214,7 +215,8 @@ export interface HouseholdContextType {
   openWeeklyCheckInModal: (targetRange?: DateRange | null) => void;
   closeWeeklyCheckInModal: () => void;
   isMonthlyRetroModalOpen: boolean;
-  openMonthlyRetroModal: () => void;
+  monthlyRetroTargetMonth: FiscalMonth | null;
+  openMonthlyRetroModal: (targetMonth?: FiscalMonth | DateRange | null) => void;
   closeMonthlyRetroModal: () => void;
   isAllocationModalOpen: boolean;
   openAllocationModal: () => void;
@@ -232,7 +234,17 @@ export interface HouseholdContextType {
   updateCheckInNotes: (checkInId: string, notes: string) => Promise<void>;
   updateCheckIn: (checkInId: string, updates: Partial<CheckIn>) => Promise<void>;
   triggerFreshStartAction: () => Promise<void>;
-  executeMonthEndResetAction: () => Promise<void>;
+  executeMonthEndResetAction: (
+    targetFiscalMonth?: FiscalMonth,
+    reviewDetails?: {
+      allocations?: { goalId: string; amount: number; goalName?: string }[];
+      totalAllocated?: number;
+      extraCovered?: number;
+      extraSaved?: number;
+      billsDifference?: number;
+      intentions?: string;
+    }
+  ) => Promise<void>;
 
   // Category mutations
   createCategory: (category: Omit<Category, 'id'>) => Promise<void>;
@@ -405,6 +417,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [isWeeklyCheckInModalOpen, setIsWeeklyCheckInModalOpen] = useState<boolean>(false);
   const [weeklyCheckInTargetRange, setWeeklyCheckInTargetRange] = useState<DateRange | null>(null);
   const [isMonthlyRetroModalOpen, setIsMonthlyRetroModalOpen] = useState<boolean>(false);
+  const [monthlyRetroTargetMonth, setMonthlyRetroTargetMonth] = useState<FiscalMonth | null>(null);
   const [isAllocationModalOpen, setIsAllocationModalOpen] = useState<boolean>(false);
 
   const openWeeklyCheckInModal = (targetRange?: DateRange | null) => {
@@ -415,8 +428,21 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     setIsWeeklyCheckInModalOpen(false);
     setWeeklyCheckInTargetRange(null);
   };
-  const openMonthlyRetroModal = () => setIsMonthlyRetroModalOpen(true);
-  const closeMonthlyRetroModal = () => setIsMonthlyRetroModalOpen(false);
+  const openMonthlyRetroModal = (targetMonth?: FiscalMonth | DateRange | null) => {
+    if (targetMonth && 'fiscalMonthNumber' in targetMonth) {
+      setMonthlyRetroTargetMonth(targetMonth);
+    } else if (targetMonth && 'startDate' in targetMonth) {
+      const fm = getFiscalMonthForDate(targetMonth.startDate, household?.fiscalYearEndMonth || 12);
+      setMonthlyRetroTargetMonth(fm);
+    } else {
+      setMonthlyRetroTargetMonth(null);
+    }
+    setIsMonthlyRetroModalOpen(true);
+  };
+  const closeMonthlyRetroModal = () => {
+    setIsMonthlyRetroModalOpen(false);
+    setMonthlyRetroTargetMonth(null);
+  };
   const openAllocationModal = () => setIsAllocationModalOpen(true);
   const closeAllocationModal = () => setIsAllocationModalOpen(false);
 
@@ -3178,6 +3204,12 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         loggedByUserId: item.loggedByUserId || user?.userId || 'usr_self',
         receiptImgUrl: item.receiptImgUrl || undefined,
         billFrequency: item.billFrequency || undefined,
+        billStartDate: item.billStartDate || undefined,
+        billEndDate: item.billEndDate || undefined,
+        billFiscalMonth: item.billFiscalMonth || undefined,
+        billFiscalMonthStart: item.billFiscalMonthStart || undefined,
+        billFiscalMonthEnd: item.billFiscalMonthEnd || undefined,
+        billFiscalMonthName: item.billFiscalMonthName || undefined,
         tags: item.tags && item.tags.length > 0 ? item.tags : undefined,
         subcategory: item.subcategory || undefined,
         depositDestination: item.depositDestination || undefined,
@@ -3228,6 +3260,12 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               loggedByUserId: exp.loggedByUserId,
               receiptImgUrl: exp.receiptImgUrl || null,
               billFrequency: exp.billFrequency || null,
+              billStartDate: exp.billStartDate || null,
+              billEndDate: exp.billEndDate || null,
+              billFiscalMonth: exp.billFiscalMonth || null,
+              billFiscalMonthStart: exp.billFiscalMonthStart || null,
+              billFiscalMonthEnd: exp.billFiscalMonthEnd || null,
+              billFiscalMonthName: exp.billFiscalMonthName || null,
               tags: exp.tags || null,
               subcategory: exp.subcategory || null,
               depositDestination: exp.depositDestination || null,
@@ -3462,6 +3500,14 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       loggedByUserId: expData.loggedByUserId || user?.userId || 'usr_self',
       receiptImgUrl: expData.receiptImgUrl,
       billFrequency: expData.billFrequency,
+      billStartDate: expData.billStartDate,
+      billEndDate: expData.billEndDate,
+      billFiscalMonth: expData.billFiscalMonth,
+      billFiscalMonthStart: expData.billFiscalMonthStart,
+      billFiscalMonthEnd: expData.billFiscalMonthEnd,
+      billFiscalMonthName: expData.billFiscalMonthName,
+      tags: expData.tags,
+      subcategory: expData.subcategory,
     };
 
     // 1. Optimistic update
@@ -4290,17 +4336,44 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   // Execute Month-End Hard Reset
-  const executeMonthEndResetAction = async () => {
+  const executeMonthEndResetAction = async (
+    targetFiscalMonth?: FiscalMonth,
+    reviewDetails?: {
+      allocations?: { goalId: string; amount: number; goalName?: string }[];
+      totalAllocated?: number;
+      extraCovered?: number;
+      extraSaved?: number;
+      billsDifference?: number;
+      intentions?: string;
+    }
+  ) => {
     if (!household) return;
 
     const now = Date.now();
     // Monthly Reviews should display on the Sunday of the last day of the fiscal month
-    const fiscalMonthOfReset = getFiscalMonthForDate(new Date(now), household?.fiscalYearEndMonth || 12);
+    const fiscalMonthOfReset = targetFiscalMonth || getFiscalMonthForDate(new Date(now), household?.fiscalYearEndMonth || 12);
     const lastDaySundayStr = formatLocalDate(fiscalMonthOfReset.endDate);
+    const monthKey = `${fiscalMonthOfReset.fiscalYear || fiscalMonthOfReset.endDate.getFullYear()}-M${fiscalMonthOfReset.fiscalMonthNumber}`;
 
-    // Monthly Reset: Roll-overs only happen within a month.
-    // At the end of the month, the budget is reset to default baseline and weeklyOverrides is cleared.
-    setHousehold((prev) => (prev ? { ...prev, weeklyOverrides: {}, lastMonthEndReset: now } : prev));
+    const updatedCompletedMonthlyReviews = {
+      ...(household.completedMonthlyReviews || {}),
+      [monthKey]: {
+        completedAt: now,
+        monthKey,
+        fiscalMonthNumber: fiscalMonthOfReset.fiscalMonthNumber,
+        fiscalYear: fiscalMonthOfReset.fiscalYear || fiscalMonthOfReset.endDate.getFullYear(),
+        ...(reviewDetails || {}),
+      },
+    };
+
+    // Monthly Review Completion:
+    // Past weekly budgets of the reviewed month are preserved intact and do not change.
+    // The "Hard Reset" boundary ensures no rollovers or deficit adjustments carry forward into the next month.
+    setHousehold((prev) => (prev ? {
+      ...prev,
+      lastMonthEndReset: now,
+      completedMonthlyReviews: updatedCompletedMonthlyReviews,
+    } : prev));
 
     if (isFirebaseConfigured && db) {
       try {
@@ -4310,8 +4383,14 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         batch.update(
           householdRef,
           sanitizeFirestorePayload({
-            weeklyOverrides: {},
             lastMonthEndReset: now,
+            [`completedMonthlyReviews.${monthKey}`]: {
+              completedAt: now,
+              monthKey,
+              fiscalMonthNumber: fiscalMonthOfReset.fiscalMonthNumber,
+              fiscalYear: fiscalMonthOfReset.fiscalYear || fiscalMonthOfReset.endDate.getFullYear(),
+              ...(reviewDetails || {}),
+            },
           })
         );
 
@@ -4319,7 +4398,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         const feedPayload: FeedItem = {
           id: `feed_month_reset_${now}`,
           type: 'monthEndReset',
-          content: `Month-End Reset: All category budgets refreshed for the new calendar month.`,
+          content: `Monthly Retrospective completed for ${fiscalMonthOfReset.monthName}. Saved funds allocated to household goals.`,
           authorId: user?.userId || 'usr_self',
           authorName: user?.name || 'Member',
           authorAvatar: user?.avatarUrl,
@@ -4337,7 +4416,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     }
 
-    showToast('Month-End Hard Reset executed. All category budgets returned to baseline values.');
+    showToast(`Monthly Retrospective completed for ${fiscalMonthOfReset.monthName}! Saved funds allocated to goals.`);
   };
 
   // Apply Extra Paycheck Decision (Savings / Prorate / Custom)
@@ -4707,6 +4786,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         openWeeklyCheckInModal,
         closeWeeklyCheckInModal,
         isMonthlyRetroModalOpen,
+        monthlyRetroTargetMonth,
         openMonthlyRetroModal,
         closeMonthlyRetroModal,
         isAllocationModalOpen,

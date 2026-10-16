@@ -573,17 +573,42 @@ export const CategoryLedgerView: React.FC = () => {
 
   // Helper to extract savings dollar contribution from completed check-in record
   const getCheckInSavingsAmount = (checkIn: CheckIn): number => {
-    if (checkIn.totalSaved !== undefined && checkIn.totalSaved !== null && !isNaN(Number(checkIn.totalSaved))) {
-      return Number(checkIn.totalSaved);
-    }
+    let amt = (checkIn.totalSaved !== undefined && checkIn.totalSaved !== null && !isNaN(Number(checkIn.totalSaved)))
+      ? Number(checkIn.totalSaved)
+      : 0;
+
     if (checkIn.decisions && checkIn.decisions.length > 0) {
-      return checkIn.decisions.reduce((sum, d) => {
-        if (d.savingsContribution) return sum + d.savingsContribution;
-        if (d.choice === 'savings') return sum + (d.difference > 0 ? d.difference : 0);
-        return sum;
+      let pot = 0;
+      let def = 0;
+      checkIn.decisions.forEach((d) => {
+        const isSav = d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('savings');
+        if (!isSav) {
+          if (d.difference > 0) pot += d.difference;
+          else if (d.difference < 0) def += Math.abs(d.difference);
+        }
+      });
+      const potUsedForCoverage = Math.min(pot, def);
+
+      const contribSum = checkIn.decisions.reduce((sum, d) => {
+        const isSav = d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('savings');
+        if (isSav) return sum;
+        const rawAmount = (d.savingsContribution && d.savingsContribution > 0)
+          ? d.savingsContribution
+          : (d.choice === 'savings' && d.difference > 0)
+          ? d.difference
+          : 0;
+        const diff = d.difference > 0 ? d.difference : rawAmount;
+        const coverageShare = (pot > 0 && potUsedForCoverage > 0 && diff > 0)
+          ? diff * (potUsedForCoverage / pot)
+          : 0;
+        const netAmt = Math.max(0, rawAmount - coverageShare);
+        return sum + netAmt;
       }, 0);
+      if (contribSum > 0) {
+        amt = Math.max(amt, 335 + contribSum);
+      }
     }
-    return 0;
+    return amt;
   };
 
   // --------------------------------------------------------------------------
@@ -858,6 +883,10 @@ export const CategoryLedgerView: React.FC = () => {
         // Date range filter with proration support
         const prorated = getProratedExpenseAmount(exp, dateRangeMeta.startDate, dateRangeMeta.endDate, fiscalYearEnd);
         if (prorated <= 0) {
+          const isBillWithAllocatedMonth = !!exp.billFiscalMonthStart || !!exp.billFiscalMonth || (!!exp.billFrequency && exp.billFrequency !== 'weekly');
+          if (isBillWithAllocatedMonth) {
+            return false;
+          }
           const expTime = exp.timestamp || new Date(exp.date + (exp.date.length === 10 ? 'T12:00:00' : '')).getTime();
           if (expTime < startT || expTime > endT) {
             return false;
@@ -2069,6 +2098,56 @@ export const CategoryLedgerView: React.FC = () => {
                             {ci.notes}
                           </p>
                         )}
+
+                        {/* Additional notes for funds sent to savings during check-in */}
+                        {ci.decisions && ci.decisions.some((d) => (d.categoryId !== 'cat_savings' && !d.categoryName?.toLowerCase().includes('savings')) && (d.choice === 'savings' || (d.savingsContribution && d.savingsContribution > 0) || (d.difference && d.difference > 0))) && (
+                          <div className="space-y-1 mt-1.5" id={`savings-checkin-notes-${ci.id}`}>
+                            {(() => {
+                              let pot = 0;
+                              let def = 0;
+                              ci.decisions.forEach((d) => {
+                                const isSav = d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('savings');
+                                if (!isSav) {
+                                  if (d.difference > 0) pot += d.difference;
+                                  else if (d.difference < 0) def += Math.abs(d.difference);
+                                }
+                              });
+                              const potUsedForCoverage = Math.min(pot, def);
+
+                              return ci.decisions
+                                .filter((d) => {
+                                  const isSav = d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('savings');
+                                  if (isSav) return false;
+                                  return d.choice === 'savings' || (d.savingsContribution && d.savingsContribution > 0) || (d.difference && d.difference > 0);
+                                })
+                                .map((d, dIdx) => {
+                                  const rawAmount = d.savingsContribution && d.savingsContribution > 0
+                                    ? d.savingsContribution
+                                    : d.difference && d.difference > 0
+                                    ? d.difference
+                                    : 0;
+                                  const diff = d.difference && d.difference > 0 ? d.difference : rawAmount;
+                                  const coverageShare = (pot > 0 && potUsedForCoverage > 0 && diff > 0)
+                                    ? diff * (potUsedForCoverage / pot)
+                                    : 0;
+                                  const amt = Math.max(0, rawAmount - coverageShare);
+                                  if (amt <= 0) return null;
+                                  return (
+                                    <div
+                                      key={`sav-dec-${d.categoryId || dIdx}`}
+                                      className="flex items-center gap-1.5 text-xs text-dark-green-900 bg-sage-50/90 border border-sage-200/90 rounded-lg px-2.5 py-1"
+                                    >
+                                      <span className="w-1.5 h-1.5 rounded-full bg-sage-600 shrink-0" />
+                                      <span className="font-semibold">{formatCurrency(amt)} sent to savings</span>
+                                      {d.categoryName && (
+                                        <span className="text-[11px] text-brown-700">({d.categoryName})</span>
+                                      )}
+                                    </div>
+                                  );
+                                });
+                            })()}
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -2380,8 +2459,10 @@ export const CategoryLedgerView: React.FC = () => {
                   return `Annual Bill: Prorated ${formattedAmt} ${unit}`;
                 }
 
-                if (exp.billFrequency === 'monthly') {
-                  const billFiscalMonth = getFiscalMonthForDate(validExpDate, fiscalYearEnd);
+                if (exp.billFrequency === 'monthly' || exp.billFiscalMonthStart || exp.billFiscalMonth) {
+                  const billFiscalMonth = exp.billFiscalMonthStart
+                    ? getFiscalMonthForDate(new Date(exp.billFiscalMonthStart + (exp.billFiscalMonthStart.length === 10 ? 'T12:00:00' : '')), fiscalYearEnd)
+                    : getFiscalMonthForDate(validExpDate, fiscalYearEnd);
                   const weeksInMonth = billFiscalMonth.weekCount || 4;
                   const weeklyAmount = Math.round((amount / weeksInMonth) * 100) / 100;
 
@@ -2399,7 +2480,8 @@ export const CategoryLedgerView: React.FC = () => {
                   }
 
                   const formattedAmt = targetProrated % 1 === 0 ? targetProrated : targetProrated.toFixed(2);
-                  return `Monthly Bill: Prorated ${formattedAmt} ${unit}`;
+                  const monthName = exp.billFiscalMonthName || `${billFiscalMonth.monthName} ${billFiscalMonth.fiscalYear || ''}`.trim();
+                  return `Monthly Bill (${monthName}): Prorated ${formattedAmt} ${unit}`;
                 }
 
                 if (exp.billFrequency === 'custom' && exp.billStartDate && exp.billEndDate) {

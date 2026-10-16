@@ -1,6 +1,11 @@
 import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { calculateCheckInStatus, getOldestPastDueCheckInWeek } from '../../lib/checkInCalculations';
+import {
+  calculateCheckInStatus,
+  getOldestPastDueCheckInWeek,
+  getUnreviewedCompletedMonth,
+  isMonthlyReviewCompletedForMonth,
+} from '../../lib/checkInCalculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
 import {
   CheckCircle,
@@ -35,8 +40,8 @@ export const ShortcutBar: React.FC = () => {
 
   // Compute weekly check-in past due status (displaying the oldest uncompleted check-in)
   const oldestPastDueWeek = React.useMemo(() => {
-    return getOldestPastDueCheckInWeek(household, checkIns);
-  }, [household, checkIns]);
+    return getOldestPastDueCheckInWeek(household, checkIns, new Date(), expenses);
+  }, [household, checkIns, expenses]);
 
   // Find the most recent check-in (completed or recorded)
   const mostRecentCheckIn = React.useMemo(() => {
@@ -65,32 +70,52 @@ export const ShortcutBar: React.FC = () => {
     };
   }, [household, checkIns, expenses, oldestPastDueWeek]);
 
-  // Compute monthly retrospective past due status
-  const monthlyPastDueStatus = React.useMemo(() => {
-    if (!household) return { isPastDue: false, title: '', description: '' };
+  // Check for any month whose weekly check-ins have ALL been completed and monthly review is NOT completed
+  const unreviewedCompletedMonth = React.useMemo(() => {
+    return getUnreviewedCompletedMonth(household, checkIns, expenses);
+  }, [household, checkIns, expenses]);
+
+  // Compute monthly retrospective availability and status
+  const monthlyReviewStatus = React.useMemo(() => {
+    if (!household) return { isAvailable: false, isPastDue: false, title: '', description: '', targetMonth: null };
+
+    // 1. All of a month's weekly check-ins have been completed and monthly review is not completed
+    if (unreviewedCompletedMonth) {
+      const isPastDueMonth = new Date().getTime() > unreviewedCompletedMonth.endDate.getTime();
+      return {
+        isAvailable: true,
+        isPastDue: isPastDueMonth,
+        title: isPastDueMonth
+          ? `${unreviewedCompletedMonth.monthName} Retrospective Past Due`
+          : `Complete ${unreviewedCompletedMonth.monthName} Monthly Review`,
+        description: isPastDueMonth
+          ? `All weekly check-ins for ${unreviewedCompletedMonth.monthName} are finished and the month has ended. Complete your monthly review to evaluate category pacing and fund your savings goals.`
+          : `All of ${unreviewedCompletedMonth.monthName}'s weekly check-ins have been completed! Reconcile monthly bills, evaluate category savings, and allocate banked savings to goals.`,
+        targetMonth: unreviewedCompletedMonth,
+      };
+    }
+
+    // 2. Calendar month past due fallback
     const currentFiscalMonth = getFiscalMonthForDate(new Date(), household.fiscalYearEndMonth || 12);
     const monthEndTime = currentFiscalMonth.endDate.getTime();
     const isPastDueMonth = new Date().getTime() > monthEndTime;
 
     if (isPastDueMonth) {
-      const finalWeekStartTime = monthEndTime - 7 * 24 * 60 * 60 * 1000;
-      const hasCompletedMonthRetro = (checkIns || []).some((c) => {
-        const cEndTime = new Date(c.weekEndDate).getTime();
-        return cEndTime >= finalWeekStartTime && c.status === 'completed';
-      });
-
-      if (!hasCompletedMonthRetro) {
+      const isCompleted = isMonthlyReviewCompletedForMonth(currentFiscalMonth, household);
+      if (!isCompleted) {
         return {
+          isAvailable: true,
           isPastDue: true,
-          title: 'Monthly Retrospective Past Due',
+          title: `${currentFiscalMonth.monthName} Retrospective Past Due`,
           description:
             'The fiscal month has concluded. Review your macro budget performance, analyze category pacing, and establish next month’s baseline.',
+          targetMonth: currentFiscalMonth,
         };
       }
     }
 
-    return { isPastDue: false, title: '', description: '' };
-  }, [household, checkIns]);
+    return { isAvailable: false, isPastDue: false, title: '', description: '', targetMonth: null };
+  }, [household, checkIns, expenses, unreviewedCompletedMonth]);
 
   // Session dismissal helpers
   const handleDismissWeeklyReview = () => {
@@ -126,12 +151,12 @@ export const ShortcutBar: React.FC = () => {
 
       if (weeklyPastDueStatus.isPastDue && !isWeeklyDismissed) {
         setExpandedShortcut('weekly_review');
-      } else if (monthlyPastDueStatus.isPastDue && !isMonthlyDismissed) {
+      } else if (monthlyReviewStatus.isPastDue && !isMonthlyDismissed) {
         setExpandedShortcut('monthly_review');
       }
       setHasInitializedReview(true);
     }
-  }, [weeklyPastDueStatus.isPastDue, monthlyPastDueStatus.isPastDue, hasInitializedReview]);
+  }, [weeklyPastDueStatus.isPastDue, monthlyReviewStatus.isPastDue, hasInitializedReview]);
 
   if (!household) return null;
 
@@ -272,39 +297,51 @@ export const ShortcutBar: React.FC = () => {
             )
           )}
 
-          {/* 2. EXPANDED MONTHLY RETROSPECTIVE PAST DUE BANNER */}
-          {expandedShortcut === 'monthly_review' && monthlyPastDueStatus.isPastDue && (
+          {/* 2. EXPANDED MONTHLY RETROSPECTIVE BANNER */}
+          {expandedShortcut === 'monthly_review' && monthlyReviewStatus.isAvailable && (
             <div
               id="dashboard-monthly-review-due-alert"
-              className="w-full bg-white border border-alert-red-400/90 rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative overflow-hidden transition-all duration-200 animate-in fade-in zoom-in-95"
+              className={`w-full bg-white border rounded-2xl sm:rounded-3xl p-3.5 sm:p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 relative overflow-hidden transition-all duration-200 animate-in fade-in zoom-in-95 ${
+                monthlyReviewStatus.isPastDue ? 'border-alert-red-400/90' : 'border-sage-400/90'
+              }`}
             >
               {/* Icon & Aligned Title + Past Due badge */}
               <div className="flex items-center gap-3 min-w-0">
                 <div className="relative shrink-0">
-                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-alert-red-50 border border-alert-red-200 flex items-center justify-center text-alert-red-600 shadow-2xs">
+                  <div className={`w-9 h-9 sm:w-10 sm:h-10 rounded-xl border flex items-center justify-center shadow-2xs ${
+                    monthlyReviewStatus.isPastDue
+                      ? 'bg-alert-red-50 border-alert-red-200 text-alert-red-600'
+                      : 'bg-sage-100 border-sage-300 text-dark-green-900'
+                  }`}>
                     <CalendarClock className="w-5 h-5" />
                   </div>
                   <span
                     id="dashboard-monthly-review-notification-dot"
-                    className="absolute -top-0.5 -right-0.5 w-3 h-3 bg-alert-red-600 rounded-full ring-2 ring-white"
+                    className={`absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white ${
+                      monthlyReviewStatus.isPastDue ? 'bg-alert-red-600' : 'bg-dark-green-700'
+                    }`}
                     title="Actionable alert"
                     aria-label="Actionable alert"
                   />
                 </div>
 
                 <div className="space-y-0.5 min-w-0">
-                  {monthlyPastDueStatus.description && (
+                  {monthlyReviewStatus.description && (
                     <p className="text-[11px] sm:text-xs text-brown-700 leading-normal max-w-2xl">
-                      {monthlyPastDueStatus.description}
+                      {monthlyReviewStatus.description}
                     </p>
                   )}
 
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="text-sm sm:text-base font-black text-dark-green-950 tracking-tight leading-none">
-                      {monthlyPastDueStatus.title}
+                      {monthlyReviewStatus.title}
                     </h3>
-                    <span className="text-[10px] font-extrabold uppercase tracking-wider text-alert-red-700 bg-alert-red-100/90 border border-alert-red-300 px-2 py-0.5 rounded-full leading-none">
-                      Past Due
+                    <span className={`text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full leading-none border ${
+                      monthlyReviewStatus.isPastDue
+                        ? 'text-alert-red-700 bg-alert-red-100/90 border-alert-red-300'
+                        : 'text-dark-green-900 bg-sage-100 border-sage-300'
+                    }`}>
+                      {monthlyReviewStatus.isPastDue ? 'Past Due' : 'Ready'}
                     </span>
                   </div>
                 </div>
@@ -314,10 +351,17 @@ export const ShortcutBar: React.FC = () => {
               <div className="w-full sm:w-auto flex items-center justify-between sm:justify-end gap-2 shrink-0 pt-1 sm:pt-0 pl-12 sm:pl-0">
                 <button
                   id="dashboard-start-monthly-retro-cta"
-                  onClick={() => openMonthlyRetroModal()}
-                  className="flex items-center justify-start text-left gap-1.5 px-4 py-2 bg-alert-red-600 hover:bg-alert-red-700 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer"
+                  onClick={() => {
+                    openMonthlyRetroModal(monthlyReviewStatus.targetMonth);
+                    setExpandedShortcut(null);
+                  }}
+                  className={`flex items-center justify-start text-left gap-1.5 px-4 py-2 text-white text-xs font-extrabold rounded-xl shadow-xs transition active:scale-95 cursor-pointer ${
+                    monthlyReviewStatus.isPastDue
+                      ? 'bg-alert-red-600 hover:bg-alert-red-700'
+                      : 'bg-dark-green-800 hover:bg-dark-green-900'
+                  }`}
                 >
-                  <span>Start Monthly Retro</span>
+                  <span>Complete Monthly Review</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </button>
 
@@ -423,20 +467,26 @@ export const ShortcutBar: React.FC = () => {
                 </button>
               )}
 
-              {/* CONDITIONAL RED ICON 2: Monthly Retrospective Past Due */}
-              {monthlyPastDueStatus.isPastDue && (
+              {/* CONDITIONAL ICON: Monthly Review Ready / Past Due */}
+              {monthlyReviewStatus.isAvailable && (
                 <button
                   type="button"
                   id="dashboard-monthly-review-due-alert"
-                  onClick={() => setExpandedShortcut('monthly_review')}
-                  className="group relative shrink-0 w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-alert-red-50 border border-alert-red-200 hover:bg-alert-red-100 hover:scale-105 flex items-center justify-center text-alert-red-600 shadow-2xs transition active:scale-95 cursor-pointer"
-                  title="Monthly Retrospective Past Due (Click to expand)"
-                  aria-label="Monthly Retrospective Past Due (Click to expand)"
+                  onClick={() => openMonthlyRetroModal(monthlyReviewStatus.targetMonth)}
+                  className={`group relative shrink-0 w-8 h-8 sm:w-9 sm:h-9 rounded-xl border flex items-center justify-center shadow-2xs transition active:scale-95 cursor-pointer ${
+                    monthlyReviewStatus.isPastDue
+                      ? 'bg-alert-red-50 border-alert-red-200 hover:bg-alert-red-100 text-alert-red-600'
+                      : 'bg-sage-100 hover:bg-sage-200 border-sage-300 text-dark-green-900'
+                  }`}
+                  title={monthlyReviewStatus.isPastDue ? "Monthly Review Past Due - Click to Complete" : "Complete Monthly Review"}
+                  aria-label="Complete Monthly Review"
                 >
-                  <CalendarClock className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-alert-red-600" />
+                  <CalendarClock className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-dark-green-900 group-hover:scale-110 transition-transform" />
                   <span
                     id="dashboard-monthly-review-notification-dot"
-                    className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-alert-red-600 rounded-full ring-2 ring-white animate-pulse"
+                    className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white animate-pulse ${
+                      monthlyReviewStatus.isPastDue ? 'bg-alert-red-600' : 'bg-dark-green-700'
+                    }`}
                     title="Actionable alert"
                     aria-label="Actionable alert"
                   />

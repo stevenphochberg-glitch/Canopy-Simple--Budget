@@ -7,7 +7,7 @@ import {
   getWeekId,
   getCategoryEffectiveWeeklyBudget,
 } from '../../lib/calculations';
-import { getFiscalYearMonths, getFiscalWeekId } from '../../lib/fiscal445';
+import { getFiscalYearMonths, getFiscalWeekId, getFiscalMonthForDate } from '../../lib/fiscal445';
 import { parseQuickNoteWithGemini, scanReceiptWithGemini } from '../../lib/geminiApi';
 import { DepositCheckInImpactModal } from './DepositCheckInImpactModal';
 import { MultiTagSplitModal } from './MultiTagSplitModal';
@@ -127,17 +127,6 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     localStorage.setItem(LAST_TAB_STORAGE_KEY, 'manual');
   };
 
-  // Available expense categories (strictly exclude savings categories)
-  const availableExpenseCategories = useMemo(() => {
-    return categories.filter(
-      (c) =>
-        c.id !== 'cat_savings' &&
-        c.type !== 'savings' &&
-        c.group?.toLowerCase() !== 'savings' &&
-        !c.name.toLowerCase().includes('saving')
-    );
-  }, [categories]);
-
   const isSavingsCategory = (cat?: Category | null) => {
     if (!cat) return false;
     return (
@@ -148,19 +137,56 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     );
   };
 
+  // Available expense categories (strictly exclude savings categories)
+  // Regular expense categories (non-bills) appear first, followed by Bills
+  const availableExpenseCategories = useMemo(() => {
+    const list = categories.filter(
+      (c) =>
+        c.id !== 'cat_savings' &&
+        c.type !== 'savings' &&
+        c.group?.toLowerCase() !== 'savings' &&
+        !c.name.toLowerCase().includes('saving')
+    );
+    return [...list].sort((a, b) => {
+      const aIsBill = a.group === 'Bills' || a.name.toLowerCase().includes('bill');
+      const bIsBill = b.group === 'Bills' || b.name.toLowerCase().includes('bill');
+      if (aIsBill && !bIsBill) return 1;
+      if (!aIsBill && bIsBill) return -1;
+      return 0;
+    });
+  }, [categories]);
+
+  const defaultRegularCategoryId = useMemo(() => {
+    const regular = availableExpenseCategories.find(
+      (c) => c.group !== 'Bills' && !c.name.toLowerCase().includes('bill') && !isSavingsCategory(c)
+    );
+    return regular?.id || availableExpenseCategories[0]?.id || 'cat_one_time_deposit';
+  }, [availableExpenseCategories]);
+
   // -------------------------------------------------------------
   // PATH A: Manual Entry State
   // -------------------------------------------------------------
   const [manualAmount, setManualAmount] = useState<string>('');
   const [manualDescription, setManualDescription] = useState<string>('');
   const [manualCategoryId, setManualCategoryId] = useState<string>(() => {
-    if (initialCategory?.id) {
-      if (isSavingsCategory(initialCategory)) {
-        return 'cat_one_time_deposit';
+    if (initialCategory) {
+      if (typeof initialCategory === 'object' && initialCategory.id) {
+        if (isSavingsCategory(initialCategory)) {
+          return 'cat_one_time_deposit';
+        }
+        return initialCategory.id;
+      } else if (typeof initialCategory === 'string') {
+        if (initialCategory === 'deposits' || initialCategory === 'cat_one_time_deposit') {
+          return 'cat_one_time_deposit';
+        }
+        return initialCategory;
       }
-      return initialCategory.id;
     }
-    return availableExpenseCategories[0]?.id || 'cat_one_time_deposit';
+    // Always default to a regular expense category (non-bills)
+    const initialRegular = availableExpenseCategories.find(
+      (c) => c.group !== 'Bills' && !c.name.toLowerCase().includes('bill') && !isSavingsCategory(c)
+    );
+    return initialRegular?.id || availableExpenseCategories[0]?.id || 'cat_one_time_deposit';
   });
   const [manualDate, setManualDate] = useState<string>(
     new Date().toISOString().split('T')[0]
@@ -169,6 +195,51 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     user?.userId || 'usr_self'
   );
   const [manualBillFrequency, setManualBillFrequency] = useState<BillFrequency>('monthly');
+
+  // Generate fiscal months list for Bills allocation
+  const fiscalMonthOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const years = [currentYear - 1, currentYear, currentYear + 1];
+    const options: Array<{
+      id: string;
+      label: string;
+      startDateStr: string;
+      endDateStr: string;
+      monthName: string;
+      fiscalYear: number;
+      fiscalMonthNumber: number;
+    }> = [];
+
+    years.forEach((year) => {
+      const months = getFiscalYearMonths(year, fiscalYearEnd);
+      months.forEach((m) => {
+        const startStr = m.startDate.toISOString().split('T')[0];
+        const endStr = m.endDate.toISOString().split('T')[0];
+        options.push({
+          id: `FY${year}-M${m.fiscalMonthNumber}-${startStr}`,
+          label: `${m.monthName} ${year} (${m.label})`,
+          startDateStr: startStr,
+          endDateStr: endStr,
+          monthName: m.monthName,
+          fiscalYear: year,
+          fiscalMonthNumber: m.fiscalMonthNumber,
+        });
+      });
+    });
+
+    return options;
+  }, [household?.fiscalYearEndMonth]);
+
+  // Selected fiscal month for the bill (defaults to the current fiscal month)
+  const [manualBillFiscalMonth, setManualBillFiscalMonth] = useState<string>(() => {
+    const today = new Date();
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const currentFM = getFiscalMonthForDate(today, fiscalYearEnd);
+    const startStr = currentFM.startDate.toISOString().split('T')[0];
+    const year = currentFM.fiscalYear || currentFM.startDate.getFullYear();
+    return `FY${year}-M${currentFM.fiscalMonthNumber}-${startStr}`;
+  });
 
   // Generate fiscal weeks list for custom date range picker (current year + next year)
   const fiscalWeekOptions = useMemo(() => {
@@ -253,6 +324,26 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
     selectedManualCat?.group === 'Bills' ||
     selectedManualCat?.name.toLowerCase().includes('bill');
 
+  const selectedFiscalMonthObj = useMemo(() => {
+    return (
+      fiscalMonthOptions.find((opt) => opt.id === manualBillFiscalMonth) ||
+      fiscalMonthOptions[0]
+    );
+  }, [fiscalMonthOptions, manualBillFiscalMonth]);
+
+  const transactionDateFiscalMonth = useMemo(() => {
+    if (!manualDate) return null;
+    const d = new Date(manualDate + (manualDate.length === 10 ? 'T12:00:00' : ''));
+    if (isNaN(d.getTime())) return null;
+    return getFiscalMonthForDate(d, household?.fiscalYearEndMonth || 12);
+  }, [manualDate, household?.fiscalYearEndMonth]);
+
+  const isCrossMonthBillAllocation = useMemo(() => {
+    if (!isBillsCategory || !selectedFiscalMonthObj || !transactionDateFiscalMonth) return false;
+    const txStartStr = transactionDateFiscalMonth.startDate.toISOString().split('T')[0];
+    return txStartStr !== selectedFiscalMonthObj.startDateStr;
+  }, [isBillsCategory, selectedFiscalMonthObj, transactionDateFiscalMonth]);
+
   const activeWeekId = useMemo(() => {
     const today = new Date();
     const firstDay = household?.firstDayOfWeek || 'Monday';
@@ -278,10 +369,10 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
           }
         }
       } else if (!isCategoryLocked) {
-        setManualCategoryId((prev) => (prev ? prev : availableExpenseCategories[0]?.id || 'cat_one_time_deposit'));
+        setManualCategoryId(defaultRegularCategoryId);
       }
     }
-  }, [isOpen, initialCategory, isCategoryLocked, availableExpenseCategories]);
+  }, [isOpen, initialCategory, isCategoryLocked, defaultRegularCategoryId]);
 
   // Keep selectedGoalId synced with savingsGoals
   useEffect(() => {
@@ -358,9 +449,9 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       availableExpenseCategories.length > 0 &&
       !availableExpenseCategories.some((c) => c.id === manualCategoryId)
     ) {
-      setManualCategoryId(availableExpenseCategories[0].id);
+      setManualCategoryId(defaultRegularCategoryId);
     }
-  }, [availableExpenseCategories, manualCategoryId]);
+  }, [availableExpenseCategories, manualCategoryId, defaultRegularCategoryId]);
 
   useEffect(() => {
     if (user?.userId) {
@@ -421,6 +512,10 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       billFrequency: isBillsCategory ? manualBillFrequency : undefined,
       billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
       billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+      billFiscalMonth: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.id : undefined,
+      billFiscalMonthStart: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.startDateStr : undefined,
+      billFiscalMonthEnd: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.endDateStr : undefined,
+      billFiscalMonthName: isBillsCategory && selectedFiscalMonthObj ? `${selectedFiscalMonthObj.monthName} ${selectedFiscalMonthObj.fiscalYear}` : undefined,
       tags: isOneTimeDeposit
         ? ['One-Time Deposit', 'Budget Expansion']
         : selectedTags.length > 0
@@ -525,6 +620,10 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
         billFrequency: isBillsCategory ? manualBillFrequency : undefined,
         billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
         billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+        billFiscalMonth: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.id : undefined,
+        billFiscalMonthStart: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.startDateStr : undefined,
+        billFiscalMonthEnd: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.endDateStr : undefined,
+        billFiscalMonthName: isBillsCategory && selectedFiscalMonthObj ? `${selectedFiscalMonthObj.monthName} ${selectedFiscalMonthObj.fiscalYear}` : undefined,
         tags: isOneTimeDeposit
           ? ['One-Time Deposit', 'Budget Expansion']
           : selectedTags.length > 0
@@ -571,6 +670,10 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       billFrequency: isBillsCategory ? manualBillFrequency : undefined,
       billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
       billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+      billFiscalMonth: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.id : undefined,
+      billFiscalMonthStart: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.startDateStr : undefined,
+      billFiscalMonthEnd: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.endDateStr : undefined,
+      billFiscalMonthName: isBillsCategory && selectedFiscalMonthObj ? `${selectedFiscalMonthObj.monthName} ${selectedFiscalMonthObj.fiscalYear}` : undefined,
       tags: [item.tag],
       subcategory: item.tag,
     }));
@@ -611,6 +714,10 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
       billFrequency: isBillsCategory ? manualBillFrequency : undefined,
       billStartDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillStartDate : undefined,
       billEndDate: isBillsCategory && manualBillFrequency === 'custom' ? manualBillEndDate : undefined,
+      billFiscalMonth: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.id : undefined,
+      billFiscalMonthStart: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.startDateStr : undefined,
+      billFiscalMonthEnd: isBillsCategory && selectedFiscalMonthObj ? selectedFiscalMonthObj.endDateStr : undefined,
+      billFiscalMonthName: isBillsCategory && selectedFiscalMonthObj ? `${selectedFiscalMonthObj.monthName} ${selectedFiscalMonthObj.fiscalYear}` : undefined,
       tags: selectedTags.length > 0 ? selectedTags : undefined,
       subcategory: selectedTags[0] || undefined,
     };
@@ -976,86 +1083,119 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                   </select>
                 </div>
 
-                {/* Field 2 (when Bills category is selected): Bill Billing Frequency */}
+                {/* Field 2 (when Bills category is selected): Fiscal Month & Frequency */}
                 {isBillsCategory && (
-                  <div className="space-y-2 p-3.5 bg-sage-50/80 border border-sage-200 rounded-2xl animate-in fade-in">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
-                        <Tag className="w-3.5 h-3.5 text-sage-700" />
-                        Bill Billing Frequency
-                      </label>
+                  <div className="space-y-3.5 p-4 bg-sage-50/90 border border-sage-200 rounded-2xl animate-in fade-in">
+                    {/* Fiscal Month Selection (Required for Bills) */}
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                          <Calendar className="w-3.5 h-3.5 text-sage-700" />
+                          Fiscal Month for Bill
+                        </label>
+                        <span className="text-[10px] font-bold text-sage-800 bg-sage-200/80 px-2 py-0.5 rounded-full">
+                          4-4-5 Fiscal Period
+                        </span>
+                      </div>
+
+                      <select
+                        id="manual-select-bill-fiscal-month"
+                        value={manualBillFiscalMonth}
+                        onChange={(e) => setManualBillFiscalMonth(e.target.value)}
+                        className="w-full px-3.5 py-2.5 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800 shadow-2xs cursor-pointer"
+                      >
+                        {fiscalMonthOptions.map((opt) => (
+                          <option key={opt.id} value={opt.id}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+
+                      <p className="text-[11px] text-dark-grey-600">
+                        Select the fiscal month this bill applies to. The bill amount is allocated entirely to this chosen fiscal month regardless of transaction date.
+                      </p>
                     </div>
 
-                    <select
-                      id="manual-select-bill-frequency"
-                      value={manualBillFrequency}
-                      onChange={(e) => setManualBillFrequency(e.target.value as BillFrequency)}
-                      className="w-full px-3.5 py-2 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                    >
-                      <option value="monthly">Monthly</option>
-                      <option value="yearly">Yearly</option>
-                      <option value="custom">Custom</option>
-                    </select>
+                    {/* Bill Billing Frequency */}
+                    <div className="space-y-1.5 pt-2 border-t border-sage-200/70">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1.5">
+                          <Tag className="w-3.5 h-3.5 text-sage-700" />
+                          Bill Billing Frequency
+                        </label>
+                      </div>
 
-                    {manualBillFrequency === 'custom' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 animate-in fade-in">
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
-                            <Calendar className="w-3 h-3 text-sage-700" />
-                            Start Week
-                          </label>
-                          <select
-                            id="manual-input-bill-start-date"
-                            value={manualBillStartDate}
-                            onChange={(e) => {
-                              const newStart = e.target.value;
-                              setManualBillStartDate(newStart);
-                              if (manualBillEndDate < newStart) {
-                                const matched = fiscalWeekOptions.find((o) => o.startDate === newStart);
-                                if (matched) setManualBillEndDate(matched.endDate);
-                              }
-                            }}
-                            className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                          >
-                            {fiscalWeekOptions.map((opt) => (
-                              <option key={opt.id} value={opt.startDate}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
-                            <Calendar className="w-3 h-3 text-sage-700" />
-                            End Week
-                          </label>
-                          <select
-                            id="manual-input-bill-end-date"
-                            value={manualBillEndDate}
-                            onChange={(e) => setManualBillEndDate(e.target.value)}
-                            className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
-                          >
-                            {fiscalWeekOptions
-                              .filter((opt) => opt.endDate >= manualBillStartDate)
-                              .map((opt) => (
-                                <option key={opt.id} value={opt.endDate}>
+                      <select
+                        id="manual-select-bill-frequency"
+                        value={manualBillFrequency}
+                        onChange={(e) => setManualBillFrequency(e.target.value as BillFrequency)}
+                        className="w-full px-3.5 py-2 bg-white border border-sage-300 rounded-xl text-xs sm:text-sm font-bold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                      >
+                        <option value="monthly">Monthly</option>
+                        <option value="yearly">Yearly</option>
+                        <option value="custom">Custom</option>
+                      </select>
+
+                      {manualBillFrequency === 'custom' && (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-1 animate-in fade-in">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                              <Calendar className="w-3 h-3 text-sage-700" />
+                              Start Week
+                            </label>
+                            <select
+                              id="manual-input-bill-start-date"
+                              value={manualBillStartDate}
+                              onChange={(e) => {
+                                const newStart = e.target.value;
+                                setManualBillStartDate(newStart);
+                                if (manualBillEndDate < newStart) {
+                                  const matched = fiscalWeekOptions.find((o) => o.startDate === newStart);
+                                  if (matched) setManualBillEndDate(matched.endDate);
+                                }
+                              }}
+                              className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                            >
+                              {fiscalWeekOptions.map((opt) => (
+                                <option key={opt.id} value={opt.startDate}>
                                   {opt.label}
                                 </option>
                               ))}
-                          </select>
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
+                              <Calendar className="w-3 h-3 text-sage-700" />
+                              End Week
+                            </label>
+                            <select
+                              id="manual-input-bill-end-date"
+                              value={manualBillEndDate}
+                              onChange={(e) => setManualBillEndDate(e.target.value)}
+                              className="w-full px-3 py-2 bg-white border border-sage-300 rounded-xl text-xs font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800"
+                            >
+                              {fiscalWeekOptions
+                                .filter((opt) => opt.endDate >= manualBillStartDate)
+                                .map((opt) => (
+                                  <option key={opt.id} value={opt.endDate}>
+                                    {opt.label}
+                                  </option>
+                                ))}
+                            </select>
+                          </div>
                         </div>
-                      </div>
-                    )}
-
-                    <div className="space-y-1 pt-0.5 text-[11px] text-brown-700 leading-snug">
-                      <p>
-                        <strong>Note:</strong> Bills are not included in weekly budgeting and will only show in the Monthly view dashboard.
-                      </p>
-                      {manualBillFrequency === 'yearly' && (
-                        <p className="text-sage-800 font-semibold pt-0.5">
-                          This yearly expense will be prorated equally over the next 12 months starting with the month that the Bill was logged in.
-                        </p>
                       )}
+
+                      <div className="space-y-1 pt-0.5 text-[11px] text-brown-700 leading-snug">
+                        <p>
+                          <strong>Note:</strong> Bills are not included in weekly budgeting and will only show in the Monthly view dashboard.
+                        </p>
+                        {manualBillFrequency === 'yearly' && (
+                          <p className="text-sage-800 font-semibold pt-0.5">
+                            This yearly expense will be prorated equally over the 12 months of the fiscal year starting with the selected fiscal month.
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -1127,9 +1267,16 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
 
                   {/* Date */}
                   <div className="space-y-1">
-                    <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center gap-1">
-                      <Calendar className="w-3.5 h-3.5 text-sage-700" />
-                      Date
+                    <label className="text-xs font-extrabold uppercase tracking-wider text-dark-green-900 flex items-center justify-between">
+                      <span className="flex items-center gap-1">
+                        <Calendar className="w-3.5 h-3.5 text-sage-700" />
+                        Date
+                      </span>
+                      {isBillsCategory && selectedFiscalMonthObj && (
+                        <span className="text-[10px] font-bold text-brown-800 bg-beige-200/90 px-2 py-0.5 rounded-full">
+                          Allocated: {selectedFiscalMonthObj.monthName}
+                        </span>
+                      )}
                     </label>
                     <input
                       id="manual-input-date"
@@ -1138,6 +1285,11 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
                       onChange={(e) => setManualDate(e.target.value)}
                       className="w-full px-4 py-3 bg-beige-50 border border-beige-300 rounded-2xl text-xs sm:text-sm font-semibold text-dark-green-900 focus:outline-none focus:border-dark-green-800 focus:bg-white transition"
                     />
+                    {isBillsCategory && isCrossMonthBillAllocation && selectedFiscalMonthObj && transactionDateFiscalMonth && (
+                      <p className="text-[11px] text-brown-800 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-xl font-medium leading-tight">
+                        <strong>Cross-month allocation:</strong> Date is in {transactionDateFiscalMonth.monthName}, but amount is allocated entirely to <strong>{selectedFiscalMonthObj.monthName} {selectedFiscalMonthObj.fiscalYear}</strong>.
+                      </p>
+                    )}
                   </div>
                 </div>
 

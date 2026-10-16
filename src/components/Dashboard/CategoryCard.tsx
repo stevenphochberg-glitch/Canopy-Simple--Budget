@@ -10,7 +10,7 @@ import {
   formatLocalDate,
 } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
-import { Plus, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, ShieldCheck, PiggyBank, MoreHorizontal } from 'lucide-react';
+import { Plus, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, ShieldCheck, PiggyBank, MoreHorizontal, Sparkles } from 'lucide-react';
 import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { BudgetProgressBar } from '../Common/BudgetProgressBar';
@@ -56,6 +56,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     return 'desc';
   };
 
+  const isBills = category.group?.toLowerCase() === 'bills' || category.name?.toLowerCase() === 'bills' || category.id === 'cat_bills';
   const isSavings = category.type === 'savings' || category.group === 'Savings';
   const categoryType = isSavings ? 'savings' : 'expense';
 
@@ -159,7 +160,14 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   // 1. Calculate all expense categories pacings in the current timeframe
   const expensePacings = useMemo(() => {
     return (categories || [])
-      .filter((c) => c.type !== 'savings' && c.group?.toLowerCase() !== 'bills' && c.name?.toLowerCase() !== 'bills' && c.group?.toLowerCase() !== 'savings')
+      .filter(
+        (c) =>
+          c.type !== 'savings' &&
+          c.group?.toLowerCase() !== 'bills' &&
+          c.name?.toLowerCase() !== 'bills' &&
+          c.id !== 'cat_bills' &&
+          c.group?.toLowerCase() !== 'savings'
+      )
       .map((cat) => {
         const catBudget = isMonthView
           ? (cat.baselineBudget || 0) * weeksInMonth
@@ -195,7 +203,8 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     if (thisWeekCheckIn?.decisions && thisWeekCheckIn.decisions.length > 0) {
       thisWeekCheckIn.decisions.forEach((d) => {
         const isSav = d.choice === 'savings' && d.categoryName?.toLowerCase().includes('savings');
-        if (!isSav) {
+        const isB = d.categoryId === 'cat_bills' || d.categoryName?.toLowerCase().includes('bills');
+        if (!isSav && !isB) {
           if (d.difference > 0) {
             pot += d.difference;
           } else if (d.difference < 0) {
@@ -223,7 +232,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
 
   // 3. For this individual underspent expense category:
   const { categoryOverspendCoverage, categoryLeftoverSurplus } = useMemo(() => {
-    if (isSavings) return { categoryOverspendCoverage: 0, categoryLeftoverSurplus: 0 };
+    if (isSavings || isBills) return { categoryOverspendCoverage: 0, categoryLeftoverSurplus: 0 };
     const mySurplus = Math.max(0, remaining);
     if (mySurplus <= 0 || totalTransferPot <= 0) {
       return { categoryOverspendCoverage: 0, categoryLeftoverSurplus: 0 };
@@ -235,7 +244,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
       categoryOverspendCoverage: coverageShare,
       categoryLeftoverSurplus: leftover,
     };
-  }, [isSavings, remaining, totalTransferPot, potUsedForCoverage]);
+  }, [isSavings, isBills, remaining, totalTransferPot, potUsedForCoverage]);
 
   // 4. For overspent expense categories:
   const savingsCategory = useMemo(() => {
@@ -267,19 +276,187 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     };
   }, [isSavings, remaining, totalDeficit, potUsedForCoverage, totalAvailableSavings]);
 
-  // 5. For Savings Category:
-  // Month View vs Week View savings aggregation
-  const monthCompletedCheckIns = useMemo(() => {
-    if (!isMonthView) return [];
-    const mStart = dateRange.startDate.getTime();
-    const mEnd = dateRange.endDate.getTime();
-    return (checkIns || []).filter((c) => {
-      if (c.status !== 'completed') return false;
-      const cStart = new Date(c.weekStartDate + 'T12:00:00').getTime();
-      const cEnd = new Date(c.weekEndDate + 'T12:00:00').getTime();
-      return cEnd >= mStart && cStart <= mEnd;
+  // Contributions sent to savings from underspent expense categories during check-in
+  const savingsContributions = useMemo(() => {
+    // Only displayed/computed after the week's check-in is complete
+    if (!isSavings || !thisWeekCheckIn) return [];
+    const list: { categoryId: string; categoryName: string; amount: number }[] = [];
+
+    // Helper to compute net savings amount after deducting overspend coverage share
+    const getNetSavings = (rawAmt: number, categoryDifference: number) => {
+      const diff = categoryDifference > 0 ? categoryDifference : rawAmt;
+      const coverageShare = (totalTransferPot > 0 && potUsedForCoverage > 0 && diff > 0)
+        ? diff * (potUsedForCoverage / totalTransferPot)
+        : 0;
+      return Math.max(0, rawAmt - coverageShare);
+    };
+
+    // 1. From completed check-in decisions
+    if (thisWeekCheckIn.decisions && thisWeekCheckIn.decisions.length > 0) {
+      thisWeekCheckIn.decisions.forEach((d) => {
+        const isSavCat = d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings');
+        if (isSavCat) return;
+
+        const isSavingsChoice = d.choice === 'savings' || (d.savingsContribution && d.savingsContribution > 0);
+        const rawAmount = d.savingsContribution && d.savingsContribution > 0
+          ? d.savingsContribution
+          : d.choice === 'savings' && d.difference !== undefined && d.difference > 0
+          ? d.difference
+          : d.choice === 'savings' && d.budget !== undefined && d.spent !== undefined && d.budget > d.spent
+          ? d.budget - d.spent
+          : 0;
+
+        const diff = d.difference !== undefined ? d.difference : rawAmount;
+        const amount = getNetSavings(rawAmount, diff);
+
+        if (isSavingsChoice && amount > 0) {
+          list.push({
+            categoryId: d.categoryId,
+            categoryName: d.categoryName || 'Category',
+            amount,
+          });
+        }
+      });
+    }
+
+    // 2. Fallback: If thisWeekCheckIn exists and positive surplus exists in decisions
+    if (list.length === 0 && thisWeekCheckIn.decisions) {
+      thisWeekCheckIn.decisions.forEach((d) => {
+        const isSavCat = d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings');
+        if (isSavCat) return;
+        const diff = (d.difference !== undefined && d.difference > 0)
+          ? d.difference
+          : (d.budget !== undefined && d.spent !== undefined && d.budget > d.spent)
+          ? d.budget - d.spent
+          : 0;
+        const amount = getNetSavings(diff, diff);
+        if (amount > 0) {
+          list.push({
+            categoryId: d.categoryId,
+            categoryName: d.categoryName || 'Category',
+            amount,
+          });
+        }
+      });
+    }
+
+    return list;
+  }, [isSavings, thisWeekCheckIn, category.id, totalTransferPot, potUsedForCoverage]);
+
+  const totalSavingsSurplusTransferred = useMemo(() => {
+    return savingsContributions.reduce((sum, c) => sum + c.amount, 0);
+  }, [savingsContributions]);
+
+  // For an individual expense category, check if leftover surplus was sent to savings
+  const isSentToSavings = useMemo(() => {
+    if (isSavings) return false;
+    if (categoryDecision?.choice === 'savings') return true;
+    if (categoryDecision?.savingsContribution && categoryDecision.savingsContribution > 0) return true;
+    if (thisWeekCheckIn && remaining > 0) return true;
+    return false;
+  }, [isSavings, categoryDecision, thisWeekCheckIn, remaining]);
+
+  // Completed check-ins for the active timeframe (Month or Week)
+  const completedCheckInsInTimeframe = useMemo(() => {
+    if (!checkIns || checkIns.length === 0) return [];
+    const rangeStart = dateRange.startDate.getTime();
+    const rangeEnd = dateRange.endDate.getTime();
+
+    if (isMonthView) {
+      return (checkIns || []).filter((c) => {
+        if (c.status !== 'completed') return false;
+        const cStart = new Date(c.weekStartDate + (c.weekStartDate?.length === 10 ? 'T12:00:00' : '')).getTime();
+        const cEnd = new Date(c.weekEndDate + (c.weekEndDate?.length === 10 ? 'T12:00:00' : '')).getTime();
+        return (cEnd >= rangeStart && cStart <= rangeEnd) ||
+               (cStart >= rangeStart - 86400000 && cEnd <= rangeEnd + 86400000);
+      });
+    } else {
+      return (checkIns || []).filter(
+        (c) =>
+          c.status === 'completed' &&
+          (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+      );
+    }
+  }, [checkIns, isMonthView, dateRange, startStr, endStr]);
+
+  // Totals based on previous weekly check-ins for weekly expense categories (Essentials, Fun money)
+  const checkInTotals = useMemo(() => {
+    if (isSavings || isBills || completedCheckInsInTimeframe.length === 0) {
+      return null;
+    }
+
+    let totalSpentFromCheckIns = 0;
+    let totalCoverageFromCheckIns = 0;
+    let totalSavingsFromCheckIns = 0;
+    let totalBudgetFromCheckIns = 0;
+    let foundAnyDecision = false;
+
+    completedCheckInsInTimeframe.forEach((c) => {
+      const dec = (c.decisions || []).find(
+        (d) => d.categoryId === category.id || d.categoryName?.toLowerCase() === category.name?.toLowerCase()
+      );
+      if (!dec) return;
+      foundAnyDecision = true;
+
+      const spentInWeek = Number(dec.spent) || 0;
+      const budgetInWeek = Number(dec.budget) || (spentInWeek + (Number(dec.difference) || 0));
+      const diffInWeek = dec.difference !== undefined ? Number(dec.difference) : budgetInWeek - spentInWeek;
+
+      totalSpentFromCheckIns += spentInWeek;
+      totalBudgetFromCheckIns += budgetInWeek;
+
+      if (diffInWeek > 0) {
+        // Calculate the transfer pot and deficit across all non-bills, non-savings expense categories in this check-in
+        let weekPot = 0;
+        let weekDef = 0;
+        (c.decisions || []).forEach((d) => {
+          const isSavCat = d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('savings');
+          const isBillsCat = d.categoryId === 'cat_bills' || d.categoryName?.toLowerCase().includes('bills');
+          if (!isSavCat && !isBillsCat) {
+            const dDiff = Number(d.difference) !== undefined ? Number(d.difference) : (Number(d.budget) || 0) - (Number(d.spent) || 0);
+            if (dDiff > 0) weekPot += dDiff;
+            else if (dDiff < 0) weekDef += Math.abs(dDiff);
+          }
+        });
+
+        const weekPotUsed = Math.min(weekPot, weekDef);
+        const covShare = weekPot > 0 && weekPotUsed > 0 ? diffInWeek * (weekPotUsed / weekPot) : 0;
+        const savShare = Math.max(0, diffInWeek - covShare);
+
+        totalCoverageFromCheckIns += covShare;
+        totalSavingsFromCheckIns += savShare;
+      }
     });
-  }, [isMonthView, checkIns, dateRange]);
+
+    if (!foundAnyDecision) return null;
+
+    return {
+      spent: totalSpentFromCheckIns,
+      coverage: totalCoverageFromCheckIns,
+      savings: totalSavingsFromCheckIns,
+      budget: totalBudgetFromCheckIns,
+    };
+  }, [isSavings, isBills, completedCheckInsInTimeframe, category.id, category.name]);
+
+  const effectiveCategorySpent = checkInTotals ? checkInTotals.spent : effectiveSpent;
+  const effectiveOverspendCoverage = isBills || isMonthView ? 0 : (checkInTotals ? checkInTotals.coverage : categoryOverspendCoverage);
+  const effectiveSentToSavings = isBills ? 0 : (checkInTotals ? checkInTotals.savings : categoryLeftoverSurplus);
+  const effectiveRemaining = checkInTotals
+    ? Math.max(0, budgetForTimeframe - effectiveCategorySpent)
+    : remaining;
+
+  const shouldShowSurplusSplit = !isSavings && !isBills && (
+    checkInTotals !== null
+      ? (effectiveSentToSavings > 0 || (!isMonthView && checkInTotals.coverage > 0))
+      : (hasThisWeekCheckIn && categoryDecision !== null && ((!isMonthView && categoryOverspendCoverage > 0) || categoryLeftoverSurplus > 0))
+  );
+
+  const displayPercentage = budgetForTimeframe > 0
+    ? Math.round((effectiveCategorySpent / budgetForTimeframe) * 100)
+    : 0;
+
+  // Month View vs Week View savings aggregation
+  const monthCompletedCheckIns = completedCheckInsInTimeframe;
 
   const { monthSavingsBanked, monthSavingsCovered } = useMemo(() => {
     if (!isMonthView) return { monthSavingsBanked: 0, monthSavingsCovered: 0 };
@@ -403,29 +580,42 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     checkIns,
   ]);
 
-  // True banked amount (Target Budget minus funds used for Overspend Coverage)
+  // True banked amount (Baseline Budget: e.g. $335 weekly savings budget)
   const targetBudget = useMemo(() => {
     if (!isSavings) return budgetForTimeframe;
     if (isMonthView) {
       return (baselineBudget * weeksInMonth) + monthDepositTotal;
     }
-    return Math.max(
-      baselineBudget + depositAmount,
-      budgetForTimeframe,
-      overrideAmount !== undefined ? overrideAmount : 0
-    );
-  }, [isSavings, isMonthView, baselineBudget, weeksInMonth, monthDepositTotal, depositAmount, budgetForTimeframe, overrideAmount]);
+    return baselineBudget + depositAmount;
+  }, [
+    isSavings,
+    isMonthView,
+    baselineBudget,
+    weeksInMonth,
+    monthDepositTotal,
+    depositAmount,
+    budgetForTimeframe,
+  ]);
 
   const amountActuallyBanked = useMemo(() => {
     if (!isSavings) return 0;
-    if (thisWeekCheckIn && typeof thisWeekCheckIn.totalSaved === 'number') {
-      return Math.max(0, thisWeekCheckIn.totalSaved + depositAmount);
+    const computed = protectedSavings + totalSavingsSurplusTransferred + depositAmount;
+    if (totalSavingsSurplusTransferred > 0 || depositAmount > 0) {
+      return computed;
     }
-    return protectedSavings + depositAmount;
-  }, [isSavings, thisWeekCheckIn, protectedSavings, depositAmount]);
+    const recorded = thisWeekCheckIn && typeof thisWeekCheckIn.totalSaved === 'number'
+      ? thisWeekCheckIn.totalSaved
+      : 0;
+    return Math.max(
+      recorded,
+      computed
+    );
+  }, [isSavings, thisWeekCheckIn, protectedSavings, totalSavingsSurplusTransferred, depositAmount]);
 
-  const displayCoverage = isMonthView ? monthSavingsCovered : savingsDeducted;
-  const displayBanked = isMonthView ? monthSavingsBanked : (hasThisWeekCheckIn ? amountActuallyBanked : (isSavingsAllocated ? protectedSavings : 0));
+  const displayCoverage = isMonthView ? 0 : savingsDeducted;
+  const displayBanked = isMonthView
+    ? monthSavingsBanked
+    : (hasThisWeekCheckIn || totalSavingsSurplusTransferred > 0 ? amountActuallyBanked : (isSavingsAllocated ? protectedSavings : 0));
   const displayDeposit = depositAmount;
   const depositCount = isSavings ? (isMonthView ? monthDepositCount : Math.max(depositsThisWeek.length, depositAmount > 0 ? 1 : 0)) : count;
 
@@ -433,7 +623,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   const totalPool = useMemo(() => {
     if (!isSavings) return 0;
     if (isMonthView) {
-      return Math.max(targetBudget, displayCoverage + displayBanked, 1);
+      return Math.max(targetBudget, displayBanked, 1);
     }
     return Math.max(targetBudget, displayCoverage + displayBanked, 1);
   }, [isSavings, isMonthView, targetBudget, displayCoverage, displayBanked]);
@@ -442,7 +632,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   let iconBg = 'bg-sage-100 text-dark-green-900 border-sage-300';
   if (category.group === 'Fun Money' || category.color === 'sky-blue') {
     iconBg = 'bg-sky-blue-100 text-sky-blue-900 border-sky-blue-300';
-  } else if (category.group === 'Bills' || category.color === 'brown') {
+  } else if (category.group === 'Bills' || category.color === 'brown' || isBills) {
     iconBg = 'bg-beige-100 text-brown-800 border-beige-300';
   } else if (isSavings) {
     iconBg = 'bg-dark-green-100 text-dark-green-900 border-dark-green-300';
@@ -547,9 +737,9 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                           / {formatCurrency(targetBudget)}
                         </span>
                       </>
-                    ) : hasThisWeekCheckIn ? (
+                    ) : (displayBanked > 0 || hasThisWeekCheckIn) ? (
                       <>
-                        <span>{formatCurrency(amountActuallyBanked)}</span>
+                        <span>{formatCurrency(displayBanked)}</span>
                         <span className="text-xs font-normal text-brown-700 ml-1">
                           / {formatCurrency(targetBudget)}
                         </span>
@@ -571,7 +761,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                     )
                   ) : (
                     <>
-                      <span>{formatCurrency(effectiveSpent)}</span>
+                      <span>{formatCurrency(effectiveCategorySpent)}</span>
                       <span className="text-xs font-normal text-brown-700 ml-1">
                         /{' '}
                         {isProratedWeek && overrideAmount !== undefined ? (
@@ -619,7 +809,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                           </div>
                         )
                       )}
-                      {((isMonthView && displayCoverage > 0) || (hasThisWeekCheckIn && savingsDeducted > 0)) && (
+                      {!isMonthView && ((displayCoverage > 0) || (hasThisWeekCheckIn && savingsDeducted > 0)) && (
                         <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
                           <svg
                             className="w-3.5 h-3.5 shrink-0"
@@ -635,7 +825,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                             <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
                           </svg>
                           <span>
-                            {formatCurrency(displayCoverage)} used in coverage
+                            {formatCurrency(savingsDeducted || displayCoverage)} used in coverage
                           </span>
                         </div>
                       )}
@@ -649,11 +839,11 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                           ) : (
                             <span className="text-dark-grey-600 font-bold text-[11px]">$0 Banked</span>
                           )
-                        ) : hasThisWeekCheckIn ? (
-                          amountActuallyBanked > 0 ? (
+                        ) : (displayBanked > 0 || hasThisWeekCheckIn) ? (
+                          displayBanked > 0 ? (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
-                              <span>{formatCurrency(amountActuallyBanked)} Banked</span>
+                              <span>{formatCurrency(displayBanked)} Banked</span>
                             </>
                           ) : (
                             <span className="text-dark-grey-600 font-bold text-[11px]">$0 Banked</span>
@@ -687,7 +877,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                         <AlertCircle className="w-3.5 h-3.5 text-alert-red-600 flex-shrink-0" />
                         <span>Exceeded by {formatCurrency(Math.abs(remaining))}</span>
                       </div>
-                      {hasThisWeekCheckIn && (
+                      {!isMonthView && hasThisWeekCheckIn && (
                         <>
                           {categoryTransfersCovered > 0 && (
                             <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
@@ -757,12 +947,19 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                       <div className="flex items-center justify-end gap-1 text-sage-800 font-bold text-[11px]">
                         <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
                         <span>
-                          {hasThisWeekCheckIn
-                            ? `${formatCurrency(remaining)} unspent`
+                          {hasThisWeekCheckIn || checkInTotals
+                            ? `${formatCurrency(effectiveRemaining)} unspent`
                             : `On track (${formatCurrency(remaining)} unspent)`}
                         </span>
                       </div>
-                      {hasThisWeekCheckIn && categoryOverspendCoverage > 0 && (
+                      {!isBills && effectiveSentToSavings > 0 && (
+                        <div className="flex items-center justify-end gap-1 text-dark-green-800 text-[11px] font-bold tracking-tight">
+                          <span>
+                            {formatCurrency(effectiveSentToSavings)} sent to savings
+                          </span>
+                        </div>
+                      )}
+                      {!isBills && !isMonthView && effectiveOverspendCoverage > 0 && (
                         <div className="flex items-center justify-end gap-1 text-dark-grey-600 text-[11px] font-bold tracking-tight">
                           <svg
                             className="w-3.5 h-3.5 shrink-0"
@@ -778,7 +975,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                             <line x1="12" y1="17" x2="12.01" y2="17" stroke="#8C6239" />
                           </svg>
                           <span>
-                            {formatCurrency(categoryOverspendCoverage)} used in coverage
+                            {formatCurrency(effectiveOverspendCoverage)} used in coverage
                           </span>
                         </div>
                       )}
@@ -792,55 +989,60 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
 
         {/* Div 2: Progress Bar & Allocation Metrics - Always visible */}
         <div className="space-y-1.5 pt-0.5">
+          {/* Additional notes under the savings account - displayed above progress bar only after week's check-in is complete */}
+          {isSavings && hasThisWeekCheckIn && savingsContributions.length > 0 && (
+            <div className="space-y-1.5 pb-0.5" id="savings-account-notes">
+              {savingsContributions.map((contrib, idx) => (
+                <div
+                  key={`savings-note-${contrib.categoryId || idx}`}
+                  id={`savings-note-${contrib.categoryId || idx}`}
+                  className="flex items-center justify-between text-xs bg-sage-50/90 border border-sage-200/90 rounded-xl px-2.5 py-1.5 text-dark-green-900"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-1.5 h-1.5 rounded-full bg-sage-600 shrink-0" />
+                    <span className="font-semibold truncate">
+                      {formatCurrency(contrib.amount)} sent to savings
+                    </span>
+                    {contrib.categoryName && (
+                      <span className="text-[10px] text-brown-700 truncate font-normal">
+                        ({contrib.categoryName})
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-dark-green-800 shrink-0">
+                    +{formatCurrency(contrib.amount)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
             {isSavings ? (
               isMonthView ? (
-                /* Month View: Segmented bar showing only Coverage and Banked from Check-Ins */
-                (displayCoverage > 0 || displayBanked > 0) ? (
+                /* Month View: Bar showing Banked from Check-Ins (no coverage on month view) */
+                displayBanked > 0 ? (
                   <div
-                    className="w-full h-5 sm:h-5.5 rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center gap-1.5 sm:gap-2 relative shadow-2xs"
-                    title={`Monthly Target: ${formatCurrency(targetBudget)} | Banked from Check-ins: ${formatCurrency(displayBanked)} | Overspend Coverage: ${formatCurrency(displayCoverage)}`}
+                    className="w-full h-5 sm:h-5.5 rounded-full border border-beige-300/90 bg-beige-100/60 p-0.5 flex items-center relative shadow-2xs overflow-hidden"
+                    title={`Monthly Target: ${formatCurrency(targetBudget)} | Banked from Check-ins: ${formatCurrency(displayBanked)}`}
                   >
-                    {/* Segment 1 (Overspend Coverage Pill) */}
-                    {displayCoverage > 0 && (
-                      <div
-                        style={{ width: `${(displayCoverage / totalPool) * 100}%` }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCoverageMode((prev) => cycleMode(prev));
-                        }}
-                        className="h-full bg-brown-700 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 flex-shrink-0 cursor-pointer hover:brightness-110 active:scale-95 select-none"
-                        title={`Overspend coverage: ${formatCurrency(displayCoverage)} (${Math.round((displayCoverage / totalPool) * 100)}%) - Click to toggle display`}
-                      >
-                        <span className="truncate text-[#F5F5DC] drop-shadow-xs">
-                          {coverageMode === 'desc'
-                            ? 'Coverage'
-                            : coverageMode === 'amount'
-                            ? formatCurrency(displayCoverage)
-                            : `${Math.round((displayCoverage / totalPool) * 100)}%`}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Segment 2 (Banked Savings Pill from Completed Check-ins) */}
-                    {displayBanked > 0 && (
-                      <div
-                        style={{ width: `${(displayBanked / totalPool) * 100}%` }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setProtectedMode((prev) => cycleMode(prev));
-                        }}
-                        className="h-full bg-dark-green-900 text-sage-200 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 cursor-pointer hover:brightness-110 active:scale-95 select-none"
-                        title={`Banked from check-ins: ${formatCurrency(displayBanked)} (${Math.round((displayBanked / totalPool) * 100)}%) - Click to toggle display`}
-                      >
-                        <span className="truncate text-sage-200 drop-shadow-xs">
-                          {protectedMode === 'desc'
-                            ? 'Banked'
-                            : protectedMode === 'amount'
-                            ? formatCurrency(displayBanked)
-                            : `${Math.round((displayBanked / totalPool) * 100)}%`}
-                        </span>
-                      </div>
-                    )}
+                    {/* Banked Savings Pill from Completed Check-ins */}
+                    <div
+                      style={{ width: `${Math.min(100, (displayBanked / totalPool) * 100)}%` }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setProtectedMode((prev) => cycleMode(prev));
+                      }}
+                      className="h-full bg-dark-green-900 text-sage-200 rounded-full flex items-center justify-center text-[9px] sm:text-[10px] font-bold px-1.5 overflow-hidden whitespace-nowrap transition-all duration-300 cursor-pointer hover:brightness-110 active:scale-95 select-none"
+                      title={`Banked from check-ins: ${formatCurrency(displayBanked)} (${Math.round((displayBanked / totalPool) * 100)}%) - Click to toggle display`}
+                    >
+                      <span className="truncate text-sage-200 drop-shadow-xs">
+                        {protectedMode === 'desc'
+                          ? 'Banked'
+                          : protectedMode === 'amount'
+                          ? formatCurrency(displayBanked)
+                          : `${Math.round((displayBanked / totalPool) * 100)}%`}
+                      </span>
+                    </div>
                   </div>
                 ) : (
                   /* Month View with 0 check-ins completed yet: Empty progress bar */
@@ -927,19 +1129,18 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
             ) : (
               <BudgetProgressBar
                 categoryType={categoryType}
-                spent={effectiveSpent}
+                spent={effectiveCategorySpent}
                 budget={budgetForTimeframe}
                 heightClass="h-5 sm:h-5.5"
-                showSurplusSplit={!isSavings && hasThisWeekCheckIn && categoryDecision !== null && (categoryOverspendCoverage > 0 || categoryLeftoverSurplus > 0)}
+                showSurplusSplit={shouldShowSurplusSplit}
                 surplusChoice={
                   categoryDecision?.choice === 'rollover'
                     ? 'rollover'
-                    : categoryDecision?.choice === 'savings'
-                    ? 'savings'
-                    : null
+                    : 'savings'
                 }
-                overspendCoverageAmount={categoryOverspendCoverage}
-                leftoverSurplusAmount={categoryLeftoverSurplus}
+                overspendCoverageAmount={effectiveOverspendCoverage}
+                leftoverSurplusAmount={effectiveSentToSavings}
+                savingsLabel="Sent to savings"
               />
             )}
 
@@ -948,12 +1149,12 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                 {isSavings
                   ? isMonthView
                     ? `${Math.round((displayBanked / (targetBudget || 1)) * 100)}% of monthly target banked`
-                    : hasThisWeekCheckIn
-                    ? `${Math.round((amountActuallyBanked / (targetBudget || 1)) * 100)}% of target banked`
+                    : (hasThisWeekCheckIn || displayBanked > 0)
+                    ? `${Math.round((displayBanked / (targetBudget || 1)) * 100)}% of target banked`
                     : !isSavingsAllocated
                     ? '0% of target allocated'
                     : `${Math.round((targetBudget / (targetBudget || 1)) * 100)}% of target allocated`
-                  : `${percentage}% of ${timeframeMode === 'week' ? 'weekly' : 'monthly'} allocation`}
+                  : `${displayPercentage}% of ${timeframeMode === 'week' ? 'weekly' : 'monthly'} allocation`}
               </span>
               <span className="text-brown-800 font-medium">
                 {isSavings

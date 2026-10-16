@@ -114,6 +114,19 @@ export interface Household {
   name?: string;
   lastAutomatedDrawdownWeek?: string;
   weeklyOverrides?: Record<string, Record<string, number>>; // [weekId]: { [categoryIdOrSlug: string]: number }
+  lastMonthEndReset?: number;
+  completedMonthlyReviews?: Record<string, {
+    completedAt: number;
+    monthKey: string;
+    fiscalMonthNumber?: number;
+    fiscalYear?: number;
+    allocations?: { goalId: string; amount: number; goalName?: string }[];
+    totalAllocated?: number;
+    extraCovered?: number;
+    extraSaved?: number;
+    billsDifference?: number;
+    intentions?: string;
+  }>;
 }
 
 export interface FiscalMonth {
@@ -224,6 +237,10 @@ export interface Expense {
   billFrequency?: BillFrequency;
   billStartDate?: string;
   billEndDate?: string;
+  billFiscalMonth?: string;
+  billFiscalMonthStart?: string;
+  billFiscalMonthEnd?: string;
+  billFiscalMonthName?: string;
   tags?: string[];
   subcategory?: string;
   depositDestination?: 'savings_budget' | 'goal';
@@ -247,6 +264,10 @@ export interface StagedExpense {
   billFrequency?: BillFrequency;
   billStartDate?: string;
   billEndDate?: string;
+  billFiscalMonth?: string;
+  billFiscalMonthStart?: string;
+  billFiscalMonthEnd?: string;
+  billFiscalMonthName?: string;
   tags?: string[];
   subcategory?: string;
   depositDestination?: 'savings_budget' | 'goal';
