@@ -247,12 +247,9 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
     const checkInSavedTotal = monthCheckIns.reduce((sum, c) => sum + (Number(c.totalSaved) || 0), 0);
 
-    const monthDeposits = (household?.oneOffDeposits || []).filter((dep) => {
-      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
-      return depDate >= activeDateRange.startDate && depDate <= activeDateRange.endDate;
-    });
-    const depositTotal = monthDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
-    const totalSaved = checkInSavedTotal + depositTotal;
+    // Weekly check-ins already bake one-off deposits into the banked amount (c.totalSaved),
+    // so totalSaved strictly reflects the total weekly check-in banked amount for the month.
+    const totalSaved = checkInSavedTotal;
 
     const extraCovered = activeMonthReview?.extraCovered !== undefined
       ? activeMonthReview.extraCovered

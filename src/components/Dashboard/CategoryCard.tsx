@@ -493,8 +493,14 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
       const savDecision = (thisWeekCheckIn.decisions || []).find(
         (d) => d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings')
       );
-      if (savDecision && savDecision.savingsDeduction !== undefined) {
+      if (savDecision && savDecision.savingsDeduction !== undefined && Number(savDecision.savingsDeduction) > 0) {
         return Number(savDecision.savingsDeduction) || 0;
+      }
+      if (savDecision && savDecision.budget !== undefined && savDecision.spent !== undefined) {
+        return Math.max(0, Number(savDecision.budget) - Number(savDecision.spent));
+      }
+      if (typeof thisWeekCheckIn.totalSaved === 'number' && baselineSavingsTargetAvailable > thisWeekCheckIn.totalSaved) {
+        return Math.max(0, baselineSavingsTargetAvailable - thisWeekCheckIn.totalSaved);
       }
     }
     return Math.min(baselineSavingsTargetAvailable, netDeficit);
@@ -599,18 +605,22 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
 
   const amountActuallyBanked = useMemo(() => {
     if (!isSavings) return 0;
-    const computed = protectedSavings + totalSavingsSurplusTransferred + depositAmount;
-    if (totalSavingsSurplusTransferred > 0 || depositAmount > 0) {
-      return computed;
+    if (thisWeekCheckIn) {
+      if (typeof thisWeekCheckIn.totalSaved === 'number') {
+        return thisWeekCheckIn.totalSaved;
+      }
+      const savDecision = (thisWeekCheckIn.decisions || []).find(
+        (d) => d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings')
+      );
+      if (savDecision) {
+        if (typeof savDecision.spent === 'number') return savDecision.spent;
+        const b = Number(savDecision.budget) || 0;
+        const d = Number(savDecision.savingsDeduction) || 0;
+        return Math.max(0, b - d);
+      }
     }
-    const recorded = thisWeekCheckIn && typeof thisWeekCheckIn.totalSaved === 'number'
-      ? thisWeekCheckIn.totalSaved
-      : 0;
-    return Math.max(
-      recorded,
-      computed
-    );
-  }, [isSavings, thisWeekCheckIn, protectedSavings, totalSavingsSurplusTransferred, depositAmount]);
+    return protectedSavings + totalSavingsSurplusTransferred;
+  }, [isSavings, thisWeekCheckIn, category.id, protectedSavings, totalSavingsSurplusTransferred]);
 
   const displayCoverage = isMonthView ? 0 : savingsDeducted;
   const displayBanked = isMonthView
@@ -829,47 +839,49 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
                           </span>
                         </div>
                       )}
-                      <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
-                        {isMonthView ? (
-                          displayBanked > 0 ? (
+                      {isMonthView ? (
+                        <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
+                          {displayBanked > 0 ? (
                             <>
                               <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
                               <span>{formatCurrency(displayBanked)} Banked</span>
                             </>
                           ) : (
                             <span className="text-dark-grey-600 font-bold text-[11px]">$0 Banked</span>
-                          )
-                        ) : (displayBanked > 0 || hasThisWeekCheckIn) ? (
-                          displayBanked > 0 ? (
-                            <>
-                              <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
-                              <span>{formatCurrency(displayBanked)} Banked</span>
-                            </>
+                          )}
+                        </div>
+                      ) : hasThisWeekCheckIn ? (
+                        displayBanked > 0 ? (
+                          <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-sage-600 flex-shrink-0" />
+                            <span>{formatCurrency(displayBanked)} Banked</span>
+                          </div>
+                        ) : null
+                      ) : (
+                        <div className="flex items-center justify-end gap-1.5 text-sage-800 font-bold text-[11px]">
+                          {!isSavingsAllocated ? (
+                            <span className="text-dark-grey-600 font-bold text-[11px]">Unallocated (Pending)</span>
                           ) : (
-                            <span className="text-dark-grey-600 font-bold text-[11px]">$0 Banked</span>
-                          )
-                        ) : !isSavingsAllocated ? (
-                          <span className="text-dark-grey-600 font-bold text-[11px]">Unallocated (Pending)</span>
-                        ) : (
-                          <>
-                            <svg
-                              className="w-3.5 h-3.5 text-sage-600 shrink-0"
-                              viewBox="0 0 24 24"
-                              fill="none"
-                              stroke="currentColor"
-                              strokeWidth="2"
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                            >
-                              <rect x="2" y="5" width="20" height="14" rx="7" />
-                              <circle cx="8" cy="12" r="1.2" fill="currentColor" stroke="none" />
-                              <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
-                              <circle cx="16" cy="12" r="1.2" fill="currentColor" stroke="none" />
-                            </svg>
-                            <span>{formatCurrency(targetBudget)} Allocated</span>
-                          </>
-                        )}
-                      </div>
+                            <>
+                              <svg
+                                className="w-3.5 h-3.5 text-sage-600 shrink-0"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              >
+                                <rect x="2" y="5" width="20" height="14" rx="7" />
+                                <circle cx="8" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                                <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                                <circle cx="16" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                              </svg>
+                              <span>{formatCurrency(targetBudget)} Allocated</span>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ) : isOverBudget ? (
                     <div className="flex flex-col items-end gap-0.5">

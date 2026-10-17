@@ -122,12 +122,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       }
     });
 
-    const directDeposits = (household?.oneOffDeposits || []).filter((dep) => {
-      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
-      return depDate >= monthRange.startDate && depDate <= monthRange.endDate;
-    });
-    const depositTotal = directDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
-    const totalSavingsBanked = totalSavingsBankedFromCheckIns + depositTotal;
+    // Weekly check-ins already bake one-off deposits into the banked amount (c.totalSaved),
+    // so totalSavingsBanked strictly reflects the total weekly check-in banked amount for the month.
+    const totalSavingsBanked = totalSavingsBankedFromCheckIns;
 
     const categoryDetails = categories.map((cat) => {
       const monthlyBudget = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
