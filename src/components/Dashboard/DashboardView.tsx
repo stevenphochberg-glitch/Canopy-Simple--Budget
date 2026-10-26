@@ -4,6 +4,7 @@ import { Category, CategoryGroup, Expense, OneOffDeposit } from '../../types';
 import {
   formatCurrency,
   getCategoryBudgetForTimeframe,
+  calculateCategorySpending,
   isExpenseInDateRange,
   getProratedExpenseAmount,
   getWeekId,
@@ -16,7 +17,7 @@ import {
   detectExtraPaycheckMonth,
   getFiscalTrackerInfo,
 } from '../../lib/fiscal445';
-import { CategoryCard } from './CategoryCard';
+import { CategoryCard, WaterfallMetrics } from './CategoryCard';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { ExtraPaycheckBanner } from './ExtraPaycheckBanner';
 import { RunwayVisualizer } from './RunwayVisualizer';
@@ -69,8 +70,10 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     setTimeframeMode,
     timeframeOffset,
     setTimeframeOffset,
+    switchTimeframe,
     resetTimeframeToCurrent,
     activeDateRange,
+    checkInStatusInfo,
     openStagingModal,
     openLogExpenseModal,
     openAllocationModal,
@@ -82,13 +85,17 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     deleteDeposit,
     showToast,
     feedItems,
+    navigateToCategoryLedger,
   } = useHousehold();
 
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
-  const [areAllCardsExpanded, setAreAllCardsExpanded] = useState(false);
   const [earlierCheckInWarning, setEarlierCheckInWarning] = useState<string | null>(null);
+
+  const handleQuickLog = React.useCallback((category: Category) => {
+    openLogExpenseModal(category);
+  }, [openLogExpenseModal]);
 
   // Interception Modal State for Post-Check-In Transactions (Directive 1 & 2)
   const [impactModalState, setImpactModalState] = useState<{
@@ -494,38 +501,54 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     };
   }, [timeframeMode, visibleCategories, activeWeekId, household, totalTimeframeDeposits, totalTimeframeBaseline]);
 
-  // Total spent in active timeframe:
-  // In Week View, completely exclude Bills transactions from calculations.
-  // In Month View, include all transactions (with dynamic paid-only bill proration).
-  const timeframeExpenses = useMemo(() => {
-    return expenses.filter((exp) => {
-      if (timeframeMode === 'week') {
-        const cat = categories.find((c) => c.id === exp.categoryId);
-        if (cat && isBillsCategory(cat)) {
-          return false;
+  // Single-pass timeframe expenses, total spent, and per-category spending map:
+  const { timeframeExpenses, totalTimeframeSpent, categorySpendingMap } = useMemo(() => {
+    const isWeek = timeframeMode === 'week';
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+    const start = activeDateRange.startDate;
+    const end = activeDateRange.endDate;
+
+    const filtered: Expense[] = [];
+    const spendingMap: Record<string, { totalSpent: number; count: number }> = {};
+    let totalSpent = 0;
+
+    const billsCategoryIds = new Set<string>();
+    if (isWeek) {
+      for (let i = 0; i < categories.length; i++) {
+        if (isBillsCategory(categories[i])) {
+          billsCategoryIds.add(categories[i].id);
         }
       }
-      const prorated = getProratedExpenseAmount(
-        exp,
-        activeDateRange.startDate,
-        activeDateRange.endDate,
-        household?.fiscalYearEndMonth || 12
-      );
-      return prorated > 0;
-    });
-  }, [expenses, activeDateRange, household?.fiscalYearEndMonth, timeframeMode, categories]);
+    }
 
-  const totalTimeframeSpent = useMemo(() => {
-    return timeframeExpenses.reduce((sum, exp) => {
-      const prorated = getProratedExpenseAmount(
-        exp,
-        activeDateRange.startDate,
-        activeDateRange.endDate,
-        household?.fiscalYearEndMonth || 12
-      );
-      return sum + prorated;
-    }, 0);
-  }, [timeframeExpenses, activeDateRange, household?.fiscalYearEndMonth]);
+    for (let i = 0; i < expenses.length; i++) {
+      const exp = expenses[i];
+      if (isWeek && billsCategoryIds.has(exp.categoryId)) {
+        continue;
+      }
+      const prorated = getProratedExpenseAmount(exp, start, end, fiscalYearEnd);
+      if (prorated > 0) {
+        filtered.push(exp);
+        totalSpent += prorated;
+
+        const current = spendingMap[exp.categoryId] || { totalSpent: 0, count: 0 };
+        current.totalSpent += prorated;
+        current.count += 1;
+        spendingMap[exp.categoryId] = current;
+      }
+    }
+
+    totalSpent = Math.round(totalSpent * 100) / 100;
+    for (const catId in spendingMap) {
+      spendingMap[catId].totalSpent = Math.round(spendingMap[catId].totalSpent * 100) / 100;
+    }
+
+    return {
+      timeframeExpenses: filtered,
+      totalTimeframeSpent: totalSpent,
+      categorySpendingMap: spendingMap,
+    };
+  }, [expenses, activeDateRange, household?.fiscalYearEndMonth, timeframeMode, categories]);
 
   const netRemaining = totalTimeframeBudget - totalTimeframeSpent;
   const isNetOverBudget = netRemaining < 0;
@@ -619,6 +642,104 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     }
   }, [timeframeMode, activeDateRange, fiscalMonth, fiscalTracker]);
 
+  // Global Waterfall & Transfer Pot calculation memoized once for all category cards
+  const waterfallMetrics = useMemo<WaterfallMetrics>(() => {
+    const isMonthView = timeframeMode === 'month';
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    const weekId = getWeekId(activeDateRange, firstDay);
+    const weeksInMonth = fiscalMonth.weekCount || 4;
+
+    const expensePacings = categories
+      .filter(
+        (c) =>
+          c.type !== 'savings' &&
+          c.group?.toLowerCase() !== 'bills' &&
+          c.name?.toLowerCase() !== 'bills' &&
+          c.id !== 'cat_bills' &&
+          c.group?.toLowerCase() !== 'savings'
+      )
+      .map((cat) => {
+        const catBudget = isMonthView
+          ? (Number(cat.baselineBudget) || 0) * weeksInMonth
+          : getCategoryEffectiveWeeklyBudget(cat, weekId, household).budget;
+
+        const catSpent = categorySpendingMap[cat.id]?.totalSpent || 0;
+        const diff = catBudget - catSpent;
+        return {
+          diff,
+          surplus: Math.max(0, diff),
+          deficit: Math.max(0, -diff),
+        };
+      });
+
+    let pot = 0;
+    let def = 0;
+
+    const startStr = formatLocalDate(activeDateRange.startDate);
+    const endStr = formatLocalDate(activeDateRange.endDate);
+    const activeCheckIn = (checkIns || []).find(
+      (c) =>
+        c.status === 'completed' &&
+        (c.weekEndDate === endStr || c.weekStartDate === startStr || c.id.includes(startStr))
+    );
+
+    if (activeCheckIn?.decisions && activeCheckIn.decisions.length > 0) {
+      activeCheckIn.decisions.forEach((d) => {
+        const isSav = d.choice === 'savings' && d.categoryName?.toLowerCase().includes('savings');
+        const isB = d.categoryId === 'cat_bills' || d.categoryName?.toLowerCase().includes('bills');
+        if (!isSav && !isB) {
+          if (d.difference > 0) {
+            pot += d.difference;
+          } else if (d.difference < 0) {
+            def += Math.abs(d.difference);
+          }
+        }
+      });
+    } else {
+      expensePacings.forEach((p) => {
+        pot += p.surplus;
+        def += p.deficit;
+      });
+    }
+
+    const net = Math.max(0, def - pot);
+    const potUsed = Math.min(pot, def);
+
+    const savCat = (categories || []).find(
+      (c) => c.type === 'savings' || c.group?.toLowerCase() === 'savings'
+    );
+    let savTarget = 0;
+    if (savCat) {
+      const { budget, baseline, overrideAmount } = getCategoryEffectiveWeeklyBudget(
+        savCat,
+        weekId,
+        household
+      );
+      savTarget = Math.max(
+        Number(savCat.baselineBudget) || 0,
+        baseline,
+        budget,
+        overrideAmount !== undefined ? overrideAmount : 0
+      );
+    }
+
+    return {
+      totalTransferPot: pot,
+      totalDeficit: def,
+      netDeficit: net,
+      potUsedForCoverage: potUsed,
+      baselineSavingsTargetAvailable: savTarget,
+    };
+  }, [
+    categories,
+    categorySpendingMap,
+    household,
+    checkIns,
+    timeframeMode,
+    activeDateRange,
+    fiscalMonth.weekCount,
+  ]);
+
   // 4. Variable Income Buffer & Runway Calculations
   const bufferCategory = useMemo(() => {
     return categories.find(
@@ -640,8 +761,8 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
   // 5. Reactive Review Due Status for Actionable Alert Badge & Prominent Banner
   const reviewDueStatus = useMemo(() => {
-    if (!household) return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
-    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    if (!household || !checkInStatusInfo) return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
+    const statusInfo = checkInStatusInfo;
     const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
 
     if (isWeeklyDue) {
@@ -686,7 +807,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     }
 
     return { isDue: false, type: null, isPastDue: false, title: '', description: '' };
-  }, [household, checkIns, expenses]);
+  }, [household, checkIns, checkInStatusInfo]);
 
   return (
     <div className="space-y-3.5 sm:space-y-4 border-2 border-brown-900 rounded-[1.75rem] sm:rounded-[2rem] p-1 sm:p-1.5 shadow-xs ring-1 ring-brown-950/10">
@@ -700,10 +821,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
           <div className="inline-flex p-1 bg-beige-100/80 rounded-2xl border border-beige-200 ml-auto sm:ml-2">
             <button
               id="toggle-timeframe-week"
-              onClick={() => {
-                setTimeframeMode('week');
-                setTimeframeOffset(0);
-              }}
+              onClick={() => switchTimeframe('week', 0)}
               className={`px-4 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer ${
                 timeframeMode === 'week'
                   ? 'bg-dark-green-800 text-white shadow-xs'
@@ -714,10 +832,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
             </button>
             <button
               id="toggle-timeframe-month"
-              onClick={() => {
-                setTimeframeMode('month');
-                setTimeframeOffset(0);
-              }}
+              onClick={() => switchTimeframe('month', 0)}
               className={`px-4 py-1.5 rounded-xl text-xs font-extrabold transition cursor-pointer ${
                 timeframeMode === 'month'
                   ? 'bg-dark-green-800 text-white shadow-xs'
@@ -1156,7 +1271,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                     );
                     showToast(
                       `The earlier fiscal week check-in (${earlierUncompletedWeek.label}) needs to be completed first.`,
-                      'warning'
+                      'info'
                     );
                     return;
                   }
@@ -1381,11 +1496,14 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                 key={cat.id}
                 category={cat}
                 expenses={expenses}
+                categorySpending={categorySpendingMap[cat.id]}
                 timeframeMode={timeframeMode}
                 dateRange={activeDateRange}
-                onQuickLog={(category) => openLogExpenseModal(category)}
-                isExpanded={areAllCardsExpanded}
-                onToggleExpand={() => setAreAllCardsExpanded((prev) => !prev)}
+                household={household}
+                checkIns={checkIns}
+                navigateToCategoryLedger={navigateToCategoryLedger}
+                waterfallMetrics={waterfallMetrics}
+                onQuickLog={handleQuickLog}
               />
             ))}
           </div>
@@ -1466,7 +1584,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                           </span>
                           <span>&bull;</span>
                           <span>
-                            {payer?.name || dep.contributor || 'Household Deposit'}
+                            {payer?.name || (dep as any).contributor || 'Household Deposit'}
                           </span>
                           {dep.notes && (
                             <>

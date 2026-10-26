@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
-import { formatCurrency, getMonthRange, calculateCategorySpending } from '../../lib/calculations';
+import { formatCurrency, getMonthRange, calculateCategorySpending, getWeekRange, formatLocalDate } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
 import { areAllWeeklyCheckInsCompletedForMonth, getUnreviewedCompletedMonth } from '../../lib/checkInCalculations';
 import {
@@ -107,18 +107,27 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
 
     let totalSavingsBankedFromCheckIns = 0;
     monthCompletedCheckIns.forEach((c) => {
-      if (typeof c.totalSaved === 'number' && c.totalSaved > 0) {
-        totalSavingsBankedFromCheckIns += c.totalSaved;
-      } else {
-        const savDec = (c.decisions || []).find(
-          (d) => d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('saving')
-        );
-        if (savDec && savDec.spent !== undefined) {
-          totalSavingsBankedFromCheckIns += Number(savDec.spent);
-        } else if (savDec && savDec.budget !== undefined) {
-          const deduction = Number(savDec.savingsDeduction) || 0;
-          totalSavingsBankedFromCheckIns += Math.max(0, Number(savDec.budget) - deduction);
+      const savDec = (c.decisions || []).find(
+        (d) => d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('saving')
+      );
+      let weekCovered = 0;
+      if (savDec && savDec.savingsDeduction !== undefined && savDec.savingsDeduction > 0) {
+        weekCovered = Number(savDec.savingsDeduction);
+      } else if (savDec && savDec.budget !== undefined && savDec.spent !== undefined) {
+        weekCovered = Math.max(0, Number(savDec.budget) - Number(savDec.spent));
+      }
+
+      if (savDec) {
+        const b = Number(savDec.budget) || 0;
+        if (weekCovered > 0) {
+          totalSavingsBankedFromCheckIns += Math.max(0, b - weekCovered);
+        } else if (typeof savDec.spent === 'number') {
+          totalSavingsBankedFromCheckIns += savDec.spent;
+        } else if (typeof c.totalSaved === 'number') {
+          totalSavingsBankedFromCheckIns += Math.max(0, c.totalSaved - weekCovered);
         }
+      } else if (typeof c.totalSaved === 'number') {
+        totalSavingsBankedFromCheckIns += Math.max(0, c.totalSaved - weekCovered);
       }
     });
 
@@ -126,10 +135,90 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     // so totalSavingsBanked strictly reflects the total weekly check-in banked amount for the month.
     const totalSavingsBanked = totalSavingsBankedFromCheckIns;
 
-    const categoryDetails = categories.map((cat) => {
-      const monthlyBudget = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
+    // Ensure all standard categories (Essentials, Fun Money, Bills, Savings) exist in the review
+    const allCats = [...categories];
+    if (!allCats.some((c) => c.id === 'cat_fun_money' || c.name?.toLowerCase().includes('fun'))) {
+      allCats.push({
+        id: 'cat_fun_money',
+        name: 'Fun Money',
+        group: 'Fun Money',
+        type: 'expense',
+        baselineBudget: 335,
+      } as any);
+    }
+    if (!allCats.some((c) => c.id === 'cat_essentials' || c.name?.toLowerCase().includes('essential'))) {
+      allCats.push({
+        id: 'cat_essentials',
+        name: 'Essentials',
+        group: 'Essentials',
+        type: 'expense',
+        baselineBudget: 500,
+      } as any);
+    }
+
+    // Calculate total one-off deposits expanding the monthly budget for the active fiscal month (matching Monthly Dashboard)
+    const firstDay = household?.firstDayOfWeek || 'Monday';
+    let curr = new Date(monthRange.startDate);
+    const seenWeeks = new Set<string>();
+    let depositCount = 0;
+    let depositTotal = 0;
+
+    const savCatItem = allCats.find(isSavings);
+    const savBase = savCatItem ? Number(savCatItem.baselineBudget) || 0 : 0;
+
+    while (curr <= monthRange.endDate) {
+      const wRange = getWeekRange(curr, firstDay, 0);
+      const wStartStr = formatLocalDate(wRange.startDate);
+
+      if (!seenWeeks.has(wStartStr) && wRange.startDate <= monthRange.endDate && wRange.endDate >= monthRange.startDate) {
+        seenWeeks.add(wStartStr);
+
+        const weekDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+          const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+          return depDate >= wRange.startDate && depDate <= wRange.endDate;
+        });
+        const weekDepTotal = weekDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+
+        const weekOverride = household?.weeklyOverrides?.[wStartStr];
+        const savOverrideVal = weekOverride
+          ? Number(weekOverride.savings ?? (savCatItem?.id ? weekOverride[savCatItem.id] : 0))
+          : 0;
+        const overrideExpansion = savOverrideVal > savBase ? savOverrideVal - savBase : 0;
+
+        const checkIn = (checkIns || []).find(
+          (c) => c.status === 'completed' && (c.weekStartDate === wStartStr || c.id.includes(wStartStr))
+        );
+        const savDec = checkIn?.decisions?.find(
+          (d) => d.categoryId === savCatItem?.id || d.categoryName?.toLowerCase().includes('savings')
+        );
+        const checkInExpansion = savDec && savDec.budget !== undefined && Number(savDec.budget) > savBase
+          ? Number(savDec.budget) - savBase
+          : 0;
+
+        const effectiveWeekExpansion = Math.max(weekDepTotal, overrideExpansion, checkInExpansion);
+
+        if (weekDeposits.length > 0 || effectiveWeekExpansion > 0) {
+          depositCount += Math.max(weekDeposits.length, 1);
+          depositTotal += effectiveWeekExpansion > 0 ? effectiveWeekExpansion : weekDepTotal;
+        }
+      }
+
+      curr = new Date(curr.getTime() + 7 * 24 * 60 * 60 * 1000);
+    }
+
+    const directDeposits = (household?.oneOffDeposits || []).filter((dep) => {
+      const depDate = new Date(dep.date + (dep.date.length === 10 ? 'T12:00:00' : ''));
+      return depDate >= monthRange.startDate && depDate <= monthRange.endDate;
+    });
+    const directTotal = directDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+    const monthDepositTotal = Math.max(depositTotal, directTotal);
+
+    const categoryDetails = allCats.map((cat) => {
       const isSavCat = isSavings(cat);
       const isBillsCat = isBills(cat);
+      const baselineMonthly = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
+      // For savings category, monthly budget includes deposit expansion (matching Monthly Dashboard)
+      const monthlyBudget = isSavCat ? baselineMonthly + monthDepositTotal : baselineMonthly;
 
       totalMonthlyBudget += monthlyBudget;
 
@@ -149,13 +238,32 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
         };
       }
 
-      const { totalSpent: spent } = calculateCategorySpending(
+      // Check spending across completed weekly check-ins as primary source, fallback to expenses collection
+      let spentFromCheckIns = 0;
+      let hasCheckInSpent = false;
+      monthCompletedCheckIns.forEach((c) => {
+        const dec = (c.decisions || []).find(
+          (d) =>
+            d.categoryId === cat.id ||
+            d.categoryName?.toLowerCase() === cat.name?.toLowerCase() ||
+            (cat.id === 'cat_fun_money' && (d.categoryId?.includes('fun') || d.categoryName?.toLowerCase().includes('fun'))) ||
+            (cat.id === 'cat_essentials' && (d.categoryId?.includes('essential') || d.categoryName?.toLowerCase().includes('essential')))
+        );
+        if (dec && typeof dec.spent === 'number') {
+          spentFromCheckIns += dec.spent;
+          hasCheckInSpent = true;
+        }
+      });
+
+      const { totalSpent: directSpent } = calculateCategorySpending(
         expenses,
         cat.id,
         monthRange.startDate,
         monthRange.endDate,
         household?.fiscalYearEndMonth || 12
       );
+
+      const spent = hasCheckInSpent ? spentFromCheckIns : directSpent;
 
       totalSpent += spent;
       const difference = monthlyBudget - spent;
@@ -215,8 +323,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
       billsTotalSpent,
       billsDifference,
       totalSavingsBanked,
+      monthDepositTotal,
     };
-  }, [categories, expenses, monthRange, household?.fiscalYearEndMonth, household?.oneOffDeposits, checkIns]);
+  }, [categories, expenses, monthRange, household?.fiscalYearEndMonth, household?.oneOffDeposits, household?.weeklyOverrides, household?.firstDayOfWeek, checkIns]);
 
   // Compute Total Saved Funds Available to Allocate
   const totalSavedFunds = useMemo(() => {

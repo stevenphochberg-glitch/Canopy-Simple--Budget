@@ -9,7 +9,7 @@ interface RunwayVisualizerProps {
   onOpenBufferModal?: () => void;
 }
 
-export const RunwayVisualizer: React.FC<RunwayVisualizerProps> = ({
+export const RunwayVisualizer: React.FC<RunwayVisualizerProps> = React.memo(({
   incomeBufferAmount,
   baselineWeeklyBurnRate,
   targetWeeks = 12,
@@ -312,4 +312,4 @@ export const RunwayVisualizer: React.FC<RunwayVisualizerProps> = ({
       </div>
     </div>
   );
-};
+});

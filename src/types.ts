@@ -303,6 +303,8 @@ export interface CategoryRolloverDecision {
   previousWeeklyBudget: number;
   newWeeklyBudget: number;
   savingsContribution: number;
+  transfersCovered?: number;
+  proratedCovered?: number;
   savingsGoalId?: string; // Optional target savings goal for the contribution
 }
 

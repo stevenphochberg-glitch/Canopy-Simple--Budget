@@ -8,7 +8,7 @@ interface ExtraPaycheckBannerProps {
   extraInfo: ExtraPaycheckInfo;
 }
 
-export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraInfo }) => {
+export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = React.memo(({ extraInfo }) => {
   const { household, categories, applyExtraPaycheckDecision } = useHousehold();
 
   const savedDecision = household?.extraPaycheckDecisions?.[extraInfo.monthKey];
@@ -337,5 +337,5 @@ export const ExtraPaycheckBanner: React.FC<ExtraPaycheckBannerProps> = ({ extraI
       )}
     </div>
   );
-};
+});
 

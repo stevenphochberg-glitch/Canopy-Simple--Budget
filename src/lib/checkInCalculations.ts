@@ -26,6 +26,8 @@ import {
   getFiscalYearMonths,
 } from './fiscal445';
 
+export type { CheckInStatusInfo };
+
 export const DAYS_OF_WEEK: DayOfWeek[] = [
   'Sunday',
   'Monday',
@@ -73,12 +75,40 @@ export function isTodayCheckInDay(lastDayOfWeek: DayOfWeek, refDate: Date = new 
 /**
  * Computes comprehensive Check-In status, grace periods, and date ranges.
  */
+let cachedCheckInStatus: {
+  key: string;
+  result: CheckInStatusInfo;
+} | null = null;
+
+function getCheckInCacheKey(
+  household: Household | null,
+  checkIns: CheckIn[],
+  expenses: Expense[],
+  dateStr: string
+): string {
+  const hhId = household?.id || 'none';
+  const hhUpdated = (household as any)?.lastCheckInAt || (household as any)?.updatedAt || '';
+  const ciCount = checkIns?.length || 0;
+  const ciLast = checkIns && checkIns.length > 0 ? (checkIns[0].id || checkIns[0].timestamp || '') : '';
+  const expCount = expenses?.length || 0;
+  const expLast = expenses && expenses.length > 0 ? (expenses[0].id || expenses[0].timestamp || '') : '';
+  return `${hhId}_${hhUpdated}_${ciCount}_${ciLast}_${expCount}_${expLast}_${dateStr}`;
+}
+
 export function calculateCheckInStatus(
   household: Household | null,
   checkIns: CheckIn[],
   expenses: Expense[],
   refDate: Date = new Date()
 ): CheckInStatusInfo {
+  const dateStr = refDate.toDateString();
+  const cacheKey = getCheckInCacheKey(household, checkIns, expenses, dateStr);
+  if (cachedCheckInStatus && cachedCheckInStatus.key === cacheKey) {
+    return cachedCheckInStatus.result;
+  }
+
+  console.log("Check-in Math Executed");
+
   const firstDay = household?.firstDayOfWeek || 'Monday';
   const lastDay = household?.lastDayOfWeek || 'Sunday';
 
@@ -152,7 +182,7 @@ export function calculateCheckInStatus(
   // Missed weeks count based on pastDueWeeks
   const missedWeeksCount = pastDueWeeks.length;
 
-  return {
+  const result: CheckInStatusInfo = {
     status,
     isLastDayOfWeek: isToday,
     isPastDue,
@@ -164,6 +194,13 @@ export function calculateCheckInStatus(
     missedWeeksCount,
     remainingWeeksInMonth,
   };
+
+  cachedCheckInStatus = {
+    key: cacheKey,
+    result,
+  };
+
+  return result;
 }
 
 export interface PastDueWeekInfo {
@@ -188,6 +225,24 @@ export interface PastDueWeekInfo {
  * Search starts at Week 1 of the earliest active fiscal month (derived from household creation,
  * recorded expenses, or check-ins).
  */
+let cachedPastDueWeeks: {
+  key: string;
+  result: PastDueWeekInfo[];
+} | null = null;
+
+function getPastDueCacheKey(
+  household: Household | null,
+  checkIns: CheckIn[],
+  expenses: Expense[] | undefined,
+  dateStr: string
+): string {
+  const hhId = household?.id || 'none';
+  const ciCount = checkIns?.length || 0;
+  const ciLast = checkIns && checkIns.length > 0 ? (checkIns[0].id || '') : '';
+  const expCount = expenses?.length || 0;
+  return `${hhId}_${ciCount}_${ciLast}_${expCount}_${dateStr}`;
+}
+
 export function getAllPastDueCheckInWeeks(
   household: Household | null,
   checkIns: CheckIn[],
@@ -195,6 +250,13 @@ export function getAllPastDueCheckInWeeks(
   expenses?: Expense[]
 ): PastDueWeekInfo[] {
   if (!household) return [];
+
+  const dateStr = refDate.toDateString();
+  const cacheKey = getPastDueCacheKey(household, checkIns, expenses, dateStr);
+  if (cachedPastDueWeeks && cachedPastDueWeeks.key === cacheKey) {
+    return cachedPastDueWeeks.result;
+  }
+
   const firstDay = household.firstDayOfWeek || 'Monday';
   const fiscalYearEndMonth = household.fiscalYearEndMonth || 12;
 
@@ -286,6 +348,12 @@ export function getAllPastDueCheckInWeeks(
 
   // Sort chronologically (oldest first)
   pastDueWeeks.sort((a, b) => a.range.startDate.getTime() - b.range.startDate.getTime());
+
+  cachedPastDueWeeks = {
+    key: cacheKey,
+    result: pastDueWeeks,
+  };
+
   return pastDueWeeks;
 }
 

@@ -4,6 +4,7 @@
  */
 import React, { useState, useMemo } from 'react';
 import { HouseholdProvider, useHousehold } from './context/HouseholdContext';
+import { ErrorBoundary } from './components/Common/ErrorBoundary';
 import { LoginPage } from './components/LoginPage';
 import { SetupWizard } from './components/SetupWizard/SetupWizard';
 import { Navbar } from './components/Navbar';
@@ -19,7 +20,6 @@ import { ReviewAndConfirmModal } from './components/Staging/ReviewAndConfirmModa
 import { WeeklyCheckInModal } from './components/CheckIn/WeeklyCheckInModal';
 import { MonthlyRetrospectiveModal } from './components/CheckIn/MonthlyRetrospectiveModal';
 import { CategoryAllocationModal } from './components/Dashboard/CategoryAllocationModal';
-import { calculateCheckInStatus } from './lib/checkInCalculations';
 import { getFiscalMonthForDate } from './lib/fiscal445';
 import {
   LayoutDashboard,
@@ -43,6 +43,7 @@ const MainLayout: React.FC = () => {
     setActiveTab,
     expenses,
     checkIns,
+    checkInStatusInfo,
     toastMessage,
     toastType,
     openStagingModal,
@@ -62,8 +63,8 @@ const MainLayout: React.FC = () => {
 
   // Reactive Review Due Status for Check-in Alert Badge
   const reviewDueStatus = useMemo(() => {
-    if (!household) return { isDue: false, isPastDue: false };
-    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    if (!household || !checkInStatusInfo) return { isDue: false, isPastDue: false };
+    const statusInfo = checkInStatusInfo;
     const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
 
     if (isWeeklyDue) {
@@ -92,7 +93,7 @@ const MainLayout: React.FC = () => {
     }
 
     return { isDue: false, isPastDue: false };
-  }, [household, checkIns, expenses]);
+  }, [household, checkIns, checkInStatusInfo]);
 
   // 0. Initial Loading State while Firebase Auth resolves
   if (isLoading) {
@@ -211,8 +212,10 @@ const MainLayout: React.FC = () => {
 
 export default function App() {
   return (
-    <HouseholdProvider>
-      <MainLayout />
-    </HouseholdProvider>
+    <ErrorBoundary>
+      <HouseholdProvider>
+        <MainLayout />
+      </HouseholdProvider>
+    </ErrorBoundary>
   );
 }

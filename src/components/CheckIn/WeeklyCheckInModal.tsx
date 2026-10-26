@@ -537,6 +537,11 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         adjustmentPerWeek: proj.followingWeeksBudget - proj.baseline,
         previousWeeklyBudget: proj.budget,
         newWeeklyBudget: proj.followingWeeksBudget,
+        transfersCovered: proj.isOverspent ? (overspendInputs[cat.id]?.potPull || 0) : 0,
+        savingsDeduction: proj.isOverspent ? (overspendInputs[cat.id]?.savingsPull || 0) : 0,
+        proratedCovered: proj.isOverspent
+          ? Math.max(0, proj.deficit - (overspendInputs[cat.id]?.potPull || 0) - (overspendInputs[cat.id]?.savingsPull || 0))
+          : 0,
         savingsContribution: (() => {
           if (!proj.isUnderspent || (underspendChoices[cat.id] !== 'transfer_pot' && underspendChoices[cat.id] !== undefined)) {
             return 0;
@@ -564,6 +569,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         adjustmentPerWeek: futureSavingsBudget - Number(cat.baselineBudget),
         previousWeeklyBudget: thisWeekSavingsTarget,
         newWeeklyBudget: futureSavingsBudget,
+        savingsDeduction: totalSavingsPulledForDeficits,
         savingsContribution: savingsExpandedBonus,
       });
     });

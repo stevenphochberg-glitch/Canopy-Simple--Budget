@@ -45,10 +45,11 @@ import {
   roundAmountsInText,
   roundToHundredths,
 } from '../lib/calculations';
+import { calculateCheckInStatus, type CheckInStatusInfo } from '../lib/checkInCalculations';
 import { getFiscalWeekId, getFiscalMonthForDate } from '../lib/fiscal445';
 import { generateFacelessVectorAvatar } from '../lib/avatars';
 import { getReactionDef } from '../components/Common/EarthToneReaction';
-import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType } from '../lib/firebase';
+import { auth, db, googleProvider, isFirebaseConfigured, handleFirestoreError, OperationType, isAuthOrNetworkTransientError } from '../lib/firebase';
 import {
   signInWithPopup,
   signOut as firebaseSignOut,
@@ -184,8 +185,10 @@ export interface HouseholdContextType {
   setTimeframeMode: (mode: TimeframeMode) => void;
   timeframeOffset: number;
   setTimeframeOffset: (offset: number | ((prev: number) => number)) => void;
+  switchTimeframe: (mode: TimeframeMode, offset?: number) => void;
   resetTimeframeToCurrent: () => void;
   activeDateRange: DateRange;
+  checkInStatusInfo: CheckInStatusInfo | null;
 
   // Staging modal & state
   isStagingModalOpen: boolean;
@@ -367,14 +370,34 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [selectedLedgerCategoryId, setSelectedLedgerCategoryId] = useState<string | null>(null);
   const [ledgerDateRangeLabel, setLedgerDateRangeLabel] = useState<string>('');
 
-  const navigateToCategoryLedger = (catId: string | null) => {
+  const navigateToCategoryLedger = useCallback((catId: string | null) => {
     setSelectedLedgerCategoryId(catId);
     setActiveTab('ledger');
-  };
+  }, []);
 
-  // Timeframe filter state
-  const [timeframeMode, setTimeframeMode] = useState<TimeframeMode>('week');
-  const [timeframeOffset, setTimeframeOffset] = useState<number>(0);
+  // Batched timeframe filter state (mode & offset combined for atomic updates)
+  const [timeframeState, setTimeframeState] = useState<{ mode: TimeframeMode; offset: number }>({
+    mode: 'week',
+    offset: 0,
+  });
+  const timeframeMode = timeframeState.mode;
+  const timeframeOffset = timeframeState.offset;
+
+  const setTimeframeMode = useCallback((mode: TimeframeMode) => {
+    setTimeframeState((prev) => (prev.mode === mode && prev.offset === 0 ? prev : { mode, offset: 0 }));
+  }, []);
+
+  const setTimeframeOffset = useCallback((offsetOrUpdater: number | ((prev: number) => number)) => {
+    setTimeframeState((prev) => {
+      const newOffset = typeof offsetOrUpdater === 'function' ? offsetOrUpdater(prev.offset) : offsetOrUpdater;
+      if (prev.offset === newOffset) return prev;
+      return { ...prev, offset: newOffset };
+    });
+  }, []);
+
+  const switchTimeframe = useCallback((mode: TimeframeMode, offset: number = 0) => {
+    setTimeframeState((prev) => (prev.mode === mode && prev.offset === offset ? prev : { mode, offset }));
+  }, []);
 
   // Staging Modal & Batch Staged Items State
   const [isStagingModalOpen, setIsStagingModalOpen] = useState<boolean>(false);
@@ -385,7 +408,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [logExpenseInitialCategory, setLogExpenseInitialCategory] = useState<Category | string | null>(null);
   const [isCategoryLockedInModal, setIsCategoryLockedInModal] = useState<boolean>(false);
 
-  const openLogExpenseModal = (category?: Category | string | null, isLocked: boolean = false) => {
+  const openLogExpenseModal = useCallback((category?: Category | string | null, isLocked: boolean = false) => {
     if (typeof category === 'string') {
       if (category === 'deposits' || category === 'cat_one_time_deposit') {
         setLogExpenseInitialCategory({
@@ -405,13 +428,13 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
     setIsCategoryLockedInModal(isLocked);
     setIsLogExpenseModalOpen(true);
-  };
+  }, [categories]);
 
-  const closeLogExpenseModal = () => {
+  const closeLogExpenseModal = useCallback(() => {
     setIsLogExpenseModalOpen(false);
     setLogExpenseInitialCategory(null);
     setIsCategoryLockedInModal(false);
-  };
+  }, []);
 
   // CheckIn & Retrospective Modals State
   const [isWeeklyCheckInModalOpen, setIsWeeklyCheckInModalOpen] = useState<boolean>(false);
@@ -420,15 +443,17 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [monthlyRetroTargetMonth, setMonthlyRetroTargetMonth] = useState<FiscalMonth | null>(null);
   const [isAllocationModalOpen, setIsAllocationModalOpen] = useState<boolean>(false);
 
-  const openWeeklyCheckInModal = (targetRange?: DateRange | null) => {
+  const openWeeklyCheckInModal = useCallback((targetRange?: DateRange | null) => {
     setWeeklyCheckInTargetRange(targetRange || null);
     setIsWeeklyCheckInModalOpen(true);
-  };
-  const closeWeeklyCheckInModal = () => {
+  }, []);
+
+  const closeWeeklyCheckInModal = useCallback(() => {
     setIsWeeklyCheckInModalOpen(false);
     setWeeklyCheckInTargetRange(null);
-  };
-  const openMonthlyRetroModal = (targetMonth?: FiscalMonth | DateRange | null) => {
+  }, []);
+
+  const openMonthlyRetroModal = useCallback((targetMonth?: FiscalMonth | DateRange | null) => {
     if (targetMonth && 'fiscalMonthNumber' in targetMonth) {
       setMonthlyRetroTargetMonth(targetMonth);
     } else if (targetMonth && 'startDate' in targetMonth) {
@@ -438,13 +463,15 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       setMonthlyRetroTargetMonth(null);
     }
     setIsMonthlyRetroModalOpen(true);
-  };
-  const closeMonthlyRetroModal = () => {
+  }, [household?.fiscalYearEndMonth]);
+
+  const closeMonthlyRetroModal = useCallback(() => {
     setIsMonthlyRetroModalOpen(false);
     setMonthlyRetroTargetMonth(null);
-  };
-  const openAllocationModal = () => setIsAllocationModalOpen(true);
-  const closeAllocationModal = () => setIsAllocationModalOpen(false);
+  }, []);
+
+  const openAllocationModal = useCallback(() => setIsAllocationModalOpen(true), []);
+  const closeAllocationModal = useCallback(() => setIsAllocationModalOpen(false), []);
 
   // Toast state
   const [toastInfo, setToastInfo] = useState<{ message: string; type: 'info' | 'error' | 'success' } | null>(null);
@@ -471,9 +498,15 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   }, [timeframeMode, timeframeOffset, household?.firstDayOfWeek, household?.fiscalYearEndMonth]);
 
-  const resetTimeframeToCurrent = () => {
-    setTimeframeOffset(0);
-  };
+  const resetTimeframeToCurrent = useCallback(() => {
+    setTimeframeState((prev) => (prev.offset === 0 ? prev : { ...prev, offset: 0 }));
+  }, []);
+
+  // Canonical memoized check-in status info evaluated once at context root
+  const checkInStatusInfo = useMemo<CheckInStatusInfo | null>(() => {
+    if (!household) return null;
+    return calculateCheckInStatus(household, checkIns, expenses);
+  }, [household, checkIns, expenses]);
 
   // Active Firestore listeners reference & clean unsubscription helper
   const activeListenersRef = useRef<(() => void)[]>([]);
@@ -574,12 +607,17 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
             setIsOnboarding(true);
             setIsLoading(false);
           } catch (err) {
-            console.error('Firestore Error loading user session:', err);
             handleFirestoreError(err, OperationType.GET, `users/${firebaseUser.uid}`);
-            showToast(`Session load note: ${err instanceof Error ? err.message : String(err)}`, 'error');
-            setHousehold(null);
-            setIsOnboarding(true);
-            setIsLoading(false);
+            if (isAuthOrNetworkTransientError(err)) {
+              console.warn('[Session] Handled transient 401/token drop during session resolution.');
+              setIsLoading(false);
+            } else {
+              console.error('Firestore Error loading user session:', err);
+              showToast(`Session load note: ${err instanceof Error ? err.message : String(err)}`, 'error');
+              setHousehold(null);
+              setIsOnboarding(true);
+              setIsLoading(false);
+            }
           }
         } else {
           // Logged out
@@ -642,7 +680,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       },
       (err) => {
         setIsHouseholdLoading(false);
-        console.warn(`[Firestore] Household listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Household listener note:`, err);
+        }
       }
     );
 
@@ -657,7 +697,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setCategories(loadedCats);
       },
       (err) => {
-        console.warn(`[Firestore] Categories listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Categories listener note:`, err);
+        }
       }
     );
 
@@ -673,7 +715,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setMembers(loadedMembers);
       },
       (err) => {
-        console.warn(`[Firestore] Members listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Members listener note:`, err);
+        }
       }
     );
 
@@ -763,7 +807,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       },
       (err) => {
-        console.warn(`[Firestore] Expenses listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Expenses listener note:`, err);
+        }
       }
     );
 
@@ -783,7 +829,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setCheckIns(loadedCheckIns);
       },
       (err) => {
-        console.warn(`[Firestore] Checkins listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Checkins listener note:`, err);
+        }
       }
     );
 
@@ -803,7 +851,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setFeedItems(loadedFeed);
       },
       (err) => {
-        console.warn(`[Firestore] Feed listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] Feed listener note:`, err);
+        }
       }
     );
 
@@ -833,7 +883,9 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         }
       },
       (err) => {
-        console.warn(`[Firestore] SavingsGoals listener note:`, err);
+        if (!isAuthOrNetworkTransientError(err)) {
+          console.warn(`[Firestore] SavingsGoals listener note:`, err);
+        }
       }
     );
 
@@ -848,6 +900,13 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     ];
 
     return () => {
+      try { unsubHousehold(); } catch (e) { /* ignore */ }
+      try { unsubCategories(); } catch (e) { /* ignore */ }
+      try { unsubMembers(); } catch (e) { /* ignore */ }
+      try { unsubExpenses(); } catch (e) { /* ignore */ }
+      try { unsubCheckIns(); } catch (e) { /* ignore */ }
+      try { unsubFeed(); } catch (e) { /* ignore */ }
+      try { unsubSavingsGoals(); } catch (e) { /* ignore */ }
       unsubscribeAllListeners();
     };
   }, [authInitialized, currentAuthUser, user?.userId, household?.id, isLoading, unsubscribeAllListeners]);
@@ -3028,7 +3087,7 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   };
 
   // Universal Staging & Confirmation Flow
-  const openStagingModal = (initial?: StagedExpense | StagedExpense[]) => {
+  const openStagingModal = useCallback((initial?: StagedExpense | StagedExpense[]) => {
     const defaultCategoryId = categories[0]?.id || 'cat_general';
     const defaultLoggedBy = user?.userId || 'usr_self';
     const todayStr = new Date().toISOString().split('T')[0];
@@ -3049,12 +3108,12 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       ]);
     }
     setIsStagingModalOpen(true);
-  };
+  }, [categories, user?.userId]);
 
-  const closeStagingModal = () => {
+  const closeStagingModal = useCallback(() => {
     setIsStagingModalOpen(false);
     setStagedExpenses([]);
-  };
+  }, []);
 
   const addStagedItem = (item?: Partial<StagedExpense>) => {
     const defaultCategoryId = categories[0]?.id || 'cat_general';
@@ -4729,118 +4788,215 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     }
   };
 
+  const contextValue = useMemo<HouseholdContextType>(
+    () => ({
+      user,
+      household,
+      members,
+      categories,
+      expenses,
+      checkIns,
+      feedItems,
+      isLoading,
+      isHouseholdLoading,
+      activeTab,
+      setActiveTab,
+      isOnboarding,
+      setIsOnboarding,
+
+      selectedLedgerCategoryId,
+      setSelectedLedgerCategoryId,
+      navigateToCategoryLedger,
+      ledgerDateRangeLabel,
+      setLedgerDateRangeLabel,
+
+      addTransactionComment,
+      addTransactionReaction,
+      postFeedMessage,
+
+      timeframeMode,
+      setTimeframeMode,
+      timeframeOffset,
+      setTimeframeOffset,
+      switchTimeframe,
+      resetTimeframeToCurrent,
+      activeDateRange,
+      checkInStatusInfo,
+
+      isStagingModalOpen,
+      stagedExpenses,
+      openStagingModal,
+      closeStagingModal,
+      addStagedItem,
+      updateStagedItem,
+      removeStagedItem,
+      confirmAllStagedExpenses,
+
+      isLogExpenseModalOpen,
+      logExpenseInitialCategory,
+      isCategoryLockedInModal,
+      openLogExpenseModal,
+      closeLogExpenseModal,
+      addCustomTag,
+      renameTag,
+      deleteTag,
+
+      isWeeklyCheckInModalOpen,
+      weeklyCheckInTargetRange,
+      openWeeklyCheckInModal,
+      closeWeeklyCheckInModal,
+      isMonthlyRetroModalOpen,
+      monthlyRetroTargetMonth,
+      openMonthlyRetroModal,
+      closeMonthlyRetroModal,
+      isAllocationModalOpen,
+      openAllocationModal,
+      closeAllocationModal,
+      completeWeeklyCheckIn,
+      deleteWeeklyCheckIn,
+      updateCheckInNotes,
+      updateCheckIn,
+      triggerFreshStartAction,
+      executeMonthEndResetAction,
+
+      createCategory,
+      updateCategory,
+      deleteCategory,
+      saveCategoryAllocations,
+
+      savingsGoals,
+      createSavingsGoal,
+      updateSavingsGoal,
+      deleteSavingsGoal,
+      allocateSavingsToGoals,
+
+      addExpense,
+      deleteExpense,
+      deleteExpensesBatch,
+      updateExpense,
+
+      toastMessage,
+      toastType,
+      showToast,
+
+      signInWithGoogle,
+      switchActiveMember,
+      signOut,
+      deleteAccount,
+      completeOnboarding,
+      joinHouseholdWithSyncCode,
+      getHouseholdBySyncCode,
+      leaveHousehold,
+      removeHouseholdMember,
+      updateHousehold,
+      updateMemberIncome,
+      addOneOffDeposit,
+      updateDeposit,
+      deleteDeposit,
+      applyExtraPaycheckDecision,
+      resetHouseholdToOnboarding,
+
+      userHouseholds,
+      switchHousehold,
+      triggerAutomatedDrawdown,
+    }),
+    [
+      user,
+      household,
+      members,
+      categories,
+      expenses,
+      checkIns,
+      feedItems,
+      isLoading,
+      isHouseholdLoading,
+      activeTab,
+      isOnboarding,
+      selectedLedgerCategoryId,
+      ledgerDateRangeLabel,
+      navigateToCategoryLedger,
+      addTransactionComment,
+      addTransactionReaction,
+      postFeedMessage,
+      timeframeMode,
+      timeframeOffset,
+      switchTimeframe,
+      resetTimeframeToCurrent,
+      activeDateRange,
+      checkInStatusInfo,
+      isStagingModalOpen,
+      stagedExpenses,
+      openStagingModal,
+      closeStagingModal,
+      addStagedItem,
+      updateStagedItem,
+      removeStagedItem,
+      confirmAllStagedExpenses,
+      isLogExpenseModalOpen,
+      logExpenseInitialCategory,
+      isCategoryLockedInModal,
+      openLogExpenseModal,
+      closeLogExpenseModal,
+      addCustomTag,
+      renameTag,
+      deleteTag,
+      isWeeklyCheckInModalOpen,
+      weeklyCheckInTargetRange,
+      openWeeklyCheckInModal,
+      closeWeeklyCheckInModal,
+      isMonthlyRetroModalOpen,
+      monthlyRetroTargetMonth,
+      openMonthlyRetroModal,
+      closeMonthlyRetroModal,
+      isAllocationModalOpen,
+      openAllocationModal,
+      closeAllocationModal,
+      completeWeeklyCheckIn,
+      deleteWeeklyCheckIn,
+      updateCheckInNotes,
+      updateCheckIn,
+      triggerFreshStartAction,
+      executeMonthEndResetAction,
+      createCategory,
+      updateCategory,
+      deleteCategory,
+      saveCategoryAllocations,
+      savingsGoals,
+      createSavingsGoal,
+      updateSavingsGoal,
+      deleteSavingsGoal,
+      allocateSavingsToGoals,
+      addExpense,
+      deleteExpense,
+      deleteExpensesBatch,
+      updateExpense,
+      toastMessage,
+      toastType,
+      showToast,
+      signInWithGoogle,
+      switchActiveMember,
+      signOut,
+      deleteAccount,
+      completeOnboarding,
+      joinHouseholdWithSyncCode,
+      getHouseholdBySyncCode,
+      leaveHousehold,
+      removeHouseholdMember,
+      updateHousehold,
+      updateMemberIncome,
+      addOneOffDeposit,
+      updateDeposit,
+      deleteDeposit,
+      applyExtraPaycheckDecision,
+      resetHouseholdToOnboarding,
+      userHouseholds,
+      switchHousehold,
+      triggerAutomatedDrawdown,
+    ]
+  );
+
   return (
-    <HouseholdContext.Provider
-      value={{
-        user,
-        household,
-        members,
-        categories,
-        expenses,
-        checkIns,
-        feedItems,
-        isLoading,
-        isHouseholdLoading,
-        activeTab,
-        setActiveTab,
-        isOnboarding,
-        setIsOnboarding,
-
-        selectedLedgerCategoryId,
-        setSelectedLedgerCategoryId,
-        navigateToCategoryLedger,
-        ledgerDateRangeLabel,
-        setLedgerDateRangeLabel,
-
-        addTransactionComment,
-        addTransactionReaction,
-        postFeedMessage,
-
-        timeframeMode,
-        setTimeframeMode,
-        timeframeOffset,
-        setTimeframeOffset,
-        resetTimeframeToCurrent,
-        activeDateRange,
-
-        isStagingModalOpen,
-        stagedExpenses,
-        openStagingModal,
-        closeStagingModal,
-        addStagedItem,
-        updateStagedItem,
-        removeStagedItem,
-        confirmAllStagedExpenses,
-
-        isLogExpenseModalOpen,
-        logExpenseInitialCategory,
-        isCategoryLockedInModal,
-        openLogExpenseModal,
-        closeLogExpenseModal,
-        addCustomTag,
-        renameTag,
-        deleteTag,
-
-        isWeeklyCheckInModalOpen,
-        weeklyCheckInTargetRange,
-        openWeeklyCheckInModal,
-        closeWeeklyCheckInModal,
-        isMonthlyRetroModalOpen,
-        monthlyRetroTargetMonth,
-        openMonthlyRetroModal,
-        closeMonthlyRetroModal,
-        isAllocationModalOpen,
-        openAllocationModal,
-        closeAllocationModal,
-        completeWeeklyCheckIn,
-        deleteWeeklyCheckIn,
-        updateCheckInNotes,
-        updateCheckIn,
-        triggerFreshStartAction,
-        executeMonthEndResetAction,
-
-        createCategory,
-        updateCategory,
-        deleteCategory,
-        saveCategoryAllocations,
-
-        savingsGoals,
-        createSavingsGoal,
-        updateSavingsGoal,
-        deleteSavingsGoal,
-        allocateSavingsToGoals,
-
-        addExpense,
-        deleteExpense,
-        deleteExpensesBatch,
-        updateExpense,
-
-        toastMessage,
-        toastType,
-        showToast,
-
-        signInWithGoogle,
-        switchActiveMember,
-        signOut,
-        deleteAccount,
-        completeOnboarding,
-        joinHouseholdWithSyncCode,
-        getHouseholdBySyncCode,
-        leaveHousehold,
-        removeHouseholdMember,
-        updateHousehold,
-        updateMemberIncome,
-        addOneOffDeposit,
-        updateDeposit,
-        deleteDeposit,
-        applyExtraPaycheckDecision,
-        resetHouseholdToOnboarding,
-
-        userHouseholds,
-        switchHousehold,
-        triggerAutomatedDrawdown,
-      }}
-    >
+    <HouseholdContext.Provider value={contextValue}>
       {children}
     </HouseholdContext.Provider>
   );

@@ -35,7 +35,7 @@ export function getSavingsProgressFillColor(percentage: number): string {
   return 'bg-sage-600';
 }
 
-export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
+export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = React.memo(({
   categoryType,
   spent,
   budget,
@@ -227,4 +227,4 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = ({
       </div>
     </div>
   );
-};
+});

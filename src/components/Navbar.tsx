@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useHousehold } from '../context/HouseholdContext';
 import { ActiveTab } from '../types';
-import { calculateCheckInStatus } from '../lib/checkInCalculations';
 import { getFiscalMonthForDate, getFiscalTrackerInfo } from '../lib/fiscal445';
 import {
   LayoutDashboard,
@@ -40,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     members,
     expenses,
     checkIns,
+    checkInStatusInfo,
     activeTab,
     setActiveTab,
     switchActiveMember,
@@ -124,8 +124,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
 
   // Reactive Review Due Status for Check-in Alert Badge
   const reviewDueStatus = useMemo(() => {
-    if (!household) return { isDue: false, isPastDue: false };
-    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    if (!household || !checkInStatusInfo) return { isDue: false, isPastDue: false };
+    const statusInfo = checkInStatusInfo;
     const isWeeklyDue = statusInfo.isPastDue || statusInfo.status === 'pending' || statusInfo.status === 'past-due';
 
     if (isWeeklyDue) {
@@ -154,7 +154,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenProfileModal }) => {
     }
 
     return { isDue: false, isPastDue: false };
-  }, [household, checkIns, expenses]);
+  }, [household, checkIns, checkInStatusInfo]);
 
   // Switch / Join Modal State
   const [showJoinModal, setShowJoinModal] = useState(false);

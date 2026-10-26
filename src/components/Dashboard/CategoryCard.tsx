@@ -11,30 +11,47 @@ import {
 } from '../../lib/calculations';
 import { getFiscalMonthForDate } from '../../lib/fiscal445';
 import { Plus, AlertCircle, CheckCircle2, ChevronRight, ChevronDown, ShieldCheck, PiggyBank, MoreHorizontal, Sparkles } from 'lucide-react';
-import { useHousehold } from '../../context/HouseholdContext';
 import { CategoryIcon } from '../Common/CategoryIcon';
 import { BudgetProgressBar } from '../Common/BudgetProgressBar';
 
-interface CategoryCardProps {
+export interface WaterfallMetrics {
+  totalTransferPot: number;
+  totalDeficit: number;
+  netDeficit: number;
+  potUsedForCoverage: number;
+  baselineSavingsTargetAvailable: number;
+}
+
+export interface CategoryCardProps {
   category: Category;
   expenses: Expense[];
   timeframeMode: TimeframeMode;
   dateRange: DateRange;
   onQuickLog: (category: Category) => void;
+  navigateToCategoryLedger: (catId: string | null) => void;
+  household: any;
+  checkIns: CheckIn[];
+  waterfallMetrics: WaterfallMetrics;
+  categorySpending?: { totalSpent: number; count: number };
   isExpanded?: boolean;
   onToggleExpand?: () => void;
 }
 
-export const CategoryCard: React.FC<CategoryCardProps> = ({
+const CategoryCardComponent: React.FC<CategoryCardProps> = ({
   category,
   expenses,
   timeframeMode,
   dateRange,
   onQuickLog,
+  navigateToCategoryLedger,
+  household,
+  checkIns,
+  waterfallMetrics,
+  categorySpending,
   isExpanded: propIsExpanded,
   onToggleExpand,
 }) => {
-  const { household, navigateToCategoryLedger, checkIns, categories } = useHousehold();
+  console.count("Category Card Rendered");
   const [localIsExpanded, setLocalIsExpanded] = useState(false);
   const isExpanded = propIsExpanded !== undefined ? propIsExpanded : localIsExpanded;
 
@@ -80,8 +97,8 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
 
   const isProratedWeek = !isMonthView && isOverridden && overrideAmount !== undefined;
 
-  // Calculate actual spending in this active date range
-  const { totalSpent, count } = calculateCategorySpending(
+  // Calculate actual spending in this active date range (using precomputed spending if provided)
+  const { totalSpent, count } = categorySpending || calculateCategorySpending(
     expenses,
     category.id,
     dateRange.startDate,
@@ -156,79 +173,16 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
         : (overrideAmount !== undefined && overrideAmount > baselineBudget ? overrideAmount - baselineBudget : 0))
     : 0;
 
-  // WATERFALL MATH ENGINE:
-  // 1. Calculate all expense categories pacings in the current timeframe
-  const expensePacings = useMemo(() => {
-    return (categories || [])
-      .filter(
-        (c) =>
-          c.type !== 'savings' &&
-          c.group?.toLowerCase() !== 'bills' &&
-          c.name?.toLowerCase() !== 'bills' &&
-          c.id !== 'cat_bills' &&
-          c.group?.toLowerCase() !== 'savings'
-      )
-      .map((cat) => {
-        const catBudget = isMonthView
-          ? (cat.baselineBudget || 0) * weeksInMonth
-          : getCategoryEffectiveWeeklyBudget(
-              cat,
-              getWeekId(dateRange, household?.firstDayOfWeek || 'Monday'),
-              household
-            ).budget;
+  // WATERFALL METRICS: Injected as precalculated, memoized metrics from parent dashboard
+  const {
+    totalTransferPot,
+    totalDeficit,
+    netDeficit,
+    potUsedForCoverage,
+    baselineSavingsTargetAvailable,
+  } = waterfallMetrics;
 
-        const { totalSpent: catSpent } = calculateCategorySpending(
-          expenses,
-          cat.id,
-          dateRange.startDate,
-          dateRange.endDate
-        );
-        const diff = catBudget - catSpent;
-        return {
-          categoryId: cat.id,
-          budget: catBudget,
-          spent: catSpent,
-          diff,
-          surplus: Math.max(0, diff),
-          deficit: Math.max(0, -diff),
-        };
-      });
-  }, [categories, isMonthView, weeksInMonth, dateRange, household, expenses]);
-
-  // 2. Global Transfer Pot & Deficit calculations
-  const { totalTransferPot, totalDeficit, netDeficit, potUsedForCoverage } = useMemo(() => {
-    let pot = 0;
-    let def = 0;
-
-    if (thisWeekCheckIn?.decisions && thisWeekCheckIn.decisions.length > 0) {
-      thisWeekCheckIn.decisions.forEach((d) => {
-        const isSav = d.choice === 'savings' && d.categoryName?.toLowerCase().includes('savings');
-        const isB = d.categoryId === 'cat_bills' || d.categoryName?.toLowerCase().includes('bills');
-        if (!isSav && !isB) {
-          if (d.difference > 0) {
-            pot += d.difference;
-          } else if (d.difference < 0) {
-            def += Math.abs(d.difference);
-          }
-        }
-      });
-    } else {
-      expensePacings.forEach((p) => {
-        pot += p.surplus;
-        def += p.deficit;
-      });
-    }
-
-    const net = Math.max(0, def - pot);
-    const potUsed = Math.min(pot, def);
-
-    return {
-      totalTransferPot: pot,
-      totalDeficit: def,
-      netDeficit: net,
-      potUsedForCoverage: potUsed,
-    };
-  }, [thisWeekCheckIn, expensePacings]);
+  const totalAvailableSavings = baselineSavingsTargetAvailable;
 
   // 3. For this individual underspent expense category:
   const { categoryOverspendCoverage, categoryLeftoverSurplus } = useMemo(() => {
@@ -246,24 +200,50 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
     };
   }, [isSavings, isBills, remaining, totalTransferPot, potUsedForCoverage]);
 
-  // 4. For overspent expense categories:
-  const savingsCategory = useMemo(() => {
-    return (categories || []).find((c) => c.type === 'savings' || c.group?.toLowerCase() === 'savings');
-  }, [categories]);
-
-  const baselineSavingsTargetAvailable = useMemo(() => {
-    if (!savingsCategory) return 0;
-    const { budget, baseline, overrideAmount } = getCategoryEffectiveWeeklyBudget(savingsCategory, activeWeekId, household);
-    return Math.max(Number(savingsCategory.baselineBudget) || 0, baseline, budget, overrideAmount !== undefined ? overrideAmount : 0);
-  }, [savingsCategory, activeWeekId, household]);
-
-  const totalAvailableSavings = baselineSavingsTargetAvailable;
-
   const { categoryTransfersCovered, categorySavingsCovered, categoryProratedCovered } = useMemo(() => {
     if (isSavings || remaining >= 0) {
       return { categoryTransfersCovered: 0, categorySavingsCovered: 0, categoryProratedCovered: 0 };
     }
     const def = Math.abs(remaining);
+
+    // 1. Post-Check-In: strictly use the recorded decision resolution and actual savings deduction
+    if (thisWeekCheckIn) {
+      const dec = categoryDecision;
+      const potCovered = dec?.transfersCovered !== undefined
+        ? Number(dec.transfersCovered)
+        : (totalDeficit > 0 ? (def / totalDeficit) * potUsedForCoverage : 0);
+      const remAfterPot = Math.max(0, def - potCovered);
+
+      let savCovered = 0;
+      if (dec?.savingsDeduction !== undefined && Number(dec.savingsDeduction) > 0) {
+        savCovered = Math.min(remAfterPot, Number(dec.savingsDeduction));
+      } else if (dec?.choice === 'deduct_savings') {
+        savCovered = remAfterPot;
+      } else if (dec?.choice === 'reduce_future') {
+        savCovered = 0;
+      } else {
+        // Only use what was actually deducted from savings in this completed check-in
+        const savDec = (thisWeekCheckIn.decisions || []).find(
+          (d) => d.categoryId === 'cat_savings' || d.categoryName?.toLowerCase().includes('saving')
+        );
+        const actualSavDeducted = Number(savDec?.savingsDeduction) || 0;
+        savCovered = totalDeficit > 0 ? Math.min(remAfterPot, (def / totalDeficit) * actualSavDeducted) : 0;
+      }
+
+      const prorated = dec?.proratedCovered !== undefined
+        ? Number(dec.proratedCovered)
+        : (dec?.choice === 'reduce_future'
+            ? remAfterPot
+            : Math.max(0, remAfterPot - savCovered));
+
+      return {
+        categoryTransfersCovered: potCovered,
+        categorySavingsCovered: savCovered,
+        categoryProratedCovered: prorated > 0 ? prorated : (dec?.choice === 'reduce_future' ? def : 0),
+      };
+    }
+
+    // 2. Pre-Check-In pacing estimation
     const transfersShare = totalDeficit > 0 ? (def / totalDeficit) * potUsedForCoverage : 0;
     const remainingDef = Math.max(0, def - transfersShare);
     const savingsShare = totalDeficit > 0 ? Math.min(remainingDef, (def / totalDeficit) * totalAvailableSavings) : 0;
@@ -274,7 +254,7 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
       categorySavingsCovered: savingsShare,
       categoryProratedCovered: proratedShare,
     };
-  }, [isSavings, remaining, totalDeficit, potUsedForCoverage, totalAvailableSavings]);
+  }, [isSavings, remaining, thisWeekCheckIn, categoryDecision, totalDeficit, potUsedForCoverage, totalAvailableSavings]);
 
   // Contributions sent to savings from underspent expense categories during check-in
   const savingsContributions = useMemo(() => {
@@ -606,21 +586,27 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
   const amountActuallyBanked = useMemo(() => {
     if (!isSavings) return 0;
     if (thisWeekCheckIn) {
-      if (typeof thisWeekCheckIn.totalSaved === 'number') {
-        return thisWeekCheckIn.totalSaved;
-      }
       const savDecision = (thisWeekCheckIn.decisions || []).find(
         (d) => d.categoryId === category.id || d.categoryName?.toLowerCase().includes('savings')
       );
       if (savDecision) {
+        const b = Number(savDecision.budget) || targetBudget || 0;
+        const d = Number(savDecision.savingsDeduction) || savingsDeducted || 0;
+        if (d > 0) {
+          return Math.max(0, b - d);
+        }
         if (typeof savDecision.spent === 'number') return savDecision.spent;
-        const b = Number(savDecision.budget) || 0;
-        const d = Number(savDecision.savingsDeduction) || 0;
         return Math.max(0, b - d);
       }
+      if (savingsDeducted > 0) {
+        return Math.max(0, targetBudget - savingsDeducted);
+      }
+      if (typeof thisWeekCheckIn.totalSaved === 'number') {
+        return Math.max(0, thisWeekCheckIn.totalSaved - savingsDeducted);
+      }
     }
-    return protectedSavings + totalSavingsSurplusTransferred;
-  }, [isSavings, thisWeekCheckIn, category.id, protectedSavings, totalSavingsSurplusTransferred]);
+    return Math.max(0, protectedSavings + totalSavingsSurplusTransferred);
+  }, [isSavings, thisWeekCheckIn, category.id, targetBudget, savingsDeducted, protectedSavings, totalSavingsSurplusTransferred]);
 
   const displayCoverage = isMonthView ? 0 : savingsDeducted;
   const displayBanked = isMonthView
@@ -1178,4 +1164,51 @@ export const CategoryCard: React.FC<CategoryCardProps> = ({
         </div>
       </div>
     );
-  };
+};
+
+function areCategoryCardPropsEqual(prev: CategoryCardProps, next: CategoryCardProps): boolean {
+  if (prev.category !== next.category) {
+    if (
+      prev.category.id !== next.category.id ||
+      prev.category.baselineBudget !== next.category.baselineBudget ||
+      prev.category.currentWeeklyBudget !== next.category.currentWeeklyBudget ||
+      prev.category.name !== next.category.name ||
+      prev.category.group !== next.category.group ||
+      prev.category.type !== next.category.type
+    ) {
+      return false;
+    }
+  }
+  if (prev.timeframeMode !== next.timeframeMode) return false;
+  if (prev.dateRange.startDate.getTime() !== next.dateRange.startDate.getTime()) return false;
+  if (prev.dateRange.endDate.getTime() !== next.dateRange.endDate.getTime()) return false;
+  if (prev.isExpanded !== next.isExpanded) return false;
+  if (prev.onQuickLog !== next.onQuickLog) return false;
+  if (prev.onToggleExpand !== next.onToggleExpand) return false;
+  if (prev.navigateToCategoryLedger !== next.navigateToCategoryLedger) return false;
+  if (prev.household !== next.household) return false;
+  if (prev.checkIns !== next.checkIns) return false;
+  if (prev.expenses !== next.expenses) return false;
+  if (prev.categorySpending !== next.categorySpending) {
+    if (
+      prev.categorySpending?.totalSpent !== next.categorySpending?.totalSpent ||
+      prev.categorySpending?.count !== next.categorySpending?.count
+    ) {
+      return false;
+    }
+  }
+  if (prev.waterfallMetrics !== next.waterfallMetrics) {
+    if (
+      prev.waterfallMetrics.totalTransferPot !== next.waterfallMetrics.totalTransferPot ||
+      prev.waterfallMetrics.totalDeficit !== next.waterfallMetrics.totalDeficit ||
+      prev.waterfallMetrics.netDeficit !== next.waterfallMetrics.netDeficit ||
+      prev.waterfallMetrics.potUsedForCoverage !== next.waterfallMetrics.potUsedForCoverage ||
+      prev.waterfallMetrics.baselineSavingsTargetAvailable !== next.waterfallMetrics.baselineSavingsTargetAvailable
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+export const CategoryCard = React.memo(CategoryCardComponent, areCategoryCardPropsEqual);

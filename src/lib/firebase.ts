@@ -4,7 +4,7 @@
  */
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, type Auth } from 'firebase/auth';
-import { getFirestore, type Firestore } from 'firebase/firestore';
+import { initializeFirestore, getFirestore, type Firestore } from 'firebase/firestore';
 import { getStorage, ref, uploadBytes, getDownloadURL, type FirebaseStorage } from 'firebase/storage';
 
 const firebaseConfig = {
@@ -31,7 +31,13 @@ if (isFirebaseConfigured) {
   try {
     app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
     authInstance = getAuth(app);
-    dbInstance = getFirestore(app);
+    try {
+      dbInstance = initializeFirestore(app, {
+        experimentalForceLongPolling: true,
+      });
+    } catch {
+      dbInstance = getFirestore(app);
+    }
     if (firebaseConfig.storageBucket) {
       storageInstance = getStorage(app);
     }
@@ -105,6 +111,27 @@ export interface FirestoreErrorInfo {
   };
 }
 
+export function isAuthOrNetworkTransientError(error: unknown): boolean {
+  if (!error) return false;
+  const msg = error instanceof Error ? error.message : String(error);
+  const code = (error as any)?.code || '';
+  return (
+    code === 'permission-denied' ||
+    code === 'unauthenticated' ||
+    code === 'auth/id-token-expired' ||
+    code === 'auth/user-token-expired' ||
+    code === 'unavailable' ||
+    msg.includes('401') ||
+    msg.includes('Unauthorized') ||
+    msg.includes('unauthenticated') ||
+    msg.includes('permission-denied') ||
+    msg.includes('WebSocket') ||
+    msg.includes('network') ||
+    msg.includes('offline')
+  );
+}
+
+let lastErrorTimestamp = 0;
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -117,6 +144,17 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path,
   };
-  console.error('Firestore Error:', JSON.stringify(errInfo));
+
+  const isTransient = isAuthOrNetworkTransientError(error);
+  const now = Date.now();
+  // Throttle console errors to prevent console thrashing during auth token drops
+  if (!isTransient || now - lastErrorTimestamp > 5000) {
+    lastErrorTimestamp = now;
+    if (isTransient) {
+      console.warn('[Firestore] Transient auth/connection drop handled:', errInfo.error);
+    } else {
+      console.error('Firestore Error:', JSON.stringify(errInfo));
+    }
+  }
   return errInfo;
 }

@@ -138,7 +138,7 @@ function isCheckInInRange(ci: CheckIn, start: Date, end: Date): boolean {
   return false;
 }
 
-export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
+export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = React.memo(({
   activeTabCategory,
   selectedTabId,
   expenses,
@@ -1456,4 +1456,4 @@ export const LedgerDataVisualizer: React.FC<LedgerDataVisualizerProps> = ({
       </div>
     </div>
   );
-};
+});

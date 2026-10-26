@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useHousehold } from '../../context/HouseholdContext';
 import {
-  calculateCheckInStatus,
   getOldestPastDueCheckInWeek,
   getUnreviewedCompletedMonth,
   isMonthlyReviewCompletedForMonth,
@@ -29,6 +28,7 @@ export const ShortcutBar: React.FC = () => {
     household,
     checkIns,
     expenses,
+    checkInStatusInfo,
     openWeeklyCheckInModal,
     openMonthlyRetroModal,
     openLogExpenseModal,
@@ -54,8 +54,8 @@ export const ShortcutBar: React.FC = () => {
   }, [checkIns]);
 
   const weeklyPastDueStatus = React.useMemo(() => {
-    if (!household) return { isPastDue: false, title: '', description: '', fiscalWeekLabel: '' };
-    const statusInfo = calculateCheckInStatus(household, checkIns, expenses);
+    if (!household || !checkInStatusInfo) return { isPastDue: false, title: '', description: '', fiscalWeekLabel: '' };
+    const statusInfo = checkInStatusInfo;
     const isPastDue = statusInfo.isPastDue || statusInfo.status === 'past-due' || statusInfo.status === 'pending' || oldestPastDueWeek !== null;
 
     const fiscalWeekLabel = oldestPastDueWeek ? oldestPastDueWeek.fiscalWeekLabel : (statusInfo.isPastDue ? 'Past Due' : '');
@@ -68,7 +68,7 @@ export const ShortcutBar: React.FC = () => {
         ? `Reconcile spending and bank savings for ${oldestPastDueWeek.fiscalWeekLabel} to keep budgets accurate.`
         : 'Reconcile spending and bank savings to keep budgets accurate.',
     };
-  }, [household, checkIns, expenses, oldestPastDueWeek]);
+  }, [household, checkInStatusInfo, oldestPastDueWeek]);
 
   // Check for any month whose weekly check-ins have ALL been completed and monthly review is NOT completed
   const unreviewedCompletedMonth = React.useMemo(() => {
@@ -271,6 +271,7 @@ export const ShortcutBar: React.FC = () => {
                         openWeeklyCheckInModal({
                           startDate: new Date(mostRecentCheckIn.weekStartDate),
                           endDate: new Date(mostRecentCheckIn.weekEndDate),
+                          label: `${mostRecentCheckIn.weekStartDate} – ${mostRecentCheckIn.weekEndDate}`,
                         });
                       } else {
                         openWeeklyCheckInModal();
