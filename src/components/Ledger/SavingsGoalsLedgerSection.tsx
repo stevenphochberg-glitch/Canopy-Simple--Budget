@@ -132,28 +132,28 @@ export const SavingsGoalsLedgerSection: React.FC<SavingsGoalsLedgerSectionProps>
 
       {/* Aggregate Overview Card */}
       {categoryGoals.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-white/90 border border-sage-200/60 rounded-2xl">
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-white border border-sage-200/90 rounded-2xl shadow-2xs">
+          <div className="bg-sage-50/70 border border-sage-200/80 rounded-xl p-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-green-800/80 block">
               Total Saved So Far
             </span>
-            <span className="text-lg font-black text-dark-green-900">
+            <span className="text-lg font-black text-dark-green-900 font-mono">
               {formatCurrency(totalSavedAcrossGoals)}
             </span>
           </div>
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
+          <div className="bg-sage-50/70 border border-sage-200/80 rounded-xl p-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-green-800/80 block">
               Total Target Goal
             </span>
-            <span className="text-lg font-black text-dark-green-900">
+            <span className="text-lg font-black text-dark-green-900 font-mono">
               {formatCurrency(totalTargetAcrossGoals)}
             </span>
           </div>
-          <div>
-            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-grey-600 block">
+          <div className="bg-sage-50/70 border border-sage-200/80 rounded-xl p-3">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-dark-green-800/80 block">
               Aggregate Progress
             </span>
-            <span className="text-lg font-black text-sage-800">
+            <span className="text-lg font-black text-dark-green-800 font-mono">
               {totalTargetAcrossGoals > 0
                 ? Math.round((totalSavedAcrossGoals / totalTargetAcrossGoals) * 100)
                 : 0}

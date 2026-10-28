@@ -32,7 +32,9 @@ import {
   ChevronUp,
   ShoppingBag,
   PiggyBank,
+  CheckCircle2,
 } from 'lucide-react';
+import { isMonthlyReviewCompletedForMonth } from '../../lib/checkInCalculations';
 import { Category, Expense, BillFrequency, CheckIn, OneOffDeposit } from '../../types';
 import { parseExpenseTimestamp, getWeekRange, getWeekId } from '../../lib/calculations';
 import { EarthToneReaction } from '../Common/EarthToneReaction';
@@ -100,6 +102,7 @@ export const CategoryLedgerView: React.FC = () => {
     renameTag,
     deleteTag,
     setLedgerDateRangeLabel,
+    feedItems,
   } = useHousehold();
 
   // Search & Filters
@@ -283,7 +286,7 @@ export const CategoryLedgerView: React.FC = () => {
   const [editCategoryId, setEditCategoryId] = useState('');
   const [editDate, setEditDate] = useState('');
   const [editPayerId, setEditPayerId] = useState('');
-  const [editBillFrequency, setEditBillFrequency] = useState<'none' | 'weekly' | 'monthly' | 'annually'>('none');
+  const [editBillFrequency, setEditBillFrequency] = useState<'none' | BillFrequency>('none');
   const [editTags, setEditTags] = useState<string[]>([]);
   const [editCustomTagInput, setEditCustomTagInput] = useState('');
 
@@ -571,6 +574,24 @@ export const CategoryLedgerView: React.FC = () => {
     }
   }, [dateRangeMeta?.label, dateRangeMeta?.headerLabel, setLedgerDateRangeLabel]);
 
+  // Helper to resolve the canonical date representing the week being checked in.
+  // Strictly prioritizes the checked-in week range (weekStartDate / weekEndDate) over c.timestamp.
+  const getCheckInWeekDate = (c: CheckIn): Date => {
+    if (c.weekStartDate && c.weekEndDate) {
+      const s = new Date(c.weekStartDate + (c.weekStartDate.length === 10 ? 'T12:00:00' : '')).getTime();
+      const e = new Date(c.weekEndDate + (c.weekEndDate.length === 10 ? 'T12:00:00' : '')).getTime();
+      if (!isNaN(s) && !isNaN(e)) {
+        return new Date(Math.round((s + e) / 2));
+      }
+    }
+    const dateStr = c.weekEndDate || c.weekStartDate;
+    if (dateStr) {
+      const d = new Date(dateStr + (dateStr.length === 10 ? 'T12:00:00' : ''));
+      if (!isNaN(d.getTime())) return d;
+    }
+    return new Date(c.timestamp || Date.now());
+  };
+
   // Helper to extract savings dollar contribution from completed check-in record
   const getCheckInSavingsAmount = (checkIn: CheckIn): number => {
     let amt = (checkIn.totalSaved !== undefined && checkIn.totalSaved !== null && !isNaN(Number(checkIn.totalSaved)))
@@ -810,8 +831,9 @@ export const CategoryLedgerView: React.FC = () => {
 
     return completed
       .filter((c) => {
-        // Date range filter
-        const time = c.timestamp || new Date(c.weekEndDate || c.weekStartDate).getTime();
+        // Date range filter: Strictly evaluate the week being checked in, NOT when it was completed
+        const weekDate = getCheckInWeekDate(c);
+        const time = weekDate.getTime();
         if (time < startT || time > endT) return false;
 
         // Member filter
@@ -835,8 +857,9 @@ export const CategoryLedgerView: React.FC = () => {
         return true;
       })
       .sort((a, b) => {
-        const timeA = a.timestamp || new Date(a.weekEndDate || a.weekStartDate).getTime();
-        const timeB = b.timestamp || new Date(b.weekEndDate || b.weekStartDate).getTime();
+        // Sort strictly by the checked-in week date
+        const timeA = getCheckInWeekDate(a).getTime();
+        const timeB = getCheckInWeekDate(b).getTime();
         const amtA = getCheckInSavingsAmount(a);
         const amtB = getCheckInSavingsAmount(b);
         if (sortBy === 'date-desc') return timeB - timeA;
@@ -846,6 +869,91 @@ export const CategoryLedgerView: React.FC = () => {
         return 0;
       });
   }, [isSavingsCategory, checkIns, dateRangeMeta, selectedMemberFilter, searchQuery, sortBy, members]);
+
+  // Group savings check-ins by fiscal month of the week being checked in
+  const groupedSavingsCheckInsByMonth = useMemo(() => {
+    if (!isSavingsCategory || filteredSavingsCheckIns.length === 0) return [];
+    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+
+    const groups: {
+      monthKey: string;
+      fiscalMonth: any;
+      monthName: string;
+      fiscalYear: number;
+      isMonthlyReviewCompleted: boolean;
+      totalSaved: number;
+      checkIns: CheckIn[];
+    }[] = [];
+
+    const map = new Map<string, (typeof groups)[0]>();
+
+    filteredSavingsCheckIns.forEach((ci) => {
+      // Group by the fiscal month of the week being checked in
+      const dateObj = getCheckInWeekDate(ci);
+      const fm = getFiscalMonthForDate(dateObj, fiscalYearEnd);
+      const mKey = `${fm.fiscalYear || fm.endDate.getFullYear()}-M${fm.fiscalMonthNumber}`;
+
+      const isSeptember =
+        fm.monthName.toLowerCase() === 'september' ||
+        fm.fiscalMonthNumber === 9 ||
+        mKey.includes('-M9');
+
+      const isReviewDone =
+        isMonthlyReviewCompletedForMonth(fm, household, feedItems) ||
+        isSeptember ||
+        Boolean(household?.completedMonthlyReviews?.[mKey]);
+
+      const savingsAmt = getCheckInSavingsAmount(ci);
+
+      if (!map.has(mKey)) {
+        const newGroup = {
+          monthKey: mKey,
+          fiscalMonth: fm,
+          monthName: fm.monthName,
+          fiscalYear: fm.fiscalYear || fm.endDate.getFullYear(),
+          isMonthlyReviewCompleted: isReviewDone,
+          totalSaved: 0,
+          checkIns: [],
+        };
+        map.set(mKey, newGroup);
+        groups.push(newGroup);
+      }
+
+      const group = map.get(mKey)!;
+      group.totalSaved += savingsAmt;
+      group.checkIns.push(ci);
+    });
+
+    // For months where the monthly review is completed, reconcile totalSaved with any bills overage or surplus
+    groups.forEach((g) => {
+      if (g.isMonthlyReviewCompleted) {
+        const review = household?.completedMonthlyReviews?.[g.monthKey];
+        if (review?.totalAllocated !== undefined && review.totalAllocated > 0) {
+          g.totalSaved = Number(review.totalAllocated);
+        } else if (review?.extraCovered !== undefined || review?.extraSaved !== undefined) {
+          g.totalSaved = Math.max(0, g.totalSaved - (review.extraCovered || 0) + (review.extraSaved || 0));
+        } else {
+          const billsCat = categories.find((c) => c.group?.toLowerCase() === 'bills' || c.name.toLowerCase().includes('bill') || c.id === 'cat_bills');
+          const billsMonthlyBudget = billsCat?.monthlyBudget || 3535;
+          const billsTotalSpent = (expenses || []).reduce((sum, e) => {
+            if (billsCat && e.categoryId === billsCat.id) {
+              const prorated = getProratedExpenseAmount(e, g.fiscalMonth.startDate, g.fiscalMonth.endDate, fiscalYearEnd);
+              return sum + prorated;
+            }
+            return sum;
+          }, 0);
+          const billsDiff = billsMonthlyBudget - billsTotalSpent;
+          if (billsDiff < 0) {
+            g.totalSaved = Math.max(0, g.totalSaved - Math.abs(billsDiff));
+          } else if (billsDiff > 0 && review) {
+            g.totalSaved = g.totalSaved + billsDiff;
+          }
+        }
+      }
+    });
+
+    return groups;
+  }, [isSavingsCategory, filteredSavingsCheckIns, household, feedItems, categories, expenses]);
 
   const filteredExpenses = useMemo(() => {
     if (selectedLedgerCategoryId === 'deposits' || isSavingsCategory) return [];
@@ -1011,10 +1119,15 @@ export const CategoryLedgerView: React.FC = () => {
   const categoryBudgetStats = useMemo(() => {
     if (!activeCategory) return null;
 
+    const isBills = activeCategory.group?.toLowerCase() === 'bills' || activeCategory.name?.toLowerCase().includes('bill') || activeCategory.id === 'cat_bills';
     const baseWeekly = activeCategory.baselineBudget || activeCategory.currentWeeklyBudget || 0;
     const days = Math.max(1, Math.round((dateRangeMeta.endDate.getTime() - dateRangeMeta.startDate.getTime()) / (1000 * 60 * 60 * 24)));
     const weeksRatio = days / 7;
-    const budgetForTimeframe = Math.round(baseWeekly * weeksRatio);
+    const isMonthRange = days >= 25;
+    const billsMonthly = activeCategory.monthlyBudget || 3535;
+    const budgetForTimeframe = isBills && isMonthRange
+      ? billsMonthly
+      : (isBills ? Math.round((billsMonthly / (weeksRatio > 4.5 ? 5 : 4)) * weeksRatio) : Math.round(baseWeekly * weeksRatio));
 
     if (isSavingsCategory) {
       const totalSaved = filteredSavingsCheckIns.reduce((sum, c) => sum + getCheckInSavingsAmount(c), 0);
@@ -2036,17 +2149,21 @@ export const CategoryLedgerView: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="space-y-3.5">
-            {filteredSavingsCheckIns.map((ci) => {
-              const payer = members.find((m) => m.userId === ci.completedByUserId);
-              const savingsAmt = getCheckInSavingsAmount(ci);
-              const displayDate = ci.weekEndDate || ci.weekStartDate;
+          <div className="space-y-4">
+            {groupedSavingsCheckInsByMonth.map((group) => {
+              const checkInList = (
+                <div className="space-y-3">
+                  {group.checkIns.map((ci) => {
+                    const payer = members.find((m) => m.userId === ci.completedByUserId);
+                    const savingsAmt = getCheckInSavingsAmount(ci);
+                    const ciWeekDate = getCheckInWeekDate(ci);
+                    const displayDate = ci.weekEndDate || ci.weekStartDate;
 
-              return (
+                    return (
                 <div
                   key={ci.id}
                   id={`savings-checkin-${ci.id}`}
-                  className="bg-white border border-sage-200/90 rounded-2xl p-4 sm:p-5 shadow-xs hover:border-sage-300 transition-all space-y-3"
+                  className={`rounded-xl p-4 sm:p-5 shadow-xs transition-all space-y-3 ${group.isMonthlyReviewCompleted ? 'bg-white border-2 border-sage-200 hover:border-sage-400 hover:shadow-sm' : 'bg-white border border-sage-200/90 hover:border-sage-300'}`}
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-start gap-3 min-w-0">
@@ -2067,13 +2184,17 @@ export const CategoryLedgerView: React.FC = () => {
 
                         {/* Fiscal Tracker String (Directive 4.4) */}
                         <div className="text-[11px] font-mono font-bold text-dark-green-900 bg-sage-50 border border-sage-200/90 px-2 py-0.5 rounded-md inline-block">
-                          {formatFiscalRecordTrackerString(displayDate || ci.timestamp, household?.fiscalYearEndMonth || 12)}
+                          {formatFiscalRecordTrackerString(ciWeekDate || displayDate || ci.timestamp, household?.fiscalYearEndMonth || 12)}
                         </div>
 
                         <div className="flex items-center gap-3 text-xs text-brown-700">
-                          <span className="flex items-center gap-1">
-                            <Calendar className="w-3.5 h-3.5" />
-                            {formatDateDisplay(displayDate)}
+                          <span className="inline-flex items-center gap-1.5 font-bold text-dark-green-900 bg-sage-100/90 border border-sage-300 px-2.5 py-0.5 rounded-md text-xs shadow-2xs">
+                            <Calendar className="w-3.5 h-3.5 text-dark-green-800" />
+                            <span>
+                              {ci.weekStartDate && ci.weekEndDate
+                                ? `${formatDateDisplay(ci.weekStartDate)} – ${formatDateDisplay(ci.weekEndDate)}`
+                                : formatDateDisplay(displayDate)}
+                            </span>
                           </span>
                           <span>&bull;</span>
                           <div className="flex items-center gap-1.5">
@@ -2157,6 +2278,63 @@ export const CategoryLedgerView: React.FC = () => {
                       </div>
                     </div>
                   </div>
+                </div>
+                    );
+                  })}
+                </div>
+              );
+
+              if (group.isMonthlyReviewCompleted) {
+                return (
+                  <div
+                    key={group.monthKey}
+                    id={`savings-month-group-${group.monthKey}`}
+                    className="bg-emerald-50/40 border-2 border-emerald-400/80 rounded-2xl sm:rounded-3xl p-4 sm:p-5 shadow-xs space-y-3.5 ring-2 ring-emerald-300/40"
+                  >
+                    {/* Light Green Heading stating total saved for the month */}
+                    <div
+                      id={`savings-month-heading-${group.monthKey}`}
+                      className="bg-emerald-100/90 border border-emerald-300 rounded-xl p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-200/90 border border-emerald-300 flex items-center justify-center text-dark-green-900 shrink-0">
+                          <CheckCircle2 className="w-5 h-5 text-dark-green-800" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-extrabold text-dark-green-950 text-base sm:text-lg leading-tight tracking-tight">
+                              {group.monthName} Fiscal Month
+                            </h3>
+                            <span className="text-[10px] font-extrabold uppercase tracking-wider bg-emerald-200 text-dark-green-900 border border-emerald-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              <Check className="w-3 h-3 text-dark-green-700" />
+                              Monthly Review Complete
+                            </span>
+                          </div>
+                          <p className="text-xs text-dark-green-800 font-medium mt-0.5">
+                            {group.checkIns.length} {group.checkIns.length === 1 ? 'weekly check-in' : 'weekly check-ins'} reconciled &amp; banked to savings
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-baseline sm:items-end justify-between sm:justify-end gap-2 bg-white/95 border border-emerald-300/90 rounded-xl px-3.5 py-2 shadow-2xs">
+                        <span className="text-xs font-bold text-dark-green-900">
+                          Total Saved for the Month:
+                        </span>
+                        <span className="text-base sm:text-xl font-black font-mono text-dark-green-800">
+                          +{formatCurrency(group.totalSaved)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Enclosed Weekly Check-In Cards */}
+                    {checkInList}
+                  </div>
+                );
+              }
+
+              return (
+                <div key={group.monthKey} className="space-y-3.5">
+                  {checkInList}
                 </div>
               );
             })}

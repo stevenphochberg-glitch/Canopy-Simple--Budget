@@ -49,10 +49,16 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
   const [newSubcategories, setNewSubcategories] = useState('');
   const [newAllocation, setNewAllocation] = useState<number>(50);
 
-  const totalAllocated = categories.reduce(
-    (sum, cat) => sum + (Number(cat.currentWeeklyBudget) || 0),
-    0
-  );
+  const isBillsCategory = (c: { id?: string; group?: string; name?: string }) =>
+    c.id === 'cat_bills' || c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+
+  const totalAllocated = categories.reduce((sum, cat) => {
+    if (isBillsCategory(cat)) {
+      const monthly = cat.monthlyBudget !== undefined ? cat.monthlyBudget : 3535;
+      return sum + Math.round((monthly * 12) / 52);
+    }
+    return sum + (Number(cat.currentWeeklyBudget) || 0);
+  }, 0);
   const unallocated = weeklyIncomePool - totalAllocated;
   const isOverAllocated = unallocated < 0;
   const isPerfectMatch = unallocated === 0;
@@ -60,11 +66,19 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
   const handleBudgetChange = (catId: string, value: number) => {
     const safeVal = Math.max(0, isNaN(value) ? 0 : Math.round(value));
     setCategories((prev) =>
-      prev.map((c) =>
-        c.id === catId
-          ? { ...c, currentWeeklyBudget: safeVal, baselineBudget: safeVal }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id !== catId) return c;
+        if (isBillsCategory(c)) {
+          const weeklyEquiv = Math.round((safeVal * 12) / 52);
+          return {
+            ...c,
+            monthlyBudget: safeVal,
+            currentWeeklyBudget: weeklyEquiv,
+            baselineBudget: weeklyEquiv,
+          };
+        }
+        return { ...c, currentWeeklyBudget: safeVal, baselineBudget: safeVal };
+      })
     );
   };
 
@@ -109,7 +123,6 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
   const handleApplyDynamicSuggestions = () => {
     if (weeklyIncomePool <= 0 || categories.length === 0) return;
     const defaultPercentageMap: Record<string, number> = {
-      Bills: 0.35,
       Essentials: 0.30,
       'Fun Money': 0.20,
       Savings: 0.15,
@@ -117,6 +130,17 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
 
     let remaining = weeklyIncomePool;
     const targetCats = categories.map((cat, idx) => {
+      if (isBillsCategory(cat)) {
+        const billsMonthly = 3535;
+        const weeklyEquiv = Math.round((billsMonthly * 12) / 52);
+        remaining -= weeklyEquiv;
+        return {
+          ...cat,
+          monthlyBudget: billsMonthly,
+          baselineBudget: weeklyEquiv,
+          currentWeeklyBudget: weeklyEquiv,
+        };
+      }
       const pct = defaultPercentageMap[cat.name] ?? defaultPercentageMap[cat.group];
       if (pct !== undefined) {
         const isLast = idx === categories.length - 1;
@@ -240,9 +264,9 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
-            <span className="text-[10px] uppercase font-bold text-brown-700 block">Bills (35%)</span>
+            <span className="text-[10px] uppercase font-bold text-brown-700 block">Bills (Monthly)</span>
             <span className="text-xs font-extrabold text-dark-green-900">
-              {formatCurrency(Math.round(weeklyIncomePool * 0.35))}/wk
+              $3,535/mo (~$816/wk)
             </span>
           </div>
           <div className="p-2.5 bg-beige-50 rounded-xl border border-beige-200 text-center">
@@ -423,34 +447,50 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
         {/* Existing Category Rows */}
         <div className="space-y-2.5">
           {categories.map((cat) => {
+            const isBills = isBillsCategory(cat);
+            const billsMonthly = cat.monthlyBudget !== undefined ? cat.monthlyBudget : 3535;
+            const weeklyEquiv = isBills ? Math.round((billsMonthly * 12) / 52) : (cat.currentWeeklyBudget || 0);
+
             const pct =
               weeklyIncomePool > 0
-                ? Math.round(((cat.currentWeeklyBudget || 0) / weeklyIncomePool) * 100)
+                ? Math.round((weeklyEquiv / weeklyIncomePool) * 100)
                 : 0;
 
             const recRatio =
               RECOMMENDED_CATEGORY_PERCENTAGES[cat.name] ??
               RECOMMENDED_CATEGORY_PERCENTAGES[cat.group];
-            const suggestedDollars = recRatio ? Math.round(weeklyIncomePool * recRatio) : null;
+            const suggestedDollars = isBills ? 3535 : (recRatio ? Math.round(weeklyIncomePool * recRatio) : null);
 
             return (
               <div
                 key={cat.id}
-                className="p-3.5 bg-white border border-beige-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs hover:border-sage-300 transition"
+                id={`wizard-bucket-card-${cat.id}`}
+                className={`p-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs transition ${
+                  isBills
+                    ? 'bg-sage-50/80 border-2 border-sage-300 ring-1 ring-sage-400/20'
+                    : 'bg-white border border-beige-200 hover:border-sage-300'
+                }`}
               >
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-9 h-9 rounded-xl bg-sage-50 border border-sage-200 flex items-center justify-center text-dark-green-800 shrink-0">
+                  <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${
+                    isBills ? 'bg-sage-100 border-sage-300 text-dark-green-900' : 'bg-sage-50 border-sage-200 text-dark-green-800'
+                  }`}>
                     <CategoryIcon icon={cat.icon || 'shopping-bag'} className="w-4 h-4" />
                   </div>
                   <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs font-extrabold text-dark-green-900 truncate">
                         {cat.name}
                       </span>
                       <span className="text-[10px] font-bold text-brown-700 bg-beige-100 px-2 py-0.5 rounded-md">
                         {pct}%
                       </span>
-                      {suggestedDollars !== null && (
+                      {isBills && (
+                        <span className="text-[10px] font-extrabold uppercase bg-sage-200 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                          Monthly Envelope
+                        </span>
+                      )}
+                      {!isBills && suggestedDollars !== null && (
                         <button
                           type="button"
                           onClick={() => handleBudgetChange(cat.id, suggestedDollars)}
@@ -461,26 +501,38 @@ export const AllocationStep: React.FC<AllocationStepProps> = ({
                         </button>
                       )}
                     </div>
-                    {cat.subcategories && cat.subcategories.length > 0 && (
+                    {isBills ? (
+                      <div className="flex items-center gap-2 text-[11px] text-sage-900 font-medium mt-0.5">
+                        <span>Fixed Monthly: <strong>{formatCurrency(billsMonthly)}/mo</strong></span>
+                        <span>&bull;</span>
+                        <span className="text-brown-700">Weekly equivalent: ~{formatCurrency(weeklyEquiv)}/wk</span>
+                      </div>
+                    ) : cat.subcategories && cat.subcategories.length > 0 ? (
                       <p className="text-[11px] text-dark-grey-600 truncate max-w-xs sm:max-w-sm">
                         {cat.subcategories.join(', ')}
                       </p>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
                 <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                  <div className="flex items-center gap-1.5 bg-beige-50 border border-beige-300 rounded-xl px-2.5 py-1.5 focus-within:ring-1 focus-within:ring-dark-green-700">
+                  <div className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 focus-within:ring-1 focus-within:ring-dark-green-700 bg-white border ${
+                    isBills ? 'border-sage-400 ring-1 ring-sage-300/60 shadow-2xs' : 'border-beige-300 bg-beige-50'
+                  }`}>
                     <DollarSign className="w-3.5 h-3.5 text-brown-700" />
                     <input
                       type="number"
                       min="0"
-                      step="5"
-                      value={cat.currentWeeklyBudget || 0}
+                      step={isBills ? '25' : '5'}
+                      value={isBills ? billsMonthly : (cat.currentWeeklyBudget || 0)}
                       onChange={(e) => handleBudgetChange(cat.id, Number(e.target.value))}
-                      className="w-20 text-xs font-extrabold text-dark-green-900 bg-transparent text-right focus:outline-none"
+                      className="w-20 text-xs font-black text-dark-green-900 bg-transparent text-right focus:outline-none"
                     />
-                    <span className="text-[10px] text-brown-700 font-semibold">/wk</span>
+                    <span className={`text-[10px] font-bold ml-1 px-1.5 py-0.5 rounded ${
+                      isBills ? 'bg-sage-200 text-dark-green-900 border border-sage-300' : 'text-brown-700 font-semibold'
+                    }`}>
+                      {isBills ? '/mo' : '/wk'}
+                    </span>
                   </div>
 
                   {categories.length > 1 && (

@@ -7,6 +7,7 @@ interface BudgetProgressBarProps {
   spent: number;
   budget: number;
   heightClass?: string;
+  height?: string;
   className?: string;
   showSurplusSplit?: boolean;
   surplusChoice?: 'rollover' | 'savings' | null;
@@ -39,7 +40,8 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = React.memo(({
   categoryType,
   spent,
   budget,
-  heightClass = 'h-5 sm:h-5.5',
+  heightClass: customHeightClass,
+  height,
   className = '',
   showSurplusSplit = false,
   surplusChoice = null,
@@ -48,6 +50,7 @@ export const BudgetProgressBar: React.FC<BudgetProgressBarProps> = React.memo(({
   overspendCoverageAmount,
   leftoverSurplusAmount,
 }) => {
+  const heightClass = height || customHeightClass || 'h-5 sm:h-5.5';
   const [spentMode, setSpentMode] = useState<'desc' | 'amount' | 'percent'>('desc');
   const [coverageMode, setCoverageMode] = useState<'desc' | 'amount' | 'percent'>('desc');
   const [surplusMode, setSurplusMode] = useState<'desc' | 'amount' | 'percent'>('desc');

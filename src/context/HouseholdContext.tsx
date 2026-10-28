@@ -686,14 +686,18 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     );
 
-    // Categories listener
     const unsubCategories = onSnapshot(
       collection(db, 'households', householdId, 'categories'),
       (snapshot) => {
-        const loadedCats = snapshot.docs.map((d) => ({
-          ...(d.data() as Category),
-          id: d.id,
-        }));
+        const loadedCats = snapshot.docs.map((d) => {
+          const data = d.data() as Category;
+          const isBills = d.id === 'cat_bills' || data.id === 'cat_bills' || data.group?.toLowerCase() === 'bills' || data.name?.toLowerCase() === 'bills';
+          return {
+            ...data,
+            id: d.id,
+            monthlyBudget: isBills ? (data.monthlyBudget || 3535) : data.monthlyBudget,
+          };
+        });
         setCategories(loadedCats);
       },
       (err) => {

@@ -68,6 +68,7 @@ export interface OneOffDeposit {
   date: string; // YYYY-MM-DD
   payerMemberId?: string;
   notes?: string;
+  tags?: string[];
   comments?: TransactionComment[];
   reactions?: TransactionReaction[];
 }
@@ -192,6 +193,7 @@ export interface Category {
   type: CategoryType; // Required field: 'expense' | 'savings'
   baselineBudget: number;
   currentWeeklyBudget: number;
+  monthlyBudget?: number;
   prorationOverride?: number; // Forward-only proration adjustment for the current month
   subcategories?: string[];
   description?: string;

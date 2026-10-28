@@ -653,6 +653,7 @@ export const WeeklyCheckInModal: React.FC<WeeklyCheckInModalProps> = ({ isOpen, 
         categoryId: resolvedCategoryId,
         date: inlineDate || formatLocalDate(selectedWeekRange.endDate),
         loggedByUserId: inlineLoggedBy || user?.userId || 'usr_self',
+        timestamp: Date.now(),
       });
       setInlineAmount('');
       setInlineDescription('');

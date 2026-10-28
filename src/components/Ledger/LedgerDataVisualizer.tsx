@@ -131,6 +131,7 @@ function isCheckInInRange(ci: CheckIn, start: Date, end: Date): boolean {
     const mid = (ciStartMs + ciEndMs) / 2;
     if (mid >= startMs && mid <= endMs) return true;
     if (ciStartMs <= endMs && ciEndMs >= startMs) return true;
+    return false;
   }
   if (ciTimestampMs > 0) {
     if (ciTimestampMs >= startMs && ciTimestampMs <= endMs) return true;

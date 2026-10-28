@@ -91,9 +91,12 @@ const CategoryCardComponent: React.FC<CategoryCardProps> = ({
   const fiscalMonth = getFiscalMonthForDate(dateRange.startDate, household?.fiscalYearEndMonth || 12);
   const weeksInMonth = fiscalMonth.weekCount || 4;
 
+  // The monthly budget for Bills is fixed at $3,535 each month whether it is a 4 or 5 week month
+  const billsMonthlyBudget = category.monthlyBudget || 3535;
+
   const budgetForTimeframe = isMonthView
-    ? baselineBudget * weeksInMonth
-    : effectiveWeeklyBudget;
+    ? (isBills ? billsMonthlyBudget : baselineBudget * weeksInMonth)
+    : (isBills ? Math.round(billsMonthlyBudget / weeksInMonth) : effectiveWeeklyBudget);
 
   const isProratedWeek = !isMonthView && isOverridden && overrideAmount !== undefined;
 
@@ -758,7 +761,7 @@ const CategoryCardComponent: React.FC<CategoryCardProps> = ({
                   ) : (
                     <>
                       <span>{formatCurrency(effectiveCategorySpent)}</span>
-                      <span className="text-xs font-normal text-brown-700 ml-1">
+                      <span className={`text-xs ml-1 ${isBills ? 'font-bold text-dark-green-900 bg-sage-100/90 border border-sage-300 px-2 py-0.5 rounded-md inline-flex items-baseline' : 'font-normal text-brown-700'}`}>
                         /{' '}
                         {isProratedWeek && overrideAmount !== undefined ? (
                           <span className="inline-flex items-baseline gap-1">

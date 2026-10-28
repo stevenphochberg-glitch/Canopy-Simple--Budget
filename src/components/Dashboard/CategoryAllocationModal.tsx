@@ -58,19 +58,39 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   const [showApprovalPrompt, setShowApprovalPrompt] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
+  const isBillsCategory = (c: { id?: string; group?: string; name?: string }) =>
+    c.id === 'cat_bills' || c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+
   // Keep draft in sync if categories change while closed
   React.useEffect(() => {
-    setDraftCategories(categories);
+    setDraftCategories(
+      categories.map((c) => {
+        if (isBillsCategory(c)) {
+          const monthly = c.monthlyBudget !== undefined ? c.monthlyBudget : 3535;
+          const weekly = Math.round((monthly * 12) / 52);
+          return {
+            ...c,
+            monthlyBudget: monthly,
+            baselineBudget: c.baselineBudget || weekly,
+            currentWeeklyBudget: c.currentWeeklyBudget || weekly,
+          };
+        }
+        return c;
+      })
+    );
     setShowApprovalPrompt(false);
   }, [categories, isOpen]);
 
   if (!isOpen) return null;
 
   const weeklyIncomePool = household?.weeklyIncomePool || 0;
-  const totalAllocated = draftCategories.reduce(
-    (sum, cat) => sum + (Number(cat.baselineBudget) || 0),
-    0
-  );
+  const totalAllocated = draftCategories.reduce((sum, cat) => {
+    if (isBillsCategory(cat)) {
+      const monthly = cat.monthlyBudget !== undefined ? cat.monthlyBudget : 3535;
+      return sum + Math.round((monthly * 12) / 52);
+    }
+    return sum + (Number(cat.baselineBudget) || 0);
+  }, 0);
   const unallocated = weeklyIncomePool - totalAllocated;
   const isOverAllocated = unallocated < 0;
 
@@ -78,17 +98,30 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   const modifiedCategories = draftCategories.filter((draft) => {
     const original = categories.find((c) => c.id === draft.id);
     if (!original) return true;
+    if (isBillsCategory(draft)) {
+      const origMonthly = original.monthlyBudget ?? 3535;
+      const draftMonthly = draft.monthlyBudget ?? 3535;
+      return origMonthly !== draftMonthly;
+    }
     return Number(draft.baselineBudget) !== Number(original.baselineBudget);
   });
 
   const handleBudgetChange = (catId: string, value: number) => {
     const safeVal = Math.max(0, isNaN(value) ? 0 : value);
     setDraftCategories((prev) =>
-      prev.map((c) =>
-        c.id === catId
-          ? { ...c, baselineBudget: safeVal, currentWeeklyBudget: safeVal }
-          : c
-      )
+      prev.map((c) => {
+        if (c.id !== catId) return c;
+        if (isBillsCategory(c)) {
+          const weeklyEquiv = Math.round((safeVal * 12) / 52);
+          return {
+            ...c,
+            monthlyBudget: safeVal,
+            baselineBudget: weeklyEquiv,
+            currentWeeklyBudget: weeklyEquiv,
+          };
+        }
+        return { ...c, baselineBudget: safeVal, currentWeeklyBudget: safeVal };
+      })
     );
   };
 
@@ -109,7 +142,20 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
   const handleConfirmSaveAll = async () => {
     setIsSaving(true);
     try {
-      await saveCategoryAllocations(draftCategories);
+      const sanitized = draftCategories.map((c) => {
+        if (isBillsCategory(c)) {
+          const monthly = c.monthlyBudget !== undefined ? c.monthlyBudget : 3535;
+          const weekly = Math.round((monthly * 12) / 52);
+          return {
+            ...c,
+            monthlyBudget: monthly,
+            baselineBudget: weekly,
+            currentWeeklyBudget: weekly,
+          };
+        }
+        return c;
+      });
+      await saveCategoryAllocations(sanitized);
       setShowApprovalPrompt(false);
       onClose();
     } finally {
@@ -250,63 +296,94 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
             </div>
 
             <div className="space-y-2.5">
-              {draftCategories.map((cat) => (
-                <div
-                  key={cat.id}
-                  className="p-3 bg-beige-50/50 hover:bg-beige-50 border border-beige-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
-                >
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <div className="w-10 h-10 rounded-xl bg-sage-100 border border-sage-200 flex items-center justify-center text-dark-green-900 flex-shrink-0">
-                      <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-5 h-5" />
+              {draftCategories.map((cat) => {
+                const isBills = isBillsCategory(cat);
+                const billsMonthly = cat.monthlyBudget !== undefined ? cat.monthlyBudget : 3535;
+                const weeklyEquiv = isBills ? Math.round((billsMonthly * 12) / 52) : (cat.baselineBudget || 0);
+                const monthlyEquiv = isBills ? billsMonthly : Math.round(((cat.baselineBudget || 0) * 52) / 12);
+
+                return (
+                  <div
+                    key={cat.id}
+                    id={`manage-bucket-card-${cat.id}`}
+                    className={`p-3 sm:p-3.5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
+                      isBills
+                        ? 'bg-sage-50/80 hover:bg-sage-50 border-2 border-sage-300 shadow-2xs ring-1 ring-sage-400/20'
+                        : 'bg-beige-50/50 hover:bg-beige-50 border border-beige-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${
+                        isBills
+                          ? 'bg-sage-100 border-sage-300 text-dark-green-900'
+                          : 'bg-sage-100 border-sage-200 text-dark-green-900'
+                      }`}>
+                        <CategoryIcon name={cat.name} group={cat.group} icon={cat.icon} className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-extrabold text-dark-green-900 text-sm block truncate">
+                            {cat.name}
+                          </span>
+                          <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-2 py-0.2 rounded-md">
+                            {cat.group}
+                          </span>
+                          {isBills && (
+                            <span className="text-[10px] font-extrabold uppercase bg-sage-200 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full flex items-center gap-1">
+                              Monthly Envelope
+                            </span>
+                          )}
+                        </div>
+                        {isBills ? (
+                          <div className="flex items-center gap-2 text-[11px] text-sage-900 font-medium mt-0.5">
+                            <span>Fixed Monthly: <strong>{formatCurrency(billsMonthly)}/mo</strong></span>
+                            <span>&bull;</span>
+                            <span className="text-brown-700">Weekly share: ~{formatCurrency(weeklyEquiv)}/wk</span>
+                          </div>
+                        ) : cat.subcategories && cat.subcategories.length > 0 ? (
+                          <span className="text-[11px] text-brown-700 block truncate">
+                            Examples: {cat.subcategories.join(', ')} &bull; Approx. {formatCurrency(monthlyEquiv)}/mo
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-dark-grey-600 block">
+                            Monthly equivalent: {formatCurrency(monthlyEquiv)}/mo
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-bold text-dark-green-900 text-sm block truncate">
-                          {cat.name}
-                        </span>
-                        <span className="text-[10px] font-semibold text-brown-800 bg-beige-100 px-2 py-0.2 rounded-md">
-                          {cat.group}
+
+                    {/* Numeric Budget Input */}
+                    <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                      <div className={`relative flex items-center rounded-xl border px-2.5 py-1.5 bg-white ${
+                        isBills ? 'border-sage-400 ring-1 ring-sage-300/60 shadow-2xs' : 'border-beige-300'
+                      }`}>
+                        <span className="text-xs text-dark-grey-600 font-bold mr-1">$</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step={isBills ? '25' : '5'}
+                          value={isBills ? billsMonthly : (cat.baselineBudget !== undefined ? cat.baselineBudget : '')}
+                          onChange={(e) => handleBudgetChange(cat.id, parseFloat(e.target.value))}
+                          className="w-20 sm:w-24 text-sm font-black text-dark-green-900 text-right focus:outline-none"
+                        />
+                        <span className={`text-[10px] font-bold ml-1.5 px-1.5 py-0.5 rounded ${
+                          isBills ? 'bg-sage-200 text-dark-green-900 border border-sage-300' : 'text-brown-700'
+                        }`}>
+                          {isBills ? '/mo' : '/wk'}
                         </span>
                       </div>
-                      {cat.subcategories && cat.subcategories.length > 0 ? (
-                        <span className="text-[11px] text-brown-700 block truncate">
-                          Examples: {cat.subcategories.join(', ')}
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-dark-grey-600 block">
-                          Monthly equivalent: {formatCurrency(((cat.baselineBudget || 0) * 52) / 12)}/mo
-                        </span>
-                      )}
+
+                      <button
+                        onClick={() => handleDelete(cat.id, cat.name)}
+                        className="p-2 text-brown-700 hover:text-red-600 hover:bg-red-50 rounded-xl transition cursor-pointer"
+                        title="Delete bucket"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
-
-                  {/* Numeric Budget Input */}
-                  <div className="flex items-center gap-2 self-end sm:self-center">
-                    <div className="relative flex items-center">
-                      <span className="absolute left-2.5 text-xs text-dark-grey-600 font-bold">$</span>
-                      <input
-                        type="number"
-                        min="0"
-                        step="5"
-                        value={cat.baselineBudget !== undefined ? cat.baselineBudget : ''}
-                        onChange={(e) => handleBudgetChange(cat.id, parseFloat(e.target.value))}
-                        className="w-24 sm:w-28 pl-6 pr-2.5 py-1.5 bg-white border border-beige-300 rounded-xl text-sm font-bold text-dark-green-900 text-right focus:outline-none focus:border-dark-green-800"
-                      />
-                      <span className="text-[10px] text-brown-700 font-medium ml-1">
-                        /wk
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => handleDelete(cat.id, cat.name)}
-                      className="p-2 text-brown-700 hover:text-red-600 hover:bg-red-50 rounded-xl transition cursor-pointer"
-                      title="Delete bucket"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -499,9 +576,15 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                 </div>
                 {modifiedCategories.map((cat) => {
                   const orig = categories.find((c) => c.id === cat.id);
-                  const oldVal = orig?.baselineBudget ?? 0;
-                  const newVal = cat.currentWeeklyBudget;
+                  const isBills = isBillsCategory(cat);
+                  const oldVal = isBills
+                    ? (orig?.monthlyBudget ?? 3535)
+                    : (orig?.baselineBudget ?? 0);
+                  const newVal = isBills
+                    ? (cat.monthlyBudget ?? 3535)
+                    : cat.currentWeeklyBudget;
                   const diff = newVal - oldVal;
+                  const unit = isBills ? '/mo' : '/wk';
 
                   return (
                     <div
@@ -509,14 +592,14 @@ export const CategoryAllocationModal: React.FC<CategoryAllocationModalProps> = (
                       className="flex items-center justify-between text-xs py-1 px-1.5"
                     >
                       <span className="font-semibold text-dark-green-900 truncate">
-                        {cat.name}
+                        {cat.name} {isBills && <span className="text-[10px] text-sage-800 font-bold">(Monthly)</span>}
                       </span>
                       <div className="flex items-center gap-2 shrink-0 font-mono">
                         <span className="line-through text-dark-grey-600 text-[11px]">
-                          {formatCurrency(oldVal)}
+                          {formatCurrency(oldVal)}{unit}
                         </span>
                         <span className="font-bold text-dark-green-900">
-                          &rarr; {formatCurrency(newVal)}/wk
+                          &rarr; {formatCurrency(newVal)}{unit}
                         </span>
                         <span
                           className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded ${

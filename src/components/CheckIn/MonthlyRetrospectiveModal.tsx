@@ -216,7 +216,9 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
     const categoryDetails = allCats.map((cat) => {
       const isSavCat = isSavings(cat);
       const isBillsCat = isBills(cat);
-      const baselineMonthly = Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
+      const baselineMonthly = isBillsCat
+        ? (cat.monthlyBudget || 3535)
+        : Math.round((Number(cat.baselineBudget) || 0) * weeksInMonth);
       // For savings category, monthly budget includes deposit expansion (matching Monthly Dashboard)
       const monthlyBudget = isSavCat ? baselineMonthly + monthDepositTotal : baselineMonthly;
 

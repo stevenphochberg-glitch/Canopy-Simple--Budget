@@ -203,7 +203,8 @@ export const SettingsView: React.FC = () => {
   useEffect(() => {
     const map: Record<string, number> = {};
     categories.forEach((c) => {
-      map[c.id] = c.baselineBudget;
+      const isBills = c.id === 'cat_bills' || c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+      map[c.id] = isBills ? (c.monthlyBudget || 3535) : c.baselineBudget;
     });
     setEditedAllocations(map);
   }, [categories]);
@@ -490,16 +491,41 @@ export const SettingsView: React.FC = () => {
     try {
       if (pendingSaveMode === 'single' && pendingSingleCatId) {
         const val = editedAllocations[pendingSingleCatId];
-        await updateCategory(pendingSingleCatId, {
-          currentWeeklyBudget: val,
-          baselineBudget: val,
-        });
+        const cat = categories.find((c) => c.id === pendingSingleCatId);
+        const isBills = cat && (cat.id === 'cat_bills' || cat.group?.toLowerCase() === 'bills' || cat.name?.toLowerCase() === 'bills');
+        if (isBills) {
+          const weeklyEquiv = Math.round((val * 12) / 52);
+          await updateCategory(pendingSingleCatId, {
+            monthlyBudget: val,
+            currentWeeklyBudget: weeklyEquiv,
+            baselineBudget: weeklyEquiv,
+          });
+        } else {
+          await updateCategory(pendingSingleCatId, {
+            currentWeeklyBudget: val,
+            baselineBudget: val,
+          });
+        }
       } else {
-        const updated = categories.map((c) => ({
-          ...c,
-          currentWeeklyBudget: editedAllocations[c.id] ?? c.currentWeeklyBudget,
-          baselineBudget: editedAllocations[c.id] ?? c.baselineBudget,
-        }));
+        const updated = categories.map((c) => {
+          const isBills = c.id === 'cat_bills' || c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills';
+          const val = editedAllocations[c.id];
+          if (isBills) {
+            const monthlyVal = val !== undefined ? val : (c.monthlyBudget || 3535);
+            const weeklyEquiv = Math.round((monthlyVal * 12) / 52);
+            return {
+              ...c,
+              monthlyBudget: monthlyVal,
+              currentWeeklyBudget: weeklyEquiv,
+              baselineBudget: weeklyEquiv,
+            };
+          }
+          return {
+            ...c,
+            currentWeeklyBudget: editedAllocations[c.id] ?? c.currentWeeklyBudget,
+            baselineBudget: editedAllocations[c.id] ?? c.baselineBudget,
+          };
+        });
         await saveCategoryAllocations(updated);
       }
       setShowBaselineApprovalModal(false);
@@ -1851,27 +1877,42 @@ export const SettingsView: React.FC = () => {
             {/* Category Rows */}
             <div className="space-y-3 pt-1">
               {categories.map((cat) => {
-                const currentVal = editedAllocations[cat.id] ?? cat.baselineBudget;
-                const monthlyEquiv = Math.round((currentVal * 52) / 12);
+                const isBills = cat.id === 'cat_bills' || cat.group?.toLowerCase() === 'bills' || cat.name?.toLowerCase() === 'bills';
+                const currentVal = editedAllocations[cat.id] ?? (isBills ? (cat.monthlyBudget || 3535) : cat.baselineBudget);
+                const monthlyEquiv = isBills ? currentVal : Math.round((currentVal * 52) / 12);
+                const weeklyEquiv = isBills ? Math.round((currentVal * 12) / 52) : currentVal;
 
                 return (
                   <div
                     key={cat.id}
-                    className="p-4 bg-beige-50 border border-beige-200 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    className={`p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
+                      isBills
+                        ? 'bg-sage-50/80 border-2 border-sage-300 ring-1 ring-sage-400/20 shadow-2xs'
+                        : 'bg-beige-50 border border-beige-200'
+                    }`}
                   >
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-white border border-beige-300 flex items-center justify-center text-dark-green-900">
+                      <div className={`w-9 h-9 rounded-xl border flex items-center justify-center shrink-0 ${
+                        isBills ? 'bg-sage-100 border-sage-300 text-dark-green-900' : 'bg-white border border-beige-300 text-dark-green-900'
+                      }`}>
                         <CategoryIcon icon={cat.icon} group={cat.group} className="w-4 h-4" />
                       </div>
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="text-sm font-bold text-dark-green-900">{cat.name}</span>
                           <span className="text-[10px] font-semibold bg-beige-200 text-brown-800 px-2 py-0.5 rounded-md">
                             {cat.group}
                           </span>
+                          {isBills && (
+                            <span className="text-[10px] font-extrabold uppercase bg-sage-200 text-dark-green-900 border border-sage-300 px-2 py-0.5 rounded-full">
+                              Monthly Envelope
+                            </span>
+                          )}
                         </div>
-                        <span className="text-xs text-dark-grey-600">
-                          Approx. {formatCurrency(monthlyEquiv)}/month
+                        <span className="text-xs text-dark-grey-600 block mt-0.5">
+                          {isBills
+                            ? `Fixed Monthly: ${formatCurrency(monthlyEquiv)}/mo (Weekly share: ~${formatCurrency(weeklyEquiv)}/wk)`
+                            : `Approx. ${formatCurrency(monthlyEquiv)}/month`}
                         </span>
                       </div>
                     </div>
@@ -1882,6 +1923,7 @@ export const SettingsView: React.FC = () => {
                         <input
                           type="number"
                           min="0"
+                          step={isBills ? '25' : '5'}
                           value={currentVal}
                           onChange={(e) =>
                             setEditedAllocations((prev) => ({
@@ -1892,7 +1934,9 @@ export const SettingsView: React.FC = () => {
                           className="w-28 pl-6 pr-2.5 py-1.5 bg-white border border-beige-300 rounded-xl text-xs font-bold text-dark-green-900 focus:outline-none"
                         />
                       </div>
-                      <span className="text-xs font-semibold text-dark-grey-600">/wk</span>
+                      <span className={`text-xs font-bold ${isBills ? 'text-dark-green-900 bg-sage-100 px-1.5 py-0.5 rounded border border-sage-200' : 'text-dark-grey-600'}`}>
+                        {isBills ? '/mo' : '/wk'}
+                      </span>
 
                       <button
                         type="button"

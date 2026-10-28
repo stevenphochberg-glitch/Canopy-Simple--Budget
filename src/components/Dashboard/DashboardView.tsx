@@ -58,6 +58,10 @@ interface DashboardViewProps {
   onOpenProfileModal: () => void;
 }
 
+// Helper to identify Bills categories
+export const isBillsCategory = (c: { group?: string; name?: string; id?: string }) =>
+  c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills' || c.id === 'cat_bills';
+
 export const DashboardView: React.FC<DashboardViewProps> = () => {
   const {
     household,
@@ -254,17 +258,45 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
 
     const checkInSavedTotal = monthCheckIns.reduce((sum, c) => sum + (Number(c.totalSaved) || 0), 0);
 
-    // Weekly check-ins already bake one-off deposits into the banked amount (c.totalSaved),
-    // so totalSaved strictly reflects the total weekly check-in banked amount for the month.
-    const totalSaved = checkInSavedTotal;
+    // Compute dynamic bills difference (for fallback if not explicitly in review record)
+    const billsCat = categories.find(isBillsCategory);
+    const billsMonthlyBudget = billsCat?.monthlyBudget || 3535;
+    const billsTotalSpent = (expenses || []).reduce((sum, e) => {
+      if (billsCat && e.categoryId === billsCat.id) {
+        const prorated = getProratedExpenseAmount(e, activeDateRange.startDate, activeDateRange.endDate, household?.fiscalYearEndMonth || 12);
+        return sum + prorated;
+      }
+      return sum;
+    }, 0);
+    const dynamicBillsDiff = billsMonthlyBudget - billsTotalSpent;
+    const dynamicBillsDeficit = dynamicBillsDiff < 0 ? Math.abs(dynamicBillsDiff) : 0;
+    const dynamicBillsSurplus = dynamicBillsDiff > 0 ? dynamicBillsDiff : 0;
 
     const extraCovered = activeMonthReview?.extraCovered !== undefined
       ? activeMonthReview.extraCovered
-      : 0;
+      : (activeMonthReview?.billsDifference !== undefined && activeMonthReview.billsDifference < 0
+          ? Math.abs(activeMonthReview.billsDifference)
+          : dynamicBillsDeficit);
 
     const extraSaved = activeMonthReview?.extraSaved !== undefined
       ? activeMonthReview.extraSaved
-      : 0;
+      : (activeMonthReview?.billsDifference !== undefined && activeMonthReview.billsDifference > 0
+          ? activeMonthReview.billsDifference
+          : dynamicBillsSurplus);
+
+    // Total monthly savings banked accounts for adjustments made from over or underspending
+    // in the monthly bills category (deducting bills deficit covered from savings, or adding bills surplus).
+    let netMonthlySavingsBanked = checkInSavedTotal;
+
+    if (activeMonthReview?.totalAllocated !== undefined && activeMonthReview.totalAllocated > 0) {
+      netMonthlySavingsBanked = Number(activeMonthReview.totalAllocated);
+    } else if (extraCovered > 0 || extraSaved > 0) {
+      netMonthlySavingsBanked = Math.max(0, checkInSavedTotal - extraCovered + extraSaved);
+    } else if (dynamicBillsDeficit > 0) {
+      netMonthlySavingsBanked = Math.max(0, checkInSavedTotal - dynamicBillsDeficit);
+    } else if (dynamicBillsSurplus > 0 && activeMonthReview) {
+      netMonthlySavingsBanked = checkInSavedTotal + dynamicBillsSurplus;
+    }
 
     let allocs: Array<{
       goalId: string;
@@ -289,7 +321,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
       allocs = savingsGoals.map((g) => ({
         goalId: g.id,
         goalName: g.name,
-        amount: Math.min(totalSaved, g.currentAmount),
+        amount: Math.min(netMonthlySavingsBanked, g.currentAmount),
         currentAmount: g.currentAmount,
         isEmergencyFund: g.name.toLowerCase().includes('emergency'),
       }));
@@ -298,7 +330,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     return {
       monthReviewExtraCovered: extraCovered,
       monthReviewExtraSaved: extraSaved,
-      monthTotalSavedWithDeposits: totalSaved,
+      monthTotalSavedWithDeposits: netMonthlySavingsBanked,
       displayAllocations: allocs,
     };
   }, [
@@ -307,8 +339,11 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     activeDateRange,
     checkIns,
     household?.oneOffDeposits,
+    household?.fiscalYearEndMonth,
     activeMonthReview,
     savingsGoals,
+    categories,
+    expenses,
   ]);
 
   const isMonthPastDue = useMemo(() => {
@@ -339,10 +374,6 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
   const historicalDepositTotal = useMemo(() => {
     return historicalDeposits.reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
   }, [historicalDeposits]);
-
-  // Helper to identify Bills categories
-  const isBillsCategory = (c: { group?: string; name?: string; id?: string }) =>
-    c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills' || c.id === 'cat_bills';
 
   // 2. Filter categories according to timeframe mode:
   // When Timeframe is set to "Week View", strictly filter out and hide the "Bills" category card.
@@ -468,10 +499,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     if (timeframeMode === 'week') {
       return totalWeeklyBaseline;
     }
-    return categories.reduce(
-      (sum, c) => sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth),
-      0
-    );
+    return categories.reduce((sum, c) => {
+      if (isBillsCategory(c)) {
+        return sum + (c.monthlyBudget || 3535);
+      }
+      return sum + ((Number(c.baselineBudget) || 0) * weeksInFiscalMonth);
+    }, 0);
   }, [timeframeMode, totalWeeklyBaseline, categories, weeksInFiscalMonth]);
 
   // 3. Executive Overview Spending Summary Calculations:
@@ -998,12 +1031,12 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <span className="text-[10px] uppercase font-bold tracking-wider text-brown-700 block">
                 Extra Used in Coverage
               </span>
-              <div className="text-lg font-black font-mono text-dark-green-900">
-                {formatCurrency(monthReviewExtraCovered)}
+              <div className="text-xl sm:text-2xl font-black font-mono text-amber-900 tracking-tight">
+                {monthReviewExtraCovered > 0 ? `-${formatCurrency(monthReviewExtraCovered)}` : formatCurrency(monthReviewExtraCovered)}
               </div>
               <p className="text-[11px] text-dark-grey-600">
                 {monthReviewExtraCovered > 0
-                  ? 'Covered overspending from savings/bills'
+                  ? 'Bills overspent & deducted from savings'
                   : 'No extra coverage needed'}
               </p>
             </div>
@@ -1028,11 +1061,13 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <span className="text-[10px] uppercase font-bold tracking-wider text-sage-200 block">
                 Total Monthly Savings Banked
               </span>
-              <div className="text-lg font-black font-mono text-white">
+              <div className="text-xl sm:text-2xl font-black font-mono text-emerald-300 tracking-tight">
                 {formatCurrency(monthTotalSavedWithDeposits)}
               </div>
               <p className="text-[11px] text-sage-200/90">
-                Allocated across household goals
+                {monthReviewExtraCovered > 0
+                  ? `Net saved after covering ${formatCurrency(monthReviewExtraCovered)} bills overage`
+                  : 'Allocated across household goals'}
               </p>
             </div>
           </div>
@@ -1069,7 +1104,7 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
                       </div>
                     </div>
 
-                    <span className="text-xs font-black font-mono text-dark-green-900 bg-sage-100 border border-sage-300 px-2.5 py-1 rounded-xl shrink-0">
+                    <span className="text-xs sm:text-sm font-black font-mono text-dark-green-950 bg-emerald-100 border-2 border-emerald-300 px-3 py-1 rounded-xl shrink-0 shadow-2xs">
                       +{formatCurrency(item.amount)}
                     </span>
                   </div>
