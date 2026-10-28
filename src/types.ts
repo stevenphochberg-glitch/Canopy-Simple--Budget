@@ -85,6 +85,7 @@ export interface HouseholdMember {
   userId: string;
   name: string;
   avatarUrl: string;
+  avatar?: string;
   rawIncome: number;
   incomeSchedule: PaySchedule;
   lastPayDate?: string; // YYYY-MM-DD
@@ -98,6 +99,7 @@ export interface Household {
   id: string;
   syncCode: string; // 6-character string e.g. "CNP-8X2"
   accountType: AccountType;
+  type?: AccountType;
   incomeType?: IncomeType;
   baselineWeeklyBurnRate?: number;
   initialBufferAmount?: number;
@@ -370,6 +372,7 @@ export interface FeedItem {
     description: string;
     categoryName: string;
     categoryIcon?: string;
+    categoryId?: string;
     amount: number;
     date: string;
     payerName?: string;

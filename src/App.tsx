@@ -3,6 +3,7 @@
  * My Budget Dashboard, Universal Staging & Live Firestore Ledger
  */
 import React, { useState, useMemo } from 'react';
+import { BrowserRouter } from 'react-router-dom';
 import { HouseholdProvider, useHousehold } from './context/HouseholdContext';
 import { ErrorBoundary } from './components/Common/ErrorBoundary';
 import { LoginPage } from './components/LoginPage';
@@ -213,9 +214,11 @@ const MainLayout: React.FC = () => {
 export default function App() {
   return (
     <ErrorBoundary>
-      <HouseholdProvider>
-        <MainLayout />
-      </HouseholdProvider>
+      <BrowserRouter>
+        <HouseholdProvider>
+          <MainLayout />
+        </HouseholdProvider>
+      </BrowserRouter>
     </ErrorBoundary>
   );
 }

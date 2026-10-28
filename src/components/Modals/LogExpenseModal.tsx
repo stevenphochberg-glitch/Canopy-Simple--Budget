@@ -432,14 +432,23 @@ export const LogExpenseModal: React.FC<LogExpenseModalProps> = ({
 
   // Sync initialCategory if changed from external trigger
   useEffect(() => {
-    if (initialCategory?.id) {
-      if (isSavingsCategory(initialCategory)) {
-        setManualCategoryId('cat_one_time_deposit');
-      } else {
-        setManualCategoryId(initialCategory.id);
+    if (initialCategory) {
+      if (typeof initialCategory === 'string') {
+        const found = categories.find((c) => c.id === initialCategory);
+        if (found && isSavingsCategory(found)) {
+          setManualCategoryId('cat_one_time_deposit');
+        } else {
+          setManualCategoryId(initialCategory);
+        }
+      } else if (initialCategory.id) {
+        if (isSavingsCategory(initialCategory)) {
+          setManualCategoryId('cat_one_time_deposit');
+        } else {
+          setManualCategoryId(initialCategory.id);
+        }
       }
     }
-  }, [initialCategory]);
+  }, [initialCategory, categories]);
 
   // Validate manualCategoryId: allow cat_one_time_deposit OR any known category
   useEffect(() => {

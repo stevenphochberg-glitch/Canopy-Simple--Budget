@@ -442,7 +442,11 @@ export const MonthlyRetrospectiveModal: React.FC<MonthlyRetrospectiveModalProps>
         .map(([goalId, amount]) => ({ goalId, amount: Number(amount) }));
 
       if (allocationList.length > 0) {
-        await allocateSavingsToGoals(allocationList);
+        const allocationRecord: Record<string, number> = {};
+        allocationList.forEach((item) => {
+          allocationRecord[item.goalId] = item.amount;
+        });
+        await allocateSavingsToGoals(allocationRecord);
       }
 
       const allocationListWithNames = allocationList.map((item) => {

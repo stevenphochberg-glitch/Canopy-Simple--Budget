@@ -635,7 +635,7 @@ export const FeedView: React.FC = () => {
       const hasRecord = items.some(
         (it) =>
           it.linkedCheckInId === checkIn.id ||
-          it.metadata?.checkInId === checkIn.id ||
+          (it.metadata as any)?.checkInId === checkIn.id ||
           it.id === `feed_checkin_${checkIn.id}` ||
           it.id === `feed_${checkIn.timestamp}` ||
           (it.type === 'checkin' && it.weekStartDate === checkIn.weekStartDate)
@@ -672,8 +672,8 @@ export const FeedView: React.FC = () => {
       const hasRecord = items.some(
         (it) =>
           it.id === `feed_goal_create_${goal.id}` ||
-          ((it.savingsGoal?.id === goal.id || it.metadata?.goalId === goal.id) &&
-            (it.metadata?.isCreation || it.metadata?.action === 'goal_created' || (it.content && it.content.toLowerCase().includes('created savings goal'))))
+          ((it.savingsGoal?.id === goal.id || (it.metadata as any)?.goalId === goal.id) &&
+            ((it.metadata as any)?.isCreation || (it.metadata as any)?.action === 'goal_created' || (it.content && it.content.toLowerCase().includes('created savings goal'))))
       );
       if (!hasRecord) {
         const goalTime = getSavingsGoalCreationTime(goal, household?.createdAt);
@@ -2225,7 +2225,7 @@ export const FeedView: React.FC = () => {
               // 1. Linked expense direct match in database
               if (item.linkedExpense) {
                 const existing = expenses.find((e) => e.id === item.linkedExpense?.id);
-                addIfUnique(existing || item.linkedExpense);
+                addIfUnique((existing || item.linkedExpense) as any);
               }
 
               if (item.linkedExpenseId) {
@@ -2450,7 +2450,7 @@ export const FeedView: React.FC = () => {
                     <div>
                       {/* Elaborated Transaction Details Card */}
                       <div
-                        onClick={() => navigateToCategoryLedger(matchedCategory || null)}
+                        onClick={() => navigateToCategoryLedger(matchedCategory ? matchedCategory.id : null)}
                         className={`p-4 rounded-2xl space-y-3 shadow-2xs transition group cursor-pointer ${
                           reactionScheme
                             ? `${reactionScheme.innerCardBg} border ${reactionScheme.innerCardBorder} ${reactionScheme.innerCardHoverBorder}`
@@ -2535,7 +2535,7 @@ export const FeedView: React.FC = () => {
                     <div className="space-y-3">
                       {/* Transaction Card: Formatted identical to the transaction cards in reaction records */}
                       <div
-                        onClick={() => navigateToCategoryLedger(matchedCategory || null)}
+                        onClick={() => navigateToCategoryLedger(matchedCategory ? matchedCategory.id : null)}
                         className="p-4 rounded-2xl space-y-3 shadow-2xs transition group cursor-pointer bg-white border border-beige-200/90 hover:border-beige-300"
                       >
                         {/* Transaction Card Header: Icon, Description, Category, Parent Category, Tags, Date, and Amount */}
@@ -3389,7 +3389,7 @@ export const FeedView: React.FC = () => {
                                   type="button"
                                   onClick={() => {
                                     setCalendarItemPopup(null);
-                                    navigateToCategoryLedger(cat || null);
+                                    navigateToCategoryLedger(cat ? cat.id : null);
                                   }}
                                   className="text-[10px] text-sage-800 hover:text-dark-green-900 font-bold hover:underline flex items-center justify-end gap-0.5 mt-0.5 cursor-pointer"
                                 >

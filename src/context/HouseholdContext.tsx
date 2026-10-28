@@ -4,6 +4,7 @@
  * Project ID: canopy-d29a1
  */
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AccountType,
   CalendarMode,
@@ -362,8 +363,27 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     []
   );
 
-  // UI Navigation & View Modes
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
+  // 1. URL Query Parameters for Tab and Timeframe Navigation (React Router)
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Active Tab lifted to URL Query Parameters (?tab=ledger, ?tab=checkin, etc.)
+  const tabParam = searchParams.get('tab') as ActiveTab | null;
+  const activeTab: ActiveTab = tabParam && ['dashboard', 'ledger', 'checkin', 'feed', 'settings'].includes(tabParam)
+    ? tabParam
+    : 'dashboard';
+
+  const setActiveTab = useCallback((tab: ActiveTab) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (tab === 'dashboard') {
+        next.delete('tab');
+      } else {
+        next.set('tab', tab);
+      }
+      return next;
+    });
+  }, [setSearchParams]);
+
   const [isOnboarding, setIsOnboarding] = useState<boolean>(false);
 
   // Lateral Category Drill-Down Navigation State
@@ -373,31 +393,129 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const navigateToCategoryLedger = useCallback((catId: string | null) => {
     setSelectedLedgerCategoryId(catId);
     setActiveTab('ledger');
-  }, []);
+  }, [setActiveTab]);
 
-  // Batched timeframe filter state (mode & offset combined for atomic updates)
-  const [timeframeState, setTimeframeState] = useState<{ mode: TimeframeMode; offset: number }>({
-    mode: 'week',
-    offset: 0,
-  });
-  const timeframeMode = timeframeState.mode;
-  const timeframeOffset = timeframeState.offset;
+  // 2. Timeframe Mode & Date lifted to URL Query Parameters (?week=2026-10-25 or ?mode=month&month=2026-09)
+  const modeParam = searchParams.get('mode') || searchParams.get('timeframe');
+  const timeframeMode: TimeframeMode = modeParam === 'month' ? 'month' : 'week';
+  const weekParam = searchParams.get('week');
+  const monthParam = searchParams.get('month');
+  const offsetParam = searchParams.get('offset');
+
+  const firstDay = household?.firstDayOfWeek || 'Monday';
+  const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
+
+  // Compute active date range and timeframe offset directly from URL parameters
+  const { computedOffset, activeDateRange } = useMemo(() => {
+    const now = new Date();
+    if (timeframeMode === 'week') {
+      if (weekParam && /^\d{4}-\d{2}-\d{2}$/.test(weekParam)) {
+        const targetDate = new Date(`${weekParam}T12:00:00`);
+        if (!isNaN(targetDate.getTime())) {
+          const targetRange = getWeekRange(targetDate, firstDay, 0);
+          const currentRange = getWeekRange(now, firstDay, 0);
+          const offset = Math.round((targetRange.startDate.getTime() - currentRange.startDate.getTime()) / (7 * 86400000));
+          return { computedOffset: offset, activeDateRange: targetRange };
+        }
+      }
+      const offset = offsetParam ? parseInt(offsetParam, 10) || 0 : 0;
+      return { computedOffset: offset, activeDateRange: getWeekRange(now, firstDay, offset) };
+    } else {
+      // Month mode
+      if (monthParam) {
+        const currentFM = getFiscalMonthForDate(now, fiscalYearEnd);
+        const match = monthParam.match(/(\d{4})-(?:M|0?)(\d{1,2})/);
+        if (match) {
+          const targetYear = parseInt(match[1], 10);
+          const targetMonthNum = parseInt(match[2], 10);
+          const currentYear = currentFM.fiscalYear || currentFM.endDate.getFullYear();
+          const offset = (targetYear - currentYear) * 12 + (targetMonthNum - currentFM.fiscalMonthNumber);
+          return { computedOffset: offset, activeDateRange: getMonthRange(now, offset, fiscalYearEnd) };
+        }
+      }
+      const offset = offsetParam ? parseInt(offsetParam, 10) || 0 : 0;
+      return { computedOffset: offset, activeDateRange: getMonthRange(now, offset, fiscalYearEnd) };
+    }
+  }, [timeframeMode, weekParam, monthParam, offsetParam, firstDay, fiscalYearEnd]);
+
+  const timeframeOffset = computedOffset;
 
   const setTimeframeMode = useCallback((mode: TimeframeMode) => {
-    setTimeframeState((prev) => (prev.mode === mode && prev.offset === 0 ? prev : { mode, offset: 0 }));
-  }, []);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (mode === 'week') {
+        next.set('mode', 'week');
+        next.delete('month');
+        if (!next.has('week')) {
+          const curRange = getWeekRange(new Date(), firstDay, 0);
+          next.set('week', formatLocalDate(curRange.startDate));
+        }
+      } else {
+        next.set('mode', 'month');
+        next.delete('week');
+        const curMRange = getMonthRange(new Date(), 0, fiscalYearEnd);
+        const fm = getFiscalMonthForDate(curMRange.startDate, fiscalYearEnd);
+        next.set('month', `${fm.fiscalYear || fm.endDate.getFullYear()}-M${fm.fiscalMonthNumber}`);
+      }
+      next.delete('offset');
+      return next;
+    });
+  }, [firstDay, fiscalYearEnd, setSearchParams]);
 
   const setTimeframeOffset = useCallback((offsetOrUpdater: number | ((prev: number) => number)) => {
-    setTimeframeState((prev) => {
-      const newOffset = typeof offsetOrUpdater === 'function' ? offsetOrUpdater(prev.offset) : offsetOrUpdater;
-      if (prev.offset === newOffset) return prev;
-      return { ...prev, offset: newOffset };
+    const newOffset = typeof offsetOrUpdater === 'function' ? offsetOrUpdater(timeframeOffset) : offsetOrUpdater;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (timeframeMode === 'week') {
+        const newRange = getWeekRange(new Date(), firstDay, newOffset);
+        next.set('mode', 'week');
+        next.set('week', formatLocalDate(newRange.startDate));
+      } else {
+        const mRange = getMonthRange(new Date(), newOffset, fiscalYearEnd);
+        const fm = getFiscalMonthForDate(mRange.startDate, fiscalYearEnd);
+        next.set('mode', 'month');
+        next.set('month', `${fm.fiscalYear || fm.endDate.getFullYear()}-M${fm.fiscalMonthNumber}`);
+      }
+      next.delete('offset');
+      return next;
     });
-  }, []);
+  }, [timeframeOffset, timeframeMode, firstDay, fiscalYearEnd, setSearchParams]);
 
   const switchTimeframe = useCallback((mode: TimeframeMode, offset: number = 0) => {
-    setTimeframeState((prev) => (prev.mode === mode && prev.offset === offset ? prev : { mode, offset }));
-  }, []);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (mode === 'week') {
+        const wRange = getWeekRange(new Date(), firstDay, offset);
+        next.set('mode', 'week');
+        next.set('week', formatLocalDate(wRange.startDate));
+        next.delete('month');
+      } else {
+        const mRange = getMonthRange(new Date(), offset, fiscalYearEnd);
+        const fm = getFiscalMonthForDate(mRange.startDate, fiscalYearEnd);
+        next.set('mode', 'month');
+        next.set('month', `${fm.fiscalYear || fm.endDate.getFullYear()}-M${fm.fiscalMonthNumber}`);
+        next.delete('week');
+      }
+      next.delete('offset');
+      return next;
+    });
+  }, [firstDay, fiscalYearEnd, setSearchParams]);
+
+  const resetTimeframeToCurrent = useCallback(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (timeframeMode === 'week') {
+        const curRange = getWeekRange(new Date(), firstDay, 0);
+        next.set('week', formatLocalDate(curRange.startDate));
+      } else {
+        const curMRange = getMonthRange(new Date(), 0, fiscalYearEnd);
+        const fm = getFiscalMonthForDate(curMRange.startDate, fiscalYearEnd);
+        next.set('month', `${fm.fiscalYear || fm.endDate.getFullYear()}-M${fm.fiscalMonthNumber}`);
+      }
+      next.delete('offset');
+      return next;
+    });
+  }, [timeframeMode, firstDay, fiscalYearEnd, setSearchParams]);
 
   // Staging Modal & Batch Staged Items State
   const [isStagingModalOpen, setIsStagingModalOpen] = useState<boolean>(false);
@@ -486,21 +604,6 @@ export const HouseholdProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const toastMessage = toastInfo?.message || null;
   const toastType = toastInfo?.type || 'info';
 
-  // Compute active date range based on mode, offset, and household firstDayOfWeek
-  const activeDateRange = useMemo<DateRange>(() => {
-    const now = new Date();
-    const firstDay = household?.firstDayOfWeek || 'Monday';
-    const fiscalYearEnd = household?.fiscalYearEndMonth || 12;
-    if (timeframeMode === 'week') {
-      return getWeekRange(now, firstDay, timeframeOffset);
-    } else {
-      return getMonthRange(now, timeframeOffset, fiscalYearEnd);
-    }
-  }, [timeframeMode, timeframeOffset, household?.firstDayOfWeek, household?.fiscalYearEndMonth]);
-
-  const resetTimeframeToCurrent = useCallback(() => {
-    setTimeframeState((prev) => (prev.offset === 0 ? prev : { ...prev, offset: 0 }));
-  }, []);
 
   // Canonical memoized check-in status info evaluated once at context root
   const checkInStatusInfo = useMemo<CheckInStatusInfo | null>(() => {

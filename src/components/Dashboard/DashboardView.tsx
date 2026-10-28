@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useHousehold } from '../../context/HouseholdContext';
 import { Category, CategoryGroup, Expense, OneOffDeposit } from '../../types';
 import {
@@ -63,6 +64,7 @@ export const isBillsCategory = (c: { group?: string; name?: string; id?: string 
   c.group?.toLowerCase() === 'bills' || c.name?.toLowerCase() === 'bills' || c.id === 'cat_bills';
 
 export const DashboardView: React.FC<DashboardViewProps> = () => {
+  const [searchParams, setSearchParams] = useSearchParams();
   const {
     household,
     categories,
@@ -91,6 +93,21 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
     feedItems,
     navigateToCategoryLedger,
   } = useHousehold();
+
+  // Read the state from the URL (fallback to activeDateRange start date if not present)
+  const currentWeek = searchParams.get('week') || formatLocalDate(activeDateRange.startDate);
+
+  const handleWeekChange = (newWeek: string) => {
+    // This automatically pushes a new entry to the browser's history stack
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('mode', 'week');
+      next.set('week', newWeek);
+      next.delete('month');
+      next.delete('offset');
+      return next;
+    });
+  };
 
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [isDeletingCheckIn, setIsDeletingCheckIn] = useState(false);
@@ -881,7 +898,14 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
         <div className="flex items-center gap-2 sm:gap-3 justify-between sm:justify-end w-full sm:w-auto">
           <div className="flex items-center justify-between sm:justify-center gap-1 bg-beige-50 border border-beige-200/80 rounded-2xl p-1 w-full sm:w-auto flex-1 sm:flex-initial">
             <button
-              onClick={() => setTimeframeOffset((prev) => prev - 1)}
+              onClick={() => {
+                if (timeframeMode === 'week') {
+                  const prevDate = new Date(activeDateRange.startDate.getTime() - 7 * 86400000);
+                  handleWeekChange(formatLocalDate(prevDate));
+                } else {
+                  setTimeframeOffset((prev) => prev - 1);
+                }
+              }}
               id="nav-timeframe-prev"
               title={`Previous ${timeframeMode}`}
               className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer shrink-0"
@@ -889,17 +913,46 @@ export const DashboardView: React.FC<DashboardViewProps> = () => {
               <ChevronLeft className="w-4 h-4" />
             </button>
 
-            <div className="px-3 sm:px-4 py-1 text-center flex-1 sm:flex-initial min-w-[170px] sm:min-w-[240px]">
-              <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
-                {timeframeNavDisplay.title}
-              </span>
+            <div className="relative group px-3 sm:px-4 py-1 text-center flex-1 sm:flex-initial min-w-[170px] sm:min-w-[240px]">
+              <div className="flex items-center justify-center gap-1.5">
+                <span className="text-xs sm:text-sm font-extrabold text-dark-green-900 block leading-tight">
+                  {timeframeNavDisplay.title}
+                </span>
+                {timeframeMode === 'week' && (
+                  <label
+                    htmlFor="timeframe-week-picker"
+                    title="Jump to date"
+                    className="cursor-pointer text-brown-600 hover:text-dark-green-900 p-0.5 rounded transition inline-flex items-center"
+                  >
+                    <Calendar className="w-3.5 h-3.5 opacity-70 group-hover:opacity-100" />
+                    <input
+                      id="timeframe-week-picker"
+                      type="date"
+                      value={currentWeek}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleWeekChange(e.target.value);
+                        }
+                      }}
+                      className="sr-only"
+                    />
+                  </label>
+                )}
+              </div>
               <span className="text-[10px] font-bold text-brown-700 block tracking-tight mt-0.5">
                 {timeframeNavDisplay.sub}
               </span>
             </div>
 
             <button
-              onClick={() => setTimeframeOffset((prev) => prev + 1)}
+              onClick={() => {
+                if (timeframeMode === 'week') {
+                  const nextDate = new Date(activeDateRange.startDate.getTime() + 7 * 86400000);
+                  handleWeekChange(formatLocalDate(nextDate));
+                } else {
+                  setTimeframeOffset((prev) => prev + 1);
+                }
+              }}
               id="nav-timeframe-next"
               title={`Next ${timeframeMode}`}
               className="p-2 rounded-xl hover:bg-beige-200 text-dark-green-900 transition cursor-pointer shrink-0"
